@@ -2,18 +2,18 @@
 """Price alerts and the NSE clock for trader-alerts. Standard library only.
 
     python3 alerts.py clock                          # is the NSE open? next open / close
-    python3 alerts.py quote TSLA --write             # quotes -> trader/prices.json
-    python3 alerts.py quote --holdings --write       # every ticker in your portfolio and plan
-    python3 alerts.py add --from-plan                # stop, target and flat-by-close from trader/plan.json
-    python3 alerts.py add --symbol TSLA --stop 358.32
-    python3 alerts.py add --symbol TSLA --target 370.04
-    python3 alerts.py add --at 15:15 --label "flat by close" --before-close
-    python3 alerts.py add --symbol KO --pct 3
+    python3 alerts.py quote INFY.NS --write          # quotes -> trader/prices.json
+    python3 alerts.py quote --holdings --write       # every symbol in your portfolio and plan
+    python3 alerts.py add --from-plan                # stop, target and flat-by from trader/plan.json
+    python3 alerts.py add --symbol INFY.NS --stop 1149.80
+    python3 alerts.py add --symbol INFY.NS --target 1181.90
+    python3 alerts.py add --at 15:10 --label "flat by" --before-close
+    python3 alerts.py add --symbol TCS.NS --pct 3
     python3 alerts.py add --opening-bell
     python3 alerts.py check                          # rings what hit, once; exit 1 if nothing rang
-    python3 alerts.py check --now "2026-10-19 15:15" --offline tests/fixtures/trader-alerts
+    python3 alerts.py check --now "2026-11-05 15:10" --offline tests/fixtures/trader-alerts
     python3 alerts.py list
-    python3 alerts.py reset tsla-plan-stop
+    python3 alerts.py reset infy-ns-plan-stop
 
 Rule types:
   above / target  the price is at or above "price"
@@ -23,8 +23,8 @@ Rule types:
   opening_bell    the NSE opened today (rings once per trading day)
   time            the IST clock passed "at" (HH:MM) on a trading day
                   (rings once per trading day); "before_close": true would move
-                  it up on an early close, but the NSE has none, so a 15:15
-                  "flat by close" always rings at 15:15
+                  it up on an early close, but the NSE has none, so a 15:10
+                  "flat by" always rings at 15:10
 
 A rule with "date" is only watched on that IST date (rules from a plan
 are for the plan's day only). An above / below alert rings ONCE and then stays
@@ -32,24 +32,24 @@ quiet until you reset it, unless the rule has "rearm": true (it re-arms when
 the price crosses back). A pct_move alert rings at most once per day.
 
 Quotes (free, delayed, unofficial; for alerts only, never for timing an order):
-  yahoo   https://query2.finance.yahoo.com/v8/finance/chart/TSLA (falls back to
-          query1 on a 429 or a 5xx; one retry with a pause on a 429; one
-          request per ticker, half a second apart; the default)
-  stooq   https://stooq.com/q/l/?s=tsla.us&f=sd2t2ohlcv&h&e=csv (Stooq's free
-          CSV; it answered 404 on 2026-10-13, kept for when it is back)
-  --offline DIR reads DIR/<source>-<TICKER>.json|csv (or .json.gz) instead.
+  yahoo   https://query2.finance.yahoo.com/v8/finance/chart/INFY.NS (falls back
+          to query1 on a 429 or a 5xx; one retry with a pause on a 429; one
+          request per symbol, half a second apart). Yahoo's NSE quotes can lag
+          the exchange; your broker's quote is the one to trust.
+  --offline DIR reads DIR/yahoo-<SYMBOL>.json (or .json.gz) instead.
+prices.json keeps each quote's previous close, which trader-risk uses for the
+price-band check.
 
 NSE calendar: the 2026 equity segment trading holidays from the NSE holiday
-circular (NSE has no scheduled early closes; the session is 9:15 to 15:30 IST).
-Outside 2026 the clock says the holiday list is unknown. Special sessions such as
-Muhurat trading are not in the list.
+circular (NSE has no scheduled early closes; the session is 9:15 to 15:30 IST,
+after a 9:00 to 9:08 pre-open auction). Outside 2026 the clock says the holiday
+list is unknown. Special sessions such as the one-hour Diwali Muhurat session
+(Sunday 8 November 2026) are not in the list: check NSE's circular for its time.
 """
 
 import argparse
-import csv
 import datetime
 import gzip
-import io
 import json
 import os
 import re
@@ -117,7 +117,7 @@ def parse_now(text):
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise AlertError("--now wants a time like \"2026-10-19 10:15\" (IST) or ...Z (UTC)")
+        raise AlertError("--now wants a time like \"2026-11-05 09:40\" (IST) or ...Z (UTC)")
     if dt.tzinfo is None:
         return ist_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
@@ -171,10 +171,6 @@ def market_status(now_utc):
 
 # ---------------------------------------------------------------- quotes
 
-def stooq_url(sym):
-    return "https://stooq.com/q/l/?s=%s.us&f=sd2t2ohlcv&h&e=csv" % sym.lower().replace(".", "-")
-
-
 def yahoo_ticker(sym):
     """BRK.B -> BRK-B for Yahoo; an NSE symbol like RELIANCE.NS stays as it is."""
     s = sym.upper()
@@ -183,27 +179,6 @@ def yahoo_ticker(sym):
 
 def yahoo_url(sym, host=YAHOO_HOSTS[0]):
     return "https://%s/v8/finance/chart/%s?range=1d&interval=1d" % (host, urllib.parse.quote(yahoo_ticker(sym), safe=""))
-
-
-def parse_stooq(text, sym):
-    """Symbol,Date,Time,Open,High,Low,Close,Volume -> quote. N/D means no data."""
-    rows = list(csv.DictReader(io.StringIO(text.strip())))
-    if not rows:
-        raise AlertError("Stooq returned no rows for %s" % sym)
-    r = {k.strip().lower(): (v or "").strip() for k, v in rows[0].items() if k}
-    close = r.get("close", "")
-    if not close or close.upper() == "N/D":
-        raise AlertError("Stooq has no data for %s (check the ticker)" % sym)
-
-    def f(k):
-        v = r.get(k, "")
-        try:
-            return float(v)
-        except ValueError:
-            return None
-    return {"symbol": sym.upper(), "price": float(close), "open": f("open"), "high": f("high"),
-            "low": f("low"), "prev_close": None, "time": ("%s %s" % (r.get("date", ""), r.get("time", ""))).strip(),
-            "source": "stooq"}
 
 
 def parse_yahoo(text, sym):
@@ -283,7 +258,7 @@ def fetch_yahoo(sym, timeout=20):
 
 
 def _offline_text(folder, source, sym):
-    ext = "csv" if source == "stooq" else "json"
+    ext = "json"
     base = os.path.join(folder, "%s-%s.%s" % (source, sym, ext))
     if os.path.exists(base):
         with open(base, encoding="utf-8") as fh:
@@ -305,8 +280,8 @@ def get_quotes(symbols, source="yahoo", offline=None, pause=PAUSE):
             else:
                 if i and pause:
                     _sleep(pause)
-                text = fetch(stooq_url(sym)) if source == "stooq" else fetch_yahoo(sym)
-            quotes[sym] = parse_stooq(text, sym) if source == "stooq" else parse_yahoo(text, sym)
+                text = fetch_yahoo(sym)
+            quotes[sym] = parse_yahoo(text, sym)
         except AlertError as e:
             errors.append(str(e))
     return quotes, errors
@@ -380,7 +355,7 @@ def validate(rule):
     if t == "pct_move" and not isinstance(rule.get("pct"), (int, float)):
         raise AlertError("rule %s needs a numeric pct" % rule.get("id"))
     if t == "time" and _hhmm(rule.get("at")) is None:
-        raise AlertError("rule %s needs \"at\" as an IST time like \"15:15\"" % rule.get("id"))
+        raise AlertError("rule %s needs \"at\" as an IST time like \"15:10\"" % rule.get("id"))
     if rule.get("date") and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(rule["date"])):
         raise AlertError("rule %s: date must be YYYY-MM-DD" % rule.get("id"))
 
@@ -494,9 +469,9 @@ def rules_from_plan(plan, cfg_flat_by=None):
         label = plan.get("%s_label" % key)
         out.append({"id": "%s-plan-%s" % (sym.lower(), key), "symbol": sym, "type": typ, "price": float(v),
                     "note": word + (": " + label if label else "")})
-    flat = plan.get("flat_by") or cfg_flat_by or "15:15"
+    flat = plan.get("flat_by") or cfg_flat_by or "15:10"
     if _hhmm(flat) is None:
-        raise AlertError("the plan's flat_by %r is not a time like 15:15" % flat)
+        raise AlertError("the plan's flat_by %r is not a time like 15:10" % flat)
     out.append({"id": "%s-flat-by" % sym.lower(), "symbol": sym, "type": "time", "at": flat,
                 "label": "flat by close", "before_close": True})
     if plan.get("date"):
@@ -539,14 +514,14 @@ def cmd_clock(a):
         if not st["open"] and st.get("next_open"):
             print("Next open: %s IST." % st["next_open"])
         if not st["calendar_known"]:
-            print("Holiday list covers %s only: check nyse.com for this date." % " and ".join(map(str, CALENDAR_YEARS)))
+            print("Holiday list covers %s only: check nseindia.com for this date." % " and ".join(map(str, CALENDAR_YEARS)))
     return 0 if st["open"] else 1
 
 
 def cmd_quote(a):
     syms = _dedupe([s.upper() for s in a.symbols] + (holdings(a) if a.holdings else []))
     if not syms:
-        raise AlertError("which tickers? alerts.py quote TSLA KO, or --holdings")
+        raise AlertError("which symbols? alerts.py quote INFY.NS TCS.NS, or --holdings")
     now = parse_now(a.now)
     quotes, errors = get_quotes(syms, a.source, a.offline)
     if a.write and quotes:
@@ -632,7 +607,7 @@ def cmd_add(a):
         rule = {"id": a.id or "opening-bell", "type": "opening_bell"}
     elif a.at:
         if _hhmm(a.at) is None:
-            raise AlertError("--at wants an IST time like 15:15")
+            raise AlertError("--at wants an IST time like 15:10")
         rule = {"id": a.id or ("time-%s" % a.at.replace(":", "")), "type": "time", "at": a.at,
                 "label": a.label or "time alert"}
         if a.symbol:
@@ -704,7 +679,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
 
     def net(p):
-        p.add_argument("--source", default="yahoo", choices=["yahoo", "stooq"])
+        p.add_argument("--source", default="yahoo", choices=["yahoo"])
         p.add_argument("--offline", metavar="DIR", help="read <source>-<TICKER>.json|csv files, no network")
         p.add_argument("--now", help="pretend it is this time (no offset = IST time)")
         p.add_argument("--json", action="store_true")

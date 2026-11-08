@@ -2,11 +2,11 @@
 """Entry Timer for trader-entry: watches a setup bar by bar and says the
 moment to get in. Standard library only. Long side only. It never places an order.
 
-    python3 entry.py check TSLA                          # opening-range breakout, 5-minute bars
-    python3 entry.py check TSLA --now "2026-10-19 10:15" --offline TSLA.json
-    python3 entry.py check TSLA --setup level --level 371.20    # first close above a price
-    python3 entry.py check TSLA --interval 1m --min-volume-x 1.5 --write
-    python3 entry.py watch TSLA --every 30 --until 15:15  # one line per closed bar
+    python3 entry.py check INFY.NS                       # opening-range breakout, 5-minute bars
+    python3 entry.py check INFY.NS --now "2026-11-05 09:40" --offline INFY.NS.json
+    python3 entry.py check INFY.NS --setup level --level 1171.90  # first close above a price
+    python3 entry.py check INFY.NS --interval 1m --min-volume-x 1.5 --write
+    python3 entry.py watch INFY.NS --every 30 --until 14:45  # one line per closed bar
     python3 entry.py watchlist                            # every hit in trader/watchlist.json
 
 Setups (v2 plans longs only):
@@ -20,18 +20,19 @@ Setups (v2 plans longs only):
          volume of the opening-range bars (the 9:15 bar carries the opening
          auction, so 1.0 is already a high bar).
 
-A trigger's time is the trigger bar's CLOSE time (the 10:10 bar closes at
-10:15 AM) and its price is that close, to the cent. Only bars on the interval
+A trigger's time is the trigger bar's CLOSE time (the 9:35 bar closes at
+9:40 AM) and its price is that close, to the cent. Only bars on the interval
 grid count (Yahoo's live tick, e.g. 10:49:45, is dropped) and a bar counts only
 once it has closed: now >= its start + the interval.
 
 Statuses: triggered; waiting (not open yet, range still forming, or no close
-above the level yet); expired (no trigger by no_entries_after, default 15:15;
+above the level yet); expired (no trigger by no_entries_after, default 14:45;
 the NSE has no early closes, so the cutoff never moves);
 no-data (the market is closed today or Yahoo sent no bars).
 
-trader/config.json (optional): "no_entries_before" (09:45) and
-"no_entries_after" (15:15), IST time.
+trader/config.json (optional): "no_entries_before" (09:30, when the 15-minute
+opening range is complete) and "no_entries_after" (14:45, leaving time to
+work before the 15:10 flat-by), IST time.
 
 watch wakes just after each bar closes (bars only change then), re-polls every
 --every seconds (default 30) while Yahoo has not posted the new bar, prints one
@@ -40,7 +41,7 @@ on expiry, at the close or at --until (exit 1). With --now or --offline it runs
 on a simulated clock and replays the day without sleeping.
 
 Data: Yahoo's free chart JSON (unofficial, can lag, bars not single trades)
-  https://query2.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m
+  https://query2.finance.yahoo.com/v8/finance/chart/INFY.NS?range=1d&interval=5m
   falls back to query1 on HTTP 429 or 5xx; a 429 gets one retry after a pause.
   --offline PATH reads a saved chart JSON (.json or .json.gz) instead, or
   PATH/<TICKER>.json when PATH is a folder. Without --now, an offline file is
@@ -69,7 +70,7 @@ GRACE = 2        # seconds after a bar closes before watch asks for it
 SETTLE = 60      # seconds a closed bar may wait for Yahoo's data to catch up
 HOSTS = ("query2", "query1")
 INTERVALS = {"1m": 60, "5m": 300}
-DEFAULTS = {"no_entries_before": "09:45", "no_entries_after": "15:15"}
+DEFAULTS = {"no_entries_before": "09:30", "no_entries_after": "14:45"}
 EPOCH = datetime.datetime(1970, 1, 1)
 
 NSE_HOLIDAYS = {  # NSE equity segment trading holidays, NSE circular for 2026
@@ -134,7 +135,7 @@ def iso(utc):
 
 
 def parse_now(text):
-    """--now -> naive UTC. "2026-10-19 10:15" (or ...T10:15, or just 10:15 for
+    """--now -> naive UTC. "2026-11-05 09:40" (or ...T10:15, or just 10:15 for
     today) is IST time; an offset or Z makes it absolute."""
     if not text:
         return utc_now()
@@ -147,7 +148,7 @@ def parse_now(text):
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise EntryError('--now wants an IST time like "2026-10-19 10:15" (or ...Z for UTC)')
+        raise EntryError('--now wants an IST time like "2026-11-05 09:40" (or ...Z for UTC)')
     if dt.tzinfo is None:
         return ist_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
@@ -621,7 +622,7 @@ def describe(res):
         out.append("Early close today at 1:00 p.m. (%s): no new entries after %s." % (
             res["early_close"], res["no_entries_after"]))
     if not res.get("calendar_known"):
-        out.append("Holiday list covers %s only: check nyse.com for this date." % " and ".join(map(str, CALENDAR_YEARS)))
+        out.append("Holiday list covers %s only: check nseindia.com for this date." % " and ".join(map(str, CALENDAR_YEARS)))
     return out
 
 
@@ -750,7 +751,7 @@ def watch_loop(provider, clock, sleep, emit, opts, every=30, until=None, max_err
         else:
             nxt = open_dt + datetime.timedelta(seconds=(cur_slot + 1) * step + GRACE)
             wait = (nxt - local).total_seconds()
-        cutoff = datetime.datetime.combine(day, parse_hhmm(res.get("no_entries_after") or "15:15", "cutoff"))
+        cutoff = datetime.datetime.combine(day, parse_hhmm(res.get("no_entries_after") or "14:45", "cutoff"))
         for stop_at in (until, cutoff, close_dt):
             if stop_at and stop_at > local:
                 wait = min(wait, (stop_at - local).total_seconds())
@@ -900,7 +901,7 @@ def main(argv=None):
         p.add_argument("--level", type=float, help="the price to close above (--setup level)")
         p.add_argument("--min-volume-x", type=float, help="trigger bar volume vs the range bars' average")
         p.add_argument("--side", default="buy", choices=["buy", "long", "sell", "short"], help="v2: buy only")
-        p.add_argument("--now", help='pretend it is this IST time, e.g. "2026-10-19 10:15"')
+        p.add_argument("--now", help='pretend it is this IST time, e.g. "2026-11-05 09:40"')
         p.add_argument("--offline", metavar="PATH", help="saved Yahoo chart JSON (.json/.json.gz) or a folder")
         p.add_argument("--config", default="trader/config.json")
 

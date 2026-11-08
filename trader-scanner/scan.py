@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
 """Chart Scanner for trader-scanner: scan thousands of charts for setups. Standard library only.
 
-    python3 scan.py universe                          # Nasdaq Trader lists -> trader/universe.txt
+    python3 scan.py universe                          # NSE's lists -> trader/universe.txt + trader/bands.json
     python3 scan.py daily                             # before the open: daily setups -> trader/watchlist.json
-    python3 scan.py daily --symbols TSLA,NVDA,AMD     # or --watchlist FILE, or --limit 200
+    python3 scan.py daily --watchlist trader/nifty50.txt   # or --symbols INFY.NS,TCS.NS, or --limit 200
     python3 scan.py orb                               # after 9:35 AM IST: opening-range breakouts so far
-    python3 scan.py orb --at 10:15 --or-minutes 15    # cut the clock at 10:15 AM IST
-    python3 scan.py orb --offline wall5m.json.gz --now "2026-10-19 10:15" --min-price 0
+    python3 scan.py orb --at 09:40 --or-minutes 15    # cut the clock at 9:40 AM IST
+    python3 scan.py orb --offline wall5m.json.gz --now "2026-11-05 09:40" --min-price 0
 
-universe  Downloads Nasdaq Trader's symbol directories (nasdaqlisted.txt and
-          otherlisted.txt) and keeps US-listed common stocks, ordinary shares
-          and ADRs. The rule, in order:
-            1. not a test issue, not an ETF, not NextShares
-            2. a plain ticker: 1 to 5 letters, or 1 to 4 letters plus one
-               class letter after a dot (BRK.B); a .U / .W / .R suffix
-               (units, warrants, rights) is out, and so is a $ preferred
-            3. out, whatever else the name says: warrants; SPAC units and
-               rights ("Units, each consisting of", "Rights to receive");
-               notes, ETNs, debentures; a % coupon; "Depositary Shares" that
-               are not American or Global (those carry a preferred)
-            4. in: the name calls it common stock / shares / units, ordinary
-               shares, shares of beneficial interest, ADS / ADR / American or
-               Global depositary shares, or partnership / trust units
-            5. out: the name still says unit, right, bond, preferred or preference
-            6. in: everything else (plain names like "AMETEK, Inc.")
+universe  Downloads NSE's equity list (EQUITY_L.csv) and price band list
+          (sec_list.csv) from nsearchives.nseindia.com. Keeps every stock in
+          the EQ series, as SYMBOL.NS (Yahoo's name for it). BE and BZ are
+          trade-for-trade (delivery only, no intraday), SME boards are left
+          out too. Writes trader/universe.txt and trader/bands.json: each
+          stock's price band (2, 5, 10 or 20 % from the previous close, or
+          none for F&O stocks), which trader-risk uses to stop a buy right
+          under the upper band. NSE revises bands often: run it each morning.
 
 daily     Pre-market scan of daily CLOSES (Yahoo spark: 20 symbols a request,
           3 months of 1-day bars, closes only). Liquidity from the spark meta:
@@ -53,16 +45,16 @@ orb       Opening-range breakouts, 5-minute bars. The range is the first
 Bars: null closes are dropped, a bar off the 5-minute grid (the live tick,
 like 10:49:45) is dropped, and a bar counts only once it is complete
 (start + 5 minutes <= the clock). Times are IST (UTC+5:30). --now pins the
-clock ("2026-10-19 10:15", IST time; ...Z for UTC).
+clock ("2026-11-05 09:40", IST time; ...Z for UTC).
 
 Yahoo's endpoints are free, unofficial and can lag. query2 first, query1 on
 a 429 or 5xx, one retry after a pause on a 429. A polite pause between
 requests (--pause). Partial results are reported as partial.
 
 --offline PATH reads files instead of the network: universe wants a folder
-with nasdaqlisted.txt and otherlisted.txt; daily and orb take a folder of
-<T>.json v8 chart files or spark responses, or one file that is a spark
-response, a v8 chart, or a bundle {"TSLA": <v8 json>, ...}. .json.gz is fine.
+with EQUITY_L.csv and sec_list.csv; daily and orb take a folder of <T>.json
+v8 chart files or spark responses, or one file that is a spark response, a
+v8 chart, or a bundle {"INFY.NS": <v8 json>, ...}. .json.gz is fine.
 
 A scan is a list of charts that match a rule, not a list of stocks to buy.
 Exit code 0 when the scan found something, 1 when it did not or could not run.
@@ -82,8 +74,8 @@ import urllib.request
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
-NASDAQ_FILES = ("nasdaqlisted.txt", "otherlisted.txt")
-NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/"
+NSE_FILES = ("EQUITY_L.csv", "sec_list.csv")
+NSE_URL = "https://nsearchives.nseindia.com/content/equities/"
 SPARK_MAX = 20      # Yahoo's spark answers 400 above 20 symbols
 PAUSE = 0.3         # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0       # seconds to wait before the one retry after a 429
@@ -92,6 +84,11 @@ BAR_MIN = 5
 MAX_CONFIRM = 200   # stage-2 v8 charts per orb scan, most traded first
 MIN_DAILY_BARS = 30
 DEFAULT_UNIVERSE = "trader/universe.txt"
+DEFAULT_BANDS = "trader/bands.json"
+BY_HAND = ("\nNSE's site often turns away scripts. Save the two files from a browser instead:\n"
+           "  https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv\n"
+           "  https://nsearchives.nseindia.com/content/equities/sec_list.csv\n"
+           "into one folder, then run: scan.py universe --offline <that folder>")
 NOTE = "A scan is a list of charts that match a rule, not a list of stocks to buy."
 
 NSE_HOLIDAYS = {  # NSE equity segment trading holidays, NSE circular for 2026
@@ -160,7 +157,7 @@ def parse_now(text):
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise ScanError('--now wants a time like "2026-10-19 10:15" (IST) or ...Z (UTC)')
+        raise ScanError('--now wants a time like "2026-11-05 09:40" (IST) or ...Z (UTC)')
     if dt.tzinfo is None:
         return ist_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
@@ -375,87 +372,59 @@ def load_offline(path):
 
 # ---------------------------------------------------------------- universe
 
-TICKER = re.compile(r"^[A-Z]{1,5}$|^[A-Z]{1,4}\.[A-Z]$")
-ALWAYS_OUT = [
-    ("warrant", re.compile(r"\bwarrants?\b")),
-    ("unit or right", re.compile(r"\b(units?|rights?),? (each|that|entitling)\b|(?<!the )\brights? to\b")),
-    ("note", re.compile(r"\b(notes?|etns?|debentures?)\b")),
-    ("coupon", re.compile(r"%")),
-    ("depositary", re.compile(r"(?<!american )(?<!global )\bdepositary shares?\b")),
-]
-COMMON = re.compile(
-    r"\bcommon (stock|shares?|units?)\b|\bord(inary)? shares?\b|\bshares? of beneficial interest\b"
-    r"|\b(american|global) deposit[ao]ry\b|\bads[s]?\b|\badrs?\b"
-    r"|\b(limited partnership|partnership|trust) units?\b|\bl\.?p\.? units?\b"
-    r"|\bunits? (of|representing)\b.*\b(limited partner|partnership|beneficial interest|limited liability)")
-SOFT_OUT = [
-    ("unit", re.compile(r"\bunits?\b")),
-    ("right", re.compile(r"\brights?\b")),
-    ("bond", re.compile(r"\bbonds?\b")),
-    ("preferred", re.compile(r"\bpreferred\b|\bpreference\b")),
-]
+SERIES_IN = ("EQ",)   # BE and BZ are trade-for-trade: delivery only, no intraday
+SERIES_WORDS = {"BE": "trade-for-trade (BE, delivery only)", "BZ": "trade-for-trade (BZ, delivery only)",
+                "SM": "SME board", "ST": "SME board", "IV": "InvIT", "RR": "REIT"}
+NSE_SYMBOL = re.compile(r"^[A-Z0-9&\-]{1,20}$")
 
 
-def classify(row):
-    """One symbol-directory row -> 'keep' or the rule that drops it."""
-    sym = (row.get("Symbol") or row.get("ACT Symbol") or "").strip()
-    if (row.get("Test Issue") or "").strip() != "N":
-        return "test issue"
-    if (row.get("ETF") or "").strip() != "N":
-        return "ETF"
-    if (row.get("NextShares") or "N").strip() != "N":
-        return "NextShares"
-    if not TICKER.match(sym):
-        return "not a plain ticker"
-    if re.search(r"\.[UWR]$", sym):
-        return "unit / warrant / right suffix"
-    name = " ".join((row.get("Security Name") or "").lower().split())
-    for tag, rx in ALWAYS_OUT:
-        if rx.search(name):
-            return tag
-    if COMMON.search(name):
-        return "keep"
-    for tag, rx in SOFT_OUT:
-        if rx.search(name):
-            return tag
-    return "keep"
-
-
-def parse_symdir(text):
-    """Nasdaq Trader pipe file -> (rows, file_created). The last line is 'File Creation Time: ...'."""
-    lines = [ln for ln in text.replace("\r", "").split("\n") if ln.strip()]
-    if not lines or "|" not in lines[0]:
-        raise ScanError("not a Nasdaq Trader symbol directory")
-    hdr = [h.strip() for h in lines[0].split("|")]
-    if "Security Name" not in hdr or not ({"Symbol", "ACT Symbol"} & set(hdr)):
-        raise ScanError("not a Nasdaq Trader symbol directory (header %s)" % lines[0][:60])
-    rows, created = [], None
-    for ln in lines[1:]:
-        if ln.startswith("File Creation Time"):
-            m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2}):(\d{2})", ln)
-            if m:
-                created = "%s-%s-%s %s:%s" % (m.group(3), m.group(1), m.group(2), m.group(4), m.group(5))
-            continue
-        rows.append(dict(zip(hdr, ln.split("|"))))
-    return rows, created
+def parse_csv(text, what):
+    """NSE archive CSV -> rows as dicts with trimmed keys and values."""
+    import csv
+    import io
+    rows = list(csv.reader(io.StringIO(text.replace("\r", "").lstrip("\ufeff"))))
+    if not rows:
+        raise ScanError("%s is empty" % what)
+    hdr = [h.strip().upper() for h in rows[0]]
+    return [dict(zip(hdr, [c.strip() for c in r])) for r in rows[1:] if any(c.strip() for c in r)]
 
 
 def build_universe(texts):
-    """{filename: text} -> (kept [(SYM, name)], counts, created)."""
-    kept, counts, created = {}, {}, None
-    for fname in NASDAQ_FILES:
-        if fname not in texts:
-            raise ScanError("missing %s" % fname)
-        rows, c = parse_symdir(texts[fname])
-        created = created or c
-        counts["rows"] = counts.get("rows", 0) + len(rows)
-        for r in rows:
-            why = classify(r)
-            counts[why] = counts.get(why, 0) + 1
-            if why == "keep":
-                sym = (r.get("Symbol") or r.get("ACT Symbol")).strip()
-                kept[sym] = " ".join((r.get("Security Name") or "").split())
-    return sorted(kept.items()), counts, created
+    """{"EQUITY_L.csv": text, "sec_list.csv": text} -> (kept [(SYM.NS, name)], counts, bands).
+
+    kept: every EQ-series stock in NSE's equity list. bands: {SYM.NS: 2 | 5 | 10 | 20 | None}
+    from NSE's price band list, None for "No Band" (F&O stocks: a dynamic band instead)."""
+    for f in NSE_FILES:
+        if f not in texts:
+            raise ScanError("missing %s" % f)
+    eq = parse_csv(texts["EQUITY_L.csv"], "EQUITY_L.csv")
+    if not eq or "SYMBOL" not in eq[0] or "SERIES" not in eq[0]:
+        raise ScanError("EQUITY_L.csv does not look like NSE's equity list (no SYMBOL and SERIES columns)")
+    kept, counts = {}, {"rows": len(eq)}
+    for r in eq:
+        sym, series = r.get("SYMBOL", "").upper(), r.get("SERIES", "").upper()
+        if series not in SERIES_IN:
+            why = SERIES_WORDS.get(series, "series %s" % (series or "blank"))
+        elif not NSE_SYMBOL.match(sym):
+            why = "not a plain symbol"
+        else:
+            why = "keep"
+            kept[sym + ".NS"] = " ".join(r.get("NAME OF COMPANY", "").split())
+        counts[why] = counts.get(why, 0) + 1
+    bands = {}
+    sl = parse_csv(texts["sec_list.csv"], "sec_list.csv")
+    if sl and not {"SYMBOL", "SERIES", "BAND"} <= set(sl[0]):
+        raise ScanError("sec_list.csv does not look like NSE's price band list (no Symbol, Series, Band)")
+    for r in sl:
+        if r.get("SERIES", "").upper() not in SERIES_IN:
+            continue
+        sym = r.get("SYMBOL", "").upper() + ".NS"
+        band = r.get("BAND", "")
+        try:
+            bands[sym] = float(band)
+        except ValueError:
+            bands[sym] = None
+    return sorted(kept.items()), counts, bands
 
 
 # ---------------------------------------------------------------- daily setups
@@ -832,7 +801,7 @@ def money(x):
 def cmd_universe(a):
     t0 = time.time()
     texts = {}
-    for k, fname in enumerate(NASDAQ_FILES):
+    for k, fname in enumerate(NSE_FILES):
         if a.offline:
             p = os.path.join(a.offline, fname)
             if not os.path.exists(p):
@@ -843,12 +812,13 @@ def cmd_universe(a):
             if k and a.pause:
                 SLEEP(a.pause)
             try:
-                texts[fname] = http_get(NASDAQ_URL + fname, timeout=60)
+                texts[fname] = http_get(NSE_URL + fname, timeout=60)
             except urllib.error.HTTPError as e:
-                raise ScanError("nasdaqtrader.com answered HTTP %d for %s" % (e.code, fname))
+                raise ScanError("nsearchives.nseindia.com answered HTTP %d for %s.%s" % (e.code, fname, BY_HAND))
             except (urllib.error.URLError, OSError) as e:
-                raise ScanError("could not reach nasdaqtrader.com: %s" % getattr(e, "reason", e))
-    kept, counts, created = build_universe(texts)
+                raise ScanError("could not reach nsearchives.nseindia.com: %s.%s" % (getattr(e, "reason", e), BY_HAND))
+    kept, counts, bands = build_universe(texts)
+    stamp = parse_now(a.now).strftime("%Y-%m-%dT%H:%M:%SZ")
     if not a.no_write:
         d = os.path.dirname(a.out)
         if d:
@@ -856,19 +826,39 @@ def cmd_universe(a):
         with open(a.out, "w", encoding="utf-8") as fh:
             for sym, name in kept:
                 fh.write("%s|%s\n" % (sym, name))
+        write_json(a.bands, {"created_by": "trader-scanner", "as_of": stamp,
+                             "source": NSE_URL + "sec_list.csv",
+                             "note": "Price band in percent from the previous close; null = no band (F&O stocks "
+                                     "have a dynamic band instead). NSE revises bands often: run scan.py universe "
+                                     "each morning.",
+                             "bands": {s: bands.get(s) for s, _ in kept if s in bands}})
     dropped = {k: v for k, v in counts.items() if k not in ("keep", "rows")}
+    by_band = {}
+    for s, _ in kept:
+        b = bands.get(s, "missing") if s in bands else "missing"
+        by_band[b] = by_band.get(b, 0) + 1
     if a.json:
-        print(json.dumps({"count": len(kept), "rows": counts.get("rows", 0), "files_created": created,
-                          "dropped": dropped, "out": None if a.no_write else a.out,
+        print(json.dumps({"count": len(kept), "rows": counts.get("rows", 0), "dropped": dropped,
+                          "bands": {("none" if k is None else str(k)): v for k, v in by_band.items()},
+                          "out": None if a.no_write else a.out, "bands_out": None if a.no_write else a.bands,
                           "seconds": round(time.time() - t0, 1)}, indent=2))
     else:
-        print("Nasdaq Trader symbol directories%s: %s rows." % (
-            (", files of %s IST" % created) if created else "", "{:,}".format(counts.get("rows", 0))))
-        print("Kept %s US-listed common stocks, ordinary shares and ADRs." % "{:,}".format(len(kept)))
-        print("Dropped: " + ", ".join("%s %s" % ("{:,}".format(v), k)
-                                      for k, v in sorted(dropped.items(), key=lambda kv: -kv[1])) + ".")
+        print("NSE equity list: %s rows." % "{:,}".format(counts.get("rows", 0)))
+        print("Kept %s stocks in the EQ series (the ones you can trade intraday)." % "{:,}".format(len(kept)))
+        if dropped:
+            print("Dropped: " + ", ".join("%s %s" % ("{:,}".format(v), k)
+                                          for k, v in sorted(dropped.items(), key=lambda kv: -kv[1])) + ".")
+        parts = []
+        for k in (2.0, 5.0, 10.0, 20.0):
+            if by_band.get(k):
+                parts.append("%s at %g%%" % ("{:,}".format(by_band[k]), k))
+        if by_band.get(None):
+            parts.append("%s with no band (F&O stocks)" % "{:,}".format(by_band[None]))
+        if by_band.get("missing"):
+            parts.append("%s not in the band list" % "{:,}".format(by_band["missing"]))
+        print("Price bands: " + ", ".join(parts) + ".")
         if not a.no_write:
-            print("Wrote %s (one SYMBOL|Name a line)." % a.out)
+            print("Wrote %s (one SYMBOL|Name a line) and %s (for trader-risk)." % (a.out, a.bands))
     return 0 if kept else 1
 
 
@@ -1023,23 +1013,25 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Chart Scanner (trader-scanner): daily setups and opening-range breakouts.")
     sub = ap.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("universe", help="download Nasdaq Trader's lists -> trader/universe.txt")
+    p = sub.add_parser("universe", help="download NSE's lists -> trader/universe.txt and trader/bands.json")
     p.add_argument("--out", default=DEFAULT_UNIVERSE)
-    p.add_argument("--offline", metavar="DIR", help="a folder with nasdaqlisted.txt and otherlisted.txt")
+    p.add_argument("--offline", metavar="DIR", help="a folder with EQUITY_L.csv and sec_list.csv")
+    p.add_argument("--bands", default=DEFAULT_BANDS, help="where the price bands go (default %s)" % DEFAULT_BANDS)
+    p.add_argument("--now", help="pretend it is this IST time")
     p.add_argument("--no-write", action="store_true")
     p.add_argument("--pause", type=float, default=PAUSE)
     p.add_argument("--json", action="store_true")
 
     def common(p, min_price, min_volume):
         g = p.add_mutually_exclusive_group()
-        g.add_argument("--symbols", help="comma-separated tickers instead of the universe")
+        g.add_argument("--symbols", help="comma-separated symbols (INFY.NS,TCS.NS) instead of the universe")
         g.add_argument("--watchlist", metavar="FILE", help="a watchlist.json (hits) or a text file of tickers")
         p.add_argument("--universe", help="symbol list, one SYMBOL|Name a line (default %s)" % DEFAULT_UNIVERSE)
         p.add_argument("--limit", type=int, help="scan only the first N symbols")
         p.add_argument("--min-price", type=float, default=min_price)
         p.add_argument("--min-volume", type=int, default=min_volume)
         p.add_argument("--offline", metavar="PATH", help="fixture folder or file instead of the network")
-        p.add_argument("--now", help='pretend it is this time ("2026-10-19 10:15" IST, or ...Z)')
+        p.add_argument("--now", help='pretend it is this time ("2026-11-05 09:40" IST, or ...Z)')
         p.add_argument("--out", default="trader/watchlist.json")
         p.add_argument("--no-write", action="store_true")
         p.add_argument("--pause", type=float, default=PAUSE, help="seconds between requests (%.1f)" % PAUSE)

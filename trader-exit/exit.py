@@ -4,13 +4,18 @@ enter, so you know when to get out. Standard library only. Long side only.
 It never places an order.
 
     python3 exit.py plan                                    # from trader/entry.json: or-mid stop, 2R target
-    python3 exit.py plan --stop or-mid --target 1R --write  # the reel: stop 358.32, target 370.04
-    python3 exit.py plan --symbol TSLA --entry 364.18 --or-high 362.18 --or-low 354.47
-    python3 exit.py plan --stop atr:1.5 --offline TSLA.json # ATR needs the session's bars
-    python3 exit.py plan --symbol NVDA --entry 190.25 --setup level --stop pct:1
+    python3 exit.py plan --stop or-mid --target 1R --write  # the reel: stop 1149.80, target 1171.20
+    python3 exit.py plan --symbol INFY.NS --entry 1160.50 --or-high 1154.70 --or-low 1144.90
+    python3 exit.py plan --stop atr:1.5 --offline INFY.NS.json  # ATR needs the session's bars
+    python3 exit.py plan --symbol TCS.NS --entry 3012.40 --setup level --stop pct:1
     python3 exit.py show                                    # the current trader/plan.json
 
-Stops (a long's stop rounds DOWN to the cent, away from the entry):
+Prices land on the NSE tick: 0.01 under 250, 0.05 from 250, 0.10 from 1,000,
+0.50 from 5,000, 1.00 from 10,000 and 5.00 from 20,000 (NSE circular CMTR/67133,
+in force since 15 April 2025). NSE reviews each stock's tick every month from
+its price; --tick X sets it by hand.
+
+Stops (a long's stop rounds DOWN to the tick, away from the entry):
   or-mid     the opening-range midpoint (the default for an orb entry)
   or-low     the opening-range low
   price:X    your price
@@ -20,7 +25,7 @@ Stops (a long's stop rounds DOWN to the cent, away from the entry):
              bars by then it averages all of them and says so.
   A level setup has no opening-range default: give a stop.
 
-Targets (round half up to the cent):
+Targets (round half up to the tick):
   2R (default), 1R, 1.5R ...   entry + R x risk, where risk = entry - stop
   price:X                      your price
 
@@ -29,8 +34,9 @@ it, a risk under 0.05% of the price (too tight to survive the spread), an
 entry.json that has not triggered (unless you give --entry), a short (v2
 plans longs only).
 
-flat_by (default 15:15, or "flat_by" in trader/config.json): out by then, win
-or lose. (It would move up with an early close; the NSE has none.)
+flat_by (default 15:10, or "flat_by" in trader/config.json): out by then, win
+or lose, and before your broker squares off intraday (MIS) positions itself
+(Zerodha: 3:20 to 3:25 PM, for a fee of 50 rupees plus GST).
 "min_reward_risk" in the config (default 1.0) only warns here; trader-risk
 enforces it.
 
@@ -55,10 +61,13 @@ UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakesch
 BACKOFF = 5.0
 HOSTS = ("query2", "query1")
 INTERVALS = {"1m": 60, "5m": 300}
-DEFAULTS = {"flat_by": "15:15", "min_reward_risk": 1.0}
+DEFAULTS = {"flat_by": "15:10", "min_reward_risk": 1.0}
 ATR_BARS = 14
 MIN_RISK_PCT = Decimal("0.05")     # risk under 0.05% of the price is inside the spread's noise
 CENT = Decimal("0.01")
+TICKS = ((Decimal("250"), Decimal("0.01")), (Decimal("1000"), Decimal("0.05")), (Decimal("5000"), Decimal("0.10")),
+         (Decimal("10000"), Decimal("0.50")), (Decimal("20000"), Decimal("1.00")))
+TOP_TICK = Decimal("5.00")
 EPOCH = datetime.datetime(1970, 1, 1)
 NOTE = "A stop is a plan, not a guarantee: a gap or a fast market can fill past it."
 
@@ -126,7 +135,7 @@ def parse_now(text):
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise PlanError('--now wants an IST time like "2026-10-19 10:15" (or ...Z for UTC)')
+        raise PlanError('--now wants an IST time like "2026-11-05 09:40" (or ...Z for UTC)')
     if dt.tzinfo is None:
         return ist_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
@@ -189,6 +198,25 @@ def cents(x):
 def floor_cents(x):
     """A long's stop: round down, away from the entry."""
     return D(x).quantize(CENT, rounding=ROUND_FLOOR)
+
+
+def tick_for(price):
+    """The NSE tick size for a price (CMTR/67133, from 15 April 2025)."""
+    p = D(price)
+    for below, tick in TICKS:
+        if p < below:
+            return tick
+    return TOP_TICK
+
+
+def floor_tick(x, tick):
+    """Round down to a multiple of the tick (a long's stop, away from the entry)."""
+    return ((D(x) / tick).to_integral_value(rounding=ROUND_FLOOR) * tick).quantize(CENT)
+
+
+def round_tick(x, tick):
+    """Round half up to a multiple of the tick (a target)."""
+    return ((D(x) / tick).to_integral_value(rounding=ROUND_HALF_UP) * tick).quantize(CENT)
 
 
 def indian_commas(text):
@@ -261,11 +289,14 @@ def r_label(r):
 
 
 def compute(entry, stop_rule, stop_param, target_rule, target_param, or_high=None, or_low=None,
-            atr=None, atr_bars=None):
-    """The stop, the target and the risk, in exact cents. Raises PlanError with the reason."""
+            atr=None, atr_bars=None, tick=None):
+    """The stop, the target and the risk, on the NSE tick. Raises PlanError with the reason."""
     e = cents(entry)
     if e <= 0:
         raise PlanError("the entry price must be above ₹0")
+    tick = D(tick) if tick else tick_for(e)
+    if tick <= 0:
+        raise PlanError("the tick size must be above 0")
     detail = ""
     if stop_rule in ("or_mid", "or_low"):
         if or_high is None or or_low is None:
@@ -295,9 +326,10 @@ def compute(entry, stop_rule, stop_param, target_rule, target_param, or_high=Non
             num(a.quantize(Decimal("0.0001"))), atr_bars, " (fewer than 14 so far)" if atr_bars < ATR_BARS else "")
     else:
         raise PlanError("unknown stop rule %r" % stop_rule)
-    stop = floor_cents(raw)
+    stop = floor_tick(raw, tick)
     if stop != D(raw):
-        detail = (detail + ", rounded down" if detail else "₹%s rounded down" % num(raw))
+        what = "rounded down to the %s tick" % num(tick)
+        detail = (detail + ", " + what if detail else "₹%s %s" % (num(raw), what))
     if stop >= e:
         raise PlanError("the stop %s (%s) is at or above the entry %s: a long's stop goes under the entry"
                         % (money(stop), label, money(e)))
@@ -310,10 +342,10 @@ def compute(entry, stop_rule, stop_param, target_rule, target_param, or_high=Non
                         "survive the spread, normal wiggle would stop you out. Widen it."
                         % (money(risk), money(floor_risk.quantize(CENT, rounding=ROUND_HALF_UP)), money(e)))
     if target_rule == "r":
-        target = cents(e + target_param * risk)
+        target = round_tick(e + target_param * risk, tick)
         t_label = r_label(target_param)
     else:
-        target = cents(target_param)
+        target = round_tick(target_param, tick)
         t_label = None
     if target <= e:
         raise PlanError("the target %s is at or below the entry %s: a long's target goes above it"
@@ -323,7 +355,7 @@ def compute(entry, stop_rule, stop_param, target_rule, target_param, or_high=Non
         t_label = "your price (%sR)" % ratio(rr)
     return {"entry": e, "stop": stop, "stop_label": label, "stop_detail": detail, "target": target,
             "target_r": target_param if target_rule == "r" else rr, "target_label": t_label,
-            "risk": risk, "reward_risk": rr}
+            "risk": risk, "reward_risk": rr, "tick": tick}
 
 
 # ---------------------------------------------------------------- bars for ATR (same reader as trader-entry)
@@ -586,7 +618,7 @@ def build_plan(a, now_utc):
                             % (info["interval"], info["symbol"], day, len(bars)))
         atr, atr_n = atr_of(bars)
     c = compute(info["entry"], stop_rule, stop_param, target_rule, target_param, info["or_high"], info["or_low"],
-                atr, atr_n)
+                atr, atr_n, a.tick)
     flat_by, flat_note = resolve_flat_by(day, a.flat_by, cfg, entry_time)
     orr = None
     if info["or_high"] is not None and info["or_low"] is not None:
@@ -598,7 +630,8 @@ def build_plan(a, now_utc):
             "entry_bar": info["entry_bar"], "interval": info["interval"], "opening_range": orr,
             "stop": float(c["stop"]), "stop_rule": stop_rule, "stop_label": c["stop_label"],
             "target": float(c["target"]), "target_r": float(c["target_r"]), "target_label": c["target_label"],
-            "risk_per_share": float(c["risk"]), "reward_risk": float(c["reward_risk"]), "flat_by": flat_by,
+            "risk_per_share": float(c["risk"]), "reward_risk": float(c["reward_risk"]), "tick": float(c["tick"]),
+            "flat_by": flat_by,
             "stop_detail": c["stop_detail"], "created_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "note": NOTE}
     if atr is not None:
         plan["atr"] = round(atr, 4)
@@ -704,10 +737,11 @@ def main(argv=None):
     p.add_argument("--side", default="buy", choices=["buy", "long", "sell", "short"], help="v2: buy only")
     p.add_argument("--stop", help="or-mid (orb default), or-low, price:X, pct:X, atr:K")
     p.add_argument("--target", help="2R (default), 1R, 1.5R, price:X")
-    p.add_argument("--flat-by", help="HH:MM IST (default: config flat_by, 15:15)")
+    p.add_argument("--flat-by", help="HH:MM IST (default: config flat_by, 15:10)")
+    p.add_argument("--tick", type=float, help="the stock's NSE tick size (default: from the price)")
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--offline", metavar="PATH", help="saved Yahoo chart JSON for an atr stop")
-    p.add_argument("--now", help='pretend it is this IST time, e.g. "2026-10-19 10:15"')
+    p.add_argument("--now", help='pretend it is this IST time, e.g. "2026-11-05 09:40"')
     p.add_argument("--write", nargs="?", const="trader/plan.json", metavar="PATH",
                    help="save the plan (default trader/plan.json)")
     p.add_argument("--json", action="store_true")
