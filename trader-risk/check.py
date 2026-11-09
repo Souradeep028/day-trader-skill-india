@@ -54,6 +54,9 @@ What blocks an entry (on top):
   window        before no_entries_before or after no_entries_after (IST
                 time), or the market is closed (weekend, NSE holiday, outside
                 9:15 to the 15:30 close)
+  cool-off      max_losing_streak (2) losing trades in a row today, after charges
+  sector        max_entries_per_sector (2) entries in one NSE industry today
+                (trader/sectors.json, from NSE's Nifty 500 list), this batch included
   band          the entry is within 1% of the stock's upper price band (NSE
                 circuit limit: 2, 5, 10 or 20% from the previous close, from
                 trader/bands.json, written by trader-scanner's universe): at the
@@ -82,7 +85,7 @@ DEFAULTS = {
     "max_orders_per_day": 10, "min_reward_risk": 1.0, "require_stop": True,
     "no_entries_before": "09:30", "no_entries_after": "14:45", "flat_by": "15:10",
     "paper": True, "blocked": [], "allow_options": False, "allow_margin": False, "allow_short": False,
-    "intraday_leverage": 1, "charges": {},
+    "intraday_leverage": 1, "charges": {}, "max_losing_streak": 2, "max_entries_per_sector": 2,
 }
 ORDER_FIELDS = ("symbol", "exchange", "product", "side", "qty", "notional", "type", "time_in_force",
                 "limit_price", "stop_price", "trail_price", "trail_percent", "extended_hours", "client_order_id",
@@ -376,8 +379,31 @@ def placed_today(state, today):
 
 # ---------------------------------------------------------------- the check
 
+def losing_streak(state, today, rates=None):
+    """Losing trades in a row at the end of today: each symbol's fills paired back to flat, P&L after
+    charges, in the order they closed. (paper and live alike: a loss is a loss)"""
+    per, closed = {}, []
+    for r in (state or {}).get("orders", []):
+        if r.get("status") != "filled" or rec_day(r) != today:
+            continue
+        sym = str(r.get("symbol", "")).upper()
+        d = per.setdefault(sym, {"pos": 0.0, "cash": 0.0})
+        q, px, side = _f(r.get("qty")) or 0, _f(r.get("price")) or 0, r.get("side")
+        d["cash"] += (-1 if side == "buy" else 1) * q * px - order_charges(side, q * px, rates)["total"]
+        d["pos"] += q if side == "buy" else -q
+        if abs(d["pos"]) < 1e-9:
+            closed.append(round(d["cash"], 2))
+            per[sym] = {"pos": 0.0, "cash": 0.0}
+    n = 0
+    for pnl in reversed(closed):
+        if pnl > 0:
+            break
+        n += 1
+    return n, closed
+
+
 def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None,
-          bands=None, prev_close=None):
+          bands=None, prev_close=None, sectors=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
     now          naive UTC (default: the real clock); its IST date is "today"
@@ -405,6 +431,15 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             loss_today += ml
     placed_keys = {(str(r.get("symbol", "")).upper(), r.get("side")) for r in done_today}
     win_reasons, win_warns = window_check(now_ist, c)
+    streak, closed_today = losing_streak(state, today, c.get("charges"))
+    sectors = {str(k).upper(): v for k, v in (sectors or {}).items()}
+    sector_count = {}
+    for r in entries_today:
+        sec = sectors.get(str(r.get("symbol", "")).upper())
+        if sec:
+            sector_count[sec] = sector_count.get(sec, 0) + 1
+    if c.get("max_entries_per_sector") and not sectors:
+        top_warn.append("no trader/sectors.json: the sector cap (max_entries_per_sector) is off")
     rates = c.get("charges") or {}
     bands = {str(k).upper(): v for k, v in (bands or {}).items()}
     prev_close = {str(k).upper(): _f(v) for k, v in (prev_close or {}).items() if _f(v)}
@@ -662,6 +697,18 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
                              "is %d a day" % (len(entries_today), batch_entries, cap_t))
             later.extend(win_reasons)
+            cap_s = int(c.get("max_losing_streak") or 0)
+            if cap_s and streak >= cap_s:
+                later.append("cool-off: %d losing trades in a row today (%s), your limit is %d: no new entries "
+                             "today" % (streak, ", ".join(("-" if x < 0 else "") + money(abs(x)) for x in closed_today[-streak:]),
+                                         cap_s))
+            cap_sec = int(c.get("max_entries_per_sector") or 0)
+            sec = sectors.get(sym)
+            if cap_sec and sec and sector_count.get(sec, 0) >= cap_sec:
+                later.append("sector: %d %s entries today already, your limit is %d a sector: one move in the "
+                             "sector would hit them all" % (sector_count[sec], sec, cap_sec))
+            elif sectors and not sec:
+                warns.append("%s is not in trader/sectors.json: its sector is unknown" % sym)
             band = bands.get(sym, "unknown") if bands else "unknown"
             pc = prev_close.get(sym)
             if band not in ("unknown", None) and _f(band) and pc and ref:
@@ -711,6 +758,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         if verdict == "PASS":
             if kind == "entry" and side in ("buy", "sell"):
                 batch_entries += 1
+                if sectors.get(sym):
+                    sector_count[sectors[sym]] = sector_count.get(sectors[sym], 0) + 1
                 batch_loss += max_loss or 0.0
             if side == "buy":
                 if value is not None:
@@ -842,6 +891,7 @@ def main(argv=None):
     ap.add_argument("--prices", default="trader/prices.json")
     ap.add_argument("--state", default="trader/state/broker.json", help="what trader-broker placed today")
     ap.add_argument("--bands", default="trader/bands.json", help="NSE price bands (trader-scanner: scan.py universe)")
+    ap.add_argument("--sectors", default="trader/sectors.json", help="each stock's NSE industry, for the sector cap")
     ap.add_argument("--now", help="pretend it is this IST time, e.g. \"2026-11-05 09:40\"")
     ap.add_argument("--today", help="YYYY-MM-DD (default: today in India)")
     ap.add_argument("--out", default="trader/state/risk.json", help="where the verdicts are recorded")
@@ -862,7 +912,9 @@ def main(argv=None):
         prices, times = load_prices(pdoc)
         state = read_json(a.state, "broker state", required=False)
         bands = load_bands(read_json(a.bands, "price bands", required=False))
-        res = check(orders, cfg, portfolio, prices, state, a.today, now, times, bands, load_prev_close(pdoc))
+        sdoc = read_json(a.sectors, "sectors", required=False) or {}
+        res = check(orders, cfg, portfolio, prices, state, a.today, now, times, bands, load_prev_close(pdoc),
+                    sdoc.get("sectors", sdoc) if isinstance(sdoc, dict) else {})
         if pdoc.get("as_of"):
             res["prices_as_of"] = pdoc["as_of"]
         if not a.no_write:

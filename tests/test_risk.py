@@ -22,7 +22,10 @@ QUOTE_TIME = datetime.datetime(2026, 11, 5, 4, 15)   # Yahoo's INFY quote 1164.0
 # long-term rules with every day-trade check switched off: the account checks still hold
 LT = {"budget": 100000, "cash_buffer_pct": 10, "max_position_pct": 25, "max_order_inr": 20000, "min_order_inr": 500,
       "max_orders_per_day": 10, "require_stop": False, "no_entries_before": None, "no_entries_after": None,
-      "max_trades_per_day": 0, "max_daily_loss_inr": 0, "max_loss_per_trade_inr": 0, "min_reward_risk": 0}
+      "max_trades_per_day": 0, "max_daily_loss_inr": 0, "max_loss_per_trade_inr": 0, "min_reward_risk": 0,
+      "max_losing_streak": 0, "max_entries_per_sector": 0}
+SECTORS = {"INFY.NS": "Information Technology", "TCS.NS": "Information Technology", "HCLTECH.NS": "Information Technology",
+           "SBIN.NS": "Financial Services"}
 
 
 def at(text):
@@ -259,6 +262,51 @@ class DayTradeChecks(unittest.TestCase):
         self.assertIn("check nseindia.com", " ".join(self.one(infy(), now="2027-01-04 10:00")["warnings"]))
         with self.assertRaises(check.RiskError):
             self.one(infy(), no_entries_before="9.30am")
+
+    def fills(self, sym, buy, sell, qty=10, day=TODAY):
+        return [{"symbol": sym, "side": "buy", "status": "filled", "date": day, "qty": str(qty), "price": buy},
+                {"symbol": sym, "side": "sell", "status": "filled", "date": day, "qty": str(qty), "price": sell}]
+
+    def test_cool_off_after_two_losing_trades(self):
+        two = {"orders": self.fills("TCS.NS", 2500, 2490) + self.fills("SBIN.NS", 1018, 1010)}
+        self.assertEqual(check.losing_streak(two, TODAY)[0], 2)
+        res = check.check([infy()], cfg(), state=two, now=at(NOW))
+        self.assertIn("cool-off: 2 losing trades in a row today (-₹126.50, -₹90.76), your limit is 2", reasons(res))
+        # TCS: 10 x -10.00 = -100.00 less 26.50 of charges; SBIN: 10 x -8.00 = -80.00 less 10.76
+        won_last = {"orders": two["orders"] + self.fills("ITC.NS", 280, 281.5, qty=500)}
+        self.assertEqual(check.losing_streak(won_last, TODAY)[0], 0)
+        self.assertEqual(verdicts(check.check([infy()], cfg(), state=won_last, now=at(NOW))), ["PASS"])
+        # a trade that broke even on price lost its charges: it counts as a loss
+        flat = {"orders": self.fills("TCS.NS", 2500, 2500)}
+        self.assertEqual(check.losing_streak(flat, TODAY)[0], 1)
+        yesterday = {"orders": self.fills("TCS.NS", 2500, 2490, day="2026-11-04") * 1 +
+                     self.fills("SBIN.NS", 1018, 1010, day="2026-11-04")}
+        self.assertEqual(verdicts(check.check([infy()], cfg(), state=yesterday, now=at(NOW))), ["PASS"])
+        self.assertEqual(verdicts(check.check([infy()], cfg(max_losing_streak=3), state=two, now=at(NOW))), ["PASS"])
+
+    def test_sector_cap(self):
+        two_it = {"orders": [placed("TCS.NS"), placed("HCLTECH.NS")]}
+        res = check.check([infy()], cfg(), state=two_it, now=at(NOW), sectors=SECTORS)
+        self.assertIn("sector: 2 Information Technology entries today already, your limit is 2", reasons(res))
+        res = check.check([infy()], cfg(), state={"orders": [placed("TCS.NS")]}, now=at(NOW), sectors=SECTORS)
+        self.assertEqual(verdicts(res), ["PASS"])
+        batch = [bracket(s, 2, 400.0, 390.0, 430.0) for s in ("TCS.NS", "HCLTECH.NS", "INFY.NS")]
+        res = check.check(batch, cfg(), now=at(NOW), sectors=SECTORS)
+        self.assertEqual(verdicts(res), ["PASS", "PASS", "BLOCK"])
+        self.assertIn("sector:", reasons(res, 2))
+        res = check.check([infy()], cfg(), now=at(NOW), sectors={"SBIN.NS": "Financial Services"})
+        self.assertIn("INFY.NS is not in trader/sectors.json", warnings(res))
+        res = check.check([infy()], cfg(), now=at(NOW))
+        self.assertIn("the sector cap (max_entries_per_sector) is off", " ".join(res["warnings"]))
+
+    def test_the_shipped_sector_map(self):
+        with open(os.path.join(ROOT, "trader", "sectors.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual(len(doc["sectors"]), 501)                          # NSE's Nifty 500 list
+        self.assertEqual(doc["sectors"]["INFY.NS"], "Information Technology")
+        self.assertEqual(doc["sectors"]["M&M.NS"], "Automobile and Auto Components")
+        with open(os.path.join(ROOT, "trader", "nifty50.txt")) as fh:
+            self.assertTrue(all(l.strip() in doc["sectors"] for l in fh if l.strip()))
 
     def test_the_window_uses_india_time_not_the_machine(self):
         self.assertEqual(check.to_ist(at("2026-11-05 09:40")), datetime.datetime(2026, 11, 5, 9, 40))
