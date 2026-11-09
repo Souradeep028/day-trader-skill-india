@@ -16,7 +16,7 @@ alerts = load("trader-alerts", "alerts")
 QDIR = os.path.join(FIX, "trader-alerts")
 PLAN = os.path.join(FIX, "trader-budget", "plan-infy.json")
 DT = datetime.datetime
-UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
+UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Souradeep028/day-trader-skill-india)"
 
 # NSE equity segment trading holidays for 2026 (NSE's holiday circular). Every weekday missing from
 # six months of real daily bars (May to November 2026) is on it, and nothing on it traded.

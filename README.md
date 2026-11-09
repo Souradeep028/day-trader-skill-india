@@ -17,6 +17,12 @@ NSE tick. The Time Machine replays the rest of the session 10,000 times from
 the stock's own recent bars, plus every past day the same setup fired, and
 tells you the honest odds, after charges.
 
+Adapted for India from Jake Schincariol's
+[day-trader-skill](https://github.com/Jakeschincariol/day-trader-skill)
+(MIT), which trades US stocks. The method and most of the code are his;
+the NSE calendar, ticks, price bands, charges, Kite orders, paper trading,
+Indian data sources and the tests on NSE data are this fork's.
+
 And no trade goes through until you say yes. Nothing in this pack can place
 an order on its own. Paper trading is the default, and on paper the pack is
 its own broker: nothing leaves your computer.
@@ -31,7 +37,7 @@ its own broker: nothing leaves your computer.
 Paste this into Claude:
 
 ```
-https://github.com/Jakeschincariol/day-trader-skill
+https://github.com/Souradeep028/day-trader-skill-india
 
 install skill
 ```
@@ -39,17 +45,17 @@ install skill
 Or as a plugin, in Claude Code:
 
 ```
-/plugin marketplace add Jakeschincariol/day-trader-skill
-/plugin install day-trader-skill@day-trader-skill
+/plugin marketplace add Souradeep028/day-trader-skill-india
+/plugin install day-trader-skill-india@day-trader-skill-india
 ```
 
 Claude Code namespaces plugin skills, so installed as a plugin they show up as
-`/day-trader-skill:trader-scanner` and so on. Copy the folders instead if you want
+`/day-trader-skill-india:trader-scanner` and so on. Copy the folders instead if you want
 plain `/trader-scanner`:
 
 ```bash
-git clone https://github.com/Jakeschincariol/day-trader-skill.git
-cp -r day-trader-skill/trader-* ~/.claude/skills/
+git clone https://github.com/Souradeep028/day-trader-skill-india.git
+cp -r day-trader-skill-india/trader-* ~/.claude/skills/
 ```
 
 Project-local instead of global: copy the same folders into your repo's
@@ -254,4 +260,4 @@ trader/             nifty50.txt, banknifty.txt (NSE's index lists)
 tests/              unittest suite + offline fixtures
 ```
 
-MIT. Made by [Jake Schincariol](https://opusjake.ai).
+MIT. Made by [Jake Schincariol](https://opusjake.ai); adapted for the NSE by [Souradeep028](https://github.com/Souradeep028).
