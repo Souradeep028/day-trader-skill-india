@@ -53,6 +53,8 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-11-05 09:40"  # pin the clock
 | `trader/bands.json` | each stock's NSE price band (trader-scanner: `scan.py universe`) |
 | `trader/sectors.json` | each Nifty 500 stock's NSE industry, for the sector cap (copy it from this pack's `trader/` folder) |
 | `trader/events.json` | results dates, ex-dates and whole-market events (trader-analyst: `results.py event`) |
+| `trader/forward.json` | trader-broker's forward test: its verdicts unlock live trading and set the live ramp |
+| `trader/state/limits.json` | the limits at the day's first check: a limit loosened later waits for the next day |
 | `trader/surveillance.json` | NSE's ASM and GSM lists (trader-scanner: `scan.py surveillance`); missing or over 7 days old is a warning |
 | `trader/state/broker.json` | what was placed today: duplicates, trades per day, daily loss |
 | `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
@@ -88,6 +90,8 @@ batch that is fine order by order but breaks a limit together is caught.
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) before `no_entries_before` (09:30) or after `no_entries_after` (14:45), or the NSE is closed |
 | band | (entries) a buy within 1% of the upper price band, or a short within 1% of the lower one: the previous close plus or minus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |
+| live | (entries, live account) no PASSED forward test on BOTH the shadow replay and your paper trades within 30 days; or the live stop: a 20-trade live block under the backtest's low end, or the live trades 5 R under their best. A constant in the code (`LIVE_NEEDS_FORWARD_PASS`), not a config key. Live size ramps 25 %, 50 %, 100 % of the max loss over good 20-trade blocks |
+| held limits | a limit loosened after the day's first check (max loss, trades, charges cap, cool-off, window, paper to live, a symbol off the blocked list, and the rest) keeps the morning's stricter value until the next day, with a warning; tightening applies at once |
 | cool-off | (entries) `max_losing_streak` (2) losing trades in a row today, after charges: no new entries for the rest of the day |
 | drawdown | (entries) while the account is `drawdown_cut_pct` (5) % or more under its peak, the loss check uses `drawdown_size_factor` (0.5) of the max loss per trade, and says so |
 | weekly / monthly loss | (entries) the loss realised since Monday (since the 1st) plus this trade's max loss over `max_weekly_loss_inr` (3,000) or `max_monthly_loss_inr` (6,000) |
@@ -130,6 +134,13 @@ How the numbers work:
   in one industry move together (one IT selloff can stop out three IT
   trades at once), so the sector cap keeps the day's risk spread. A
   breakeven trade on price still lost its charges, so it counts as a loss.
+- **Why live is locked in the code**: every test in this pack so far found
+  no intraday rule that beats charges. Switching `"paper"` to false is one
+  line; the lock means real money waits until a frozen rule has PASSED its
+  forward test, and then starts at a quarter of the size, stepping up only
+  while the live results hold up, and stopping by itself when they do not.
+  The held limits do the same for the afternoon after a loss: limits only
+  get looser overnight.
 - **Results, expiry and surveillance**: a stop does not protect against a
   gap on results, so the stock is off limits that day and the next.
   Expiry days are only a warning by default: the edge report found skipping

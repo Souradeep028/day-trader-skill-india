@@ -54,6 +54,15 @@ What blocks an entry (on top):
   daily loss    the max losses at the stops of today's entries plus this one
                 over max_daily_loss_inr (win or lose, each counts in full)
   trades        max_trades_per_day entries already placed today
+  live          on a live account ("paper": false): no PASSED forward test (trader-broker's
+                forward.py, trader/forward.json) on the shadow replay AND your paper
+                trades, both within 30 days; or the live stop (a 20-trade live block
+                under the backtest's low end, or the live trades 5 R under their best).
+                Locked in the code (LIVE_NEEDS_FORWARD_PASS), not the config. Live size
+                ramps 25 %, 50 %, 100 % of the max loss over good 20-trade blocks
+  held limits   the day's first check records the limits (trader/state/limits.json);
+                a limit loosened later that day keeps the morning's stricter value
+                until the next day, with a warning. Tightening applies at once
   window        before no_entries_before or after no_entries_after (IST
                 time), or the market is closed (weekend, NSE holiday, outside
                 9:15 to the 15:30 close)
@@ -167,6 +176,28 @@ INDEX = "^NSEI"
 MWCB_PCT = 10.0            # a 10 % move in Nifty or the Sensex halts all trading (market-wide circuit breaker)
 CALENDAR_YEARS = (2026,)
 CHARGES_READ = "2026-11-08"   # when CHARGES was last checked against zerodha.com/charges
+# The live lock. Deliberately a constant in the code, not a config key: a bad afternoon should not be able to
+# switch it off. Live entries need trader-broker's forward test to have PASSED, on the shadow replay AND on
+# your own paper trades, with both verdicts no older than FORWARD_FRESH_DAYS.
+LIVE_NEEDS_FORWARD_PASS = True
+FORWARD_FRESH_DAYS = 30
+RAMP = (0.25, 0.5, 1.0)       # live size after 0, 1 and 2+ good 20-trade blocks
+RAMP_BLOCK = 20
+LIVE_STOP_R = 5.0             # live trading stops when the live trades fall this many R from their best
+# The day's limits hold all day: a limit loosened after the first check of the day waits for the next day.
+# "low": a lower value is stricter (0 or none is off, the loosest); "high": higher is stricter;
+# True / False: that value is the stricter one.
+LIMIT_RULES = {
+    "max_loss_per_trade_inr": "low", "max_daily_loss_inr": "low", "max_weekly_loss_inr": "low",
+    "max_monthly_loss_inr": "low", "max_same_side_risk_inr": "low", "max_trades_per_day": "low",
+    "max_orders_per_day": "low", "max_losing_streak": "low", "max_entries_per_sector": "low",
+    "max_charges_pct_of_risk": "low", "max_order_inr": "low", "max_position_pct": "low",
+    "max_index_move_pct": "low", "intraday_leverage": "low", "drawdown_cut_pct": "low",
+    "drawdown_size_factor": "low", "min_reward_risk": "high", "cash_buffer_pct": "high",
+    "require_stop": True, "paper": True, "skip_results_days": True, "skip_ex_dates": True,
+    "skip_market_event_days": True, "block_surveillance": True, "skip_expiry_days": True,
+    "allow_short": False, "allow_margin": False, "allow_options": False,
+}
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)
@@ -510,6 +541,104 @@ def max_loss_now(c, dd):
     return base, None
 
 
+def limits_snapshot(c):
+    keys = list(LIMIT_RULES) + ["no_entries_before", "no_entries_after", "blocked"]
+    return {k: c.get(k) for k in keys}
+
+
+def hold_morning_limits(c, morning):
+    """The stricter of the morning's limits and today's config, key by key. Returns (values, warnings)."""
+    eff, warns = {}, []
+    for k, rule in LIMIT_RULES.items():
+        if k not in morning:
+            continue
+        m, now_ = morning[k], c.get(k)
+        if rule == "low":
+            mv, nv = _f(m) or float("inf"), _f(now_) or float("inf")
+            if nv > mv:
+                eff[k] = m
+        elif rule == "high":
+            if (_f(now_) or 0) < (_f(m) or 0):
+                eff[k] = m
+        else:
+            if bool(m) == rule and bool(now_) != rule:
+                eff[k] = m
+    for k, later in (("no_entries_before", True), ("no_entries_after", False)):
+        if k not in morning:
+            continue
+        try:
+            mv, nv = hhmm(morning[k], k), hhmm(c.get(k), k)
+        except RiskError:
+            continue
+        if mv is not None and (nv is None or (nv < mv if later else nv > mv)):
+            eff[k] = morning[k]
+    gone = {str(x).upper() for x in morning.get("blocked") or []} - {str(x).upper() for x in c.get("blocked") or []}
+    if gone:
+        eff["blocked"] = sorted({str(x).upper() for x in c.get("blocked") or []} | gone)
+    for k, v in sorted(eff.items()):
+        warns.append("%s was loosened today (to %s); this morning's %s holds until tomorrow: limits only get "
+                     "looser overnight" % (k, json.dumps(c.get(k)), json.dumps(v)))
+    return eff, warns
+
+
+def live_gate(forward, today):
+    """(open, why). Live entries need a PASSED forward test on the shadow replay and on paper, both fresh."""
+    if not forward:
+        return False, "no forward test (trader/forward.json): freeze a rule with forward.py start and prove it"
+    v = forward.get("verdicts") or {}
+    bad = []
+    d_today = datetime.date.fromisoformat(today)
+    for kind in ("shadow", "paper"):
+        x = v.get(kind) or {}
+        if x.get("state") != "passed":
+            bad.append("%s %s" % (kind, x.get("state") or "not run"))
+        elif (d_today - datetime.date.fromisoformat(x["date"])).days > FORWARD_FRESH_DAYS:
+            bad.append("%s passed on %s, over %d days ago: run forward.py status again" % (kind, x["date"],
+                                                                                          FORWARD_FRESH_DAYS))
+    if bad:
+        return False, "the forward test has not passed (%s)" % ", ".join(bad)
+    return True, ""
+
+
+def live_ramp(forward, state, today, rates=None):
+    """Live size and the live stop. Live trades since the forward test passed, in 20-trade blocks: each block
+    whose average R (after charges, over the max loss approved for it) stays at or above the backtest's low end
+    moves the size up a step, 25 % -> 50 % -> 100 %. A block under it, or the live trades falling LIVE_STOP_R from
+    their best, stops live entries."""
+    v = (forward or {}).get("verdicts") or {}
+    since = max([x.get("passed_on") or "" for x in (v.get("shadow") or {}, v.get("paper") or {})] or [""])
+    low = ((forward or {}).get("expected") or {}).get("low")
+    low = 0.0 if low is None else max(low, 0.0)
+    planned = {}
+    for r in (state or {}).get("orders", []):
+        if r.get("status") == "approved" and r.get("kind", "entry") == "entry" and _f(r.get("max_loss")):
+            planned[(rec_day(r), str(r.get("symbol", "")).upper())] = _f(r["max_loss"])
+    live_state = {"orders": [r for r in (state or {}).get("orders", []) if not r.get("paper")]}
+    rs = []
+    for d, sym, net in closed_trades(live_state, since or "0000", today, rates):
+        ml = planned.get((d, sym))
+        if ml:
+            rs.append(net / ml)
+    stage, stop = 0, None
+    for b in range(len(rs) // RAMP_BLOCK):
+        block = rs[b * RAMP_BLOCK:(b + 1) * RAMP_BLOCK]
+        avg = sum(block) / len(block)
+        if avg < low - 1e-9:
+            stop = ("live trades %d to %d averaged %+.2f R, under the backtest's low end %+.2f R"
+                    % (b * RAMP_BLOCK + 1, (b + 1) * RAMP_BLOCK, avg, low))
+            break
+        stage += 1
+    cum = peak = worst = 0.0
+    for r in rs:
+        cum += r
+        peak = max(peak, cum)
+        worst = max(worst, peak - cum)
+    if not stop and worst >= LIVE_STOP_R - 1e-9:
+        stop = "the live trades fell %.1f R from their best, past %.0f R" % (worst, LIVE_STOP_R)
+    return {"trades": len(rs), "stage": stage, "factor": RAMP[min(stage, len(RAMP) - 1)], "stop": stop,
+            "since": since}
+
+
 def staleness(d):
     """Warnings for the dates this pack has to be told: next year's NSE holidays (published in December) and
     the broker's charges (checked once a year)."""
@@ -574,7 +703,7 @@ def load_events(doc):
 
 
 def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None,
-          bands=None, prev_close=None, sectors=None, events=None, surveillance=None):
+          bands=None, prev_close=None, sectors=None, events=None, surveillance=None, forward=None, morning=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
     now          naive UTC (default: the real clock); its IST date is "today"
@@ -583,11 +712,17 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     prev_close   {SYM: previous close}, from trader/prices.json
     sectors      {SYM: industry}, from trader/sectors.json
     events       {SYM: [(date, what)]}, from trader/events.json (results dates)
-    surveillance {"symbols": {SYM: list}, "updated": date}, from trader/surveillance.json"""
+    surveillance {"symbols": {SYM: list}, "updated": date}, from trader/surveillance.json
+    forward      trader-broker's forward test (trader/forward.json): its verdicts unlock live trading
+    morning      {"date", "limits"}: the limits at the day's first check (trader/state/limits.json)"""
     c = dict(DEFAULTS)
     c.update(inr_keys(cfg or {}))
     prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
     now_utc = now or parse_now(None)
+    held_warns = []
+    if morning and morning.get("date") == (today or to_ist(now_utc).date().isoformat()):
+        eff, held_warns = hold_morning_limits(c, morning.get("limits") or {})
+        c.update(eff)
     now_ist = to_ist(now_utc)
     today = today or now_ist.date().isoformat()
     acct, top_warn = account(c, portfolio, prices)
@@ -686,8 +821,25 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     seen = set()
     results = []
     batch_entries, batch_loss = 0, 0.0
-    if not c.get("paper", True):
+    live = not c.get("paper", True)
+    if live:
         top_warn.append("LIVE account (\"paper\": false): these orders use real money")
+    top_warn.extend(held_warns)
+    gate_open, gate_why = (True, "")
+    ramp = None
+    if live and LIVE_NEEDS_FORWARD_PASS:
+        gate_open, gate_why = live_gate(forward, today)
+        if gate_open:
+            ramp = live_ramp(forward, state, today, c.get("charges"))
+            if ramp["stop"]:
+                gate_open, gate_why = False, "live stop: %s. Back to paper: re-run the forward test" % ramp["stop"]
+            elif ramp["factor"] < 1:
+                top_warn.append("live ramp: %d live trades since the forward test passed (%s), so %d %% size: the max "
+                                "loss per trade is %s until the next good block of %d"
+                                % (ramp["trades"], ramp["since"], int(ramp["factor"] * 100),
+                                   money((_f(c.get("max_loss_per_trade_inr")) or 0) * ramp["factor"]), RAMP_BLOCK))
+    if ramp and ramp["factor"] < 1 and loss_cap:
+        loss_cap = round(min(loss_cap, (_f(c.get("max_loss_per_trade_inr")) or 0) * ramp["factor"]), 2)
     top_warn.extend(win_warns)
     top_warn.extend(day_warn)
 
@@ -978,6 +1130,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                              "sector would hit them all" % (sector_count[sec], sec, cap_sec))
             elif sectors and not sec:
                 warns.append("%s is not in trader/sectors.json: its sector is unknown" % sym)
+            if not gate_open:
+                later.append("live: %s. Live entries are locked; paper trading is open" % gate_why)
             if index_reason:
                 later.append(index_reason)
             for d, what, ekind in events.get("MARKET", []):
@@ -1029,8 +1183,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                             % (_p(ref), REF_WORDS.get(ref_from, ref_from), _p(stop),
                                _p(target) if target else "none", _p(risk_ps)))
                 info.append("max loss %s with %s charges%s, reward:risk after charges %s%s"
-                            % (money(max_loss), money(charges or 0), (" (limit %s)" % money(c["max_loss_per_trade_inr"]))
-                               if _f(c.get("max_loss_per_trade_inr")) else "",
+                            % (money(max_loss), money(charges or 0), (" (limit %s)" % money(loss_cap))
+                               if loss_cap else "",
                                ("%.2f" % rr) if rr is not None else "n/a",
                                (" (min %s)" % _num(c["min_reward_risk"])) if _f(c.get("min_reward_risk")) else ""))
             if daily or cap_t:
@@ -1205,6 +1359,10 @@ def main(argv=None):
     ap.add_argument("--events", default="trader/events.json", help="results dates (trader-analyst: results.py event)")
     ap.add_argument("--surveillance", default="trader/surveillance.json",
                     help="NSE's ASM and GSM lists (trader-scanner: scan.py surveillance)")
+    ap.add_argument("--forward", default="trader/forward.json",
+                    help="trader-broker's forward test: its verdicts unlock live trading")
+    ap.add_argument("--limits-state", default="trader/state/limits.json",
+                    help="the day's first limits: loosening waits for the next day")
     ap.add_argument("--now", help="pretend it is this IST time, e.g. \"2026-11-05 09:40\"")
     ap.add_argument("--today", help="YYYY-MM-DD (default: today in India)")
     ap.add_argument("--out", default="trader/state/risk.json", help="where the verdicts are recorded")
@@ -1226,10 +1384,24 @@ def main(argv=None):
         state = read_json(a.state, "broker state", required=False)
         bands = load_bands(read_json(a.bands, "price bands", required=False))
         sdoc = read_json(a.sectors, "sectors", required=False) or {}
+        today = a.today or to_ist(now).date().isoformat()
+        morning = read_json(a.limits_state, "the day's limits", required=False)
+        if not morning or morning.get("date") != today:
+            c0 = dict(DEFAULTS)
+            c0.update(inr_keys(cfg or {}))
+            morning = {"date": today, "limits": limits_snapshot(c0)}
+            if not a.no_write:
+                d = os.path.dirname(a.limits_state)
+                if d:
+                    os.makedirs(d, exist_ok=True)
+                with open(a.limits_state, "w", encoding="utf-8") as fh:
+                    json.dump(morning, fh, indent=2)
+                    fh.write("\n")
         res = check(orders, cfg, portfolio, prices, state, a.today, now, times, bands, load_prev_close(pdoc),
                     sdoc.get("sectors", sdoc) if isinstance(sdoc, dict) else {},
                     load_events(read_json(a.events, "events", required=False)),
-                    read_json(a.surveillance, "surveillance lists", required=False))
+                    read_json(a.surveillance, "surveillance lists", required=False),
+                    read_json(a.forward, "forward test", required=False), morning)
         if pdoc.get("as_of"):
             res["prices_as_of"] = pdoc["as_of"]
         if not a.no_write:

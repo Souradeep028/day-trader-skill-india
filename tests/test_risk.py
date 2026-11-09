@@ -138,7 +138,8 @@ class TheReel(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = check.main(["--orders", INFY_PATH, "--config", CFG_PATH, "--portfolio", none,
-                                   "--prices", none, "--state", none, "--bands", none, "--now", NOW, "--out", out])
+                                   "--prices", none, "--state", none, "--bands", none, "--now", NOW, "--out", out,
+                                   "--limits-state", os.path.join(d, "limits.json"), "--forward", none])
             text = buf.getvalue()
             self.assertEqual(code, 0)
             self.assertIn("PASS  #1 buy INFY.NS 41 shares, entry", text)
@@ -582,7 +583,8 @@ class Cli(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = check.main(["--orders", DELIVERY_PATH, "--config", c, "--portfolio", none, "--prices", pp,
-                                   "--state", none, "--today", LT_TODAY, "--out", out])
+                                   "--state", none, "--today", LT_TODAY, "--out", out,
+                                   "--limits-state", os.path.join(d, "limits.json")])
             self.assertEqual(code, 0, buf.getvalue())
             self.assertIn("5 passed, 0 blocked", buf.getvalue())
             with open(out) as fh:
@@ -855,6 +857,126 @@ class Upkeep(unittest.TestCase):
         self.assertTrue(any("read from zerodha.com/charges on 2026-11-08, 367 days ago" in w for w in old))
         res = check.check([infy()], cfg(), now=at("2026-12-02 10:00"), surveillance={"symbols": {}})
         self.assertTrue(any("2027's trading holidays" in w for w in res["warnings"]))
+
+
+def passed(day=TODAY, low=-0.1, shadow="passed", paper="passed"):
+    return {"expected": {"avg_R": 0.08, "low": low}, "verdicts": {
+        "shadow": {"state": shadow, "date": day, "passed_on": day if shadow == "passed" else None},
+        "paper": {"state": paper, "date": day, "passed_on": day if paper == "passed" else None}}}
+
+
+def live_trades(results, start="2026-11-06"):
+    """Approved live entries with a 500 max loss and their fills: each result in R is 500 x R rupees after
+    charges (the sale price is set so the round trip nets exactly that)."""
+    orders = []
+    d = datetime.date.fromisoformat(start)
+    for n, r in enumerate(results):
+        day = (d + datetime.timedelta(days=n)).isoformat()
+        sym = "S%d.NS" % n
+        buy = 100.0
+        target_net = 500.0 * r
+        sell = buy
+        for _ in range(60):                                  # solve 100 x (sell - buy) - charges = target_net
+            ch = check.order_charges("buy", 100 * buy)["total"] + check.order_charges("sell", 100 * sell)["total"]
+            sell = buy + (target_net + ch) / 100.0
+        orders += [{"status": "approved", "date": day, "symbol": sym, "side": "buy", "kind": "entry", "max_loss": 500.0},
+                   {"status": "filled", "date": day, "symbol": sym, "side": "buy", "qty": "100", "price": buy},
+                   {"status": "filled", "date": day, "symbol": sym, "side": "sell", "qty": "100", "price": round(sell, 2)}]
+    return {"orders": orders}
+
+
+class LiveLock(unittest.TestCase):
+    def one(self, forward=None, state=None, now="2026-12-15 10:00", **over):
+        c = dict(cfg(**over))
+        c["paper"] = over.get("paper", False)
+        return check.check([infy()], c, now=at(now), forward=forward, state=state, surveillance={"symbols": {}})
+
+    def test_locked_without_a_passed_forward_test(self):
+        r = self.one()
+        self.assertIn("live: no forward test (trader/forward.json)", reasons(r))
+        self.assertIn("Live entries are locked; paper trading is open", reasons(r))
+        self.assertIn("the forward test has not passed (paper running)",
+                      reasons(self.one(passed("2026-12-10", paper="running"))))
+        self.assertIn("shadow passed on 2026-11-05, over 30 days ago",
+                      reasons(self.one(passed("2026-11-05"))))
+        # paper is never locked
+        self.assertEqual(verdicts(self.one(paper=True)), ["PASS"])
+
+    def test_it_is_not_a_config_switch(self):
+        r = self.one(require_forward_pass=False, LIVE_NEEDS_FORWARD_PASS=False)
+        self.assertIn("live: no forward test", reasons(r))
+
+    def test_the_ramp(self):
+        fw = passed("2026-12-10")
+        # nothing live yet: 25 % of the max loss, so 125 at the reel's 500: the 41-share order (489) is too big
+        r = self.one(fw)
+        self.assertIn("over your ₹125 max loss per trade", reasons(r))
+        self.assertTrue(any("live ramp: 0 live trades since the forward test passed (2026-12-10), so 25 % size"
+                            in w for w in r["warnings"]))
+        self.assertEqual(verdicts(self.one(fw, max_loss_per_trade_inr=2000)), ["PASS"])     # 25 % of 2,000
+        # one good block of 20 (+0.1 R each): 50 %
+        ramp = check.live_ramp(fw, live_trades([0.1] * 20, "2026-12-10"), "2027-02-28")
+        self.assertEqual((ramp["trades"], ramp["stage"], ramp["factor"], ramp["stop"]), (20, 1, 0.5, None))
+        ramp = check.live_ramp(fw, live_trades([0.1] * 40, "2026-12-10"), "2027-02-28")
+        self.assertEqual(ramp["factor"], 1.0)
+        # paper trades never count toward the ramp
+        st = live_trades([0.1] * 20, "2026-12-10")
+        for o in st["orders"]:
+            o["paper"] = True
+        self.assertEqual(check.live_ramp(fw, st, "2027-02-28")["trades"], 0)
+
+    def test_the_live_stop(self):
+        fw = passed("2026-12-10", low=-0.1)
+        bad = check.live_ramp(fw, live_trades([-0.05] * 20, "2026-12-10"), "2027-02-28")
+        self.assertIn("averaged -0.05 R, under the backtest's low end +0.00 R", bad["stop"])   # the floor is 0
+        deep = check.live_ramp(fw, live_trades([1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0], "2026-12-10"), "2027-02-28")
+        self.assertIn("fell 6.0 R from their best, past 5 R", deep["stop"])
+        r = self.one(fw, live_trades([-1.0] * 6, "2026-12-10"), max_loss_per_trade_inr=2000)
+        self.assertIn("live: live stop: the live trades fell 6.0 R from their best", reasons(r))
+
+
+class HeldLimits(unittest.TestCase):
+    def test_loosening_waits_for_tomorrow(self):
+        morning = check.limits_snapshot(dict(check.DEFAULTS, **cfg()))
+        looser = cfg(max_loss_per_trade_inr=1000, max_trades_per_day=0, paper=False, allow_short=True,
+                     no_entries_after="15:00", blocked=[], min_reward_risk=0.5)
+        morning["blocked"] = ["YESBANK.NS"]
+        eff, warns = check.hold_morning_limits(dict(check.DEFAULTS, **looser), morning)
+        self.assertEqual((eff["max_loss_per_trade_inr"], eff["max_trades_per_day"], eff["paper"], eff["allow_short"],
+                          eff["no_entries_after"], eff["min_reward_risk"], eff["blocked"]),
+                         (500, 3, True, False, "14:45", 1.0, ["YESBANK.NS"]))
+        self.assertTrue(any(w.startswith("max_loss_per_trade_inr was loosened today (to 1000); this morning's 500 holds")
+                            for w in warns))
+
+    def test_tightening_applies_at_once(self):
+        morning = check.limits_snapshot(dict(check.DEFAULTS, **cfg()))
+        eff, warns = check.hold_morning_limits(dict(check.DEFAULTS, **cfg(max_loss_per_trade_inr=300,
+                                                                          max_trades_per_day=2)), morning)
+        self.assertEqual((eff, warns), ({}, []))
+
+    def test_the_cli_keeps_the_mornings_limits(self):
+        with tempfile.TemporaryDirectory() as d:
+            lim, none = os.path.join(d, "limits.json"), os.path.join(d, "none")
+            c2 = os.path.join(d, "config.json")
+
+            def run_(config):
+                buf = io.StringIO()
+                with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+                    code = check.main(["--orders", INFY_PATH, "--config", config, "--portfolio", none, "--prices",
+                                       none, "--state", none, "--bands", none, "--now", NOW, "--out",
+                                       os.path.join(d, "risk.json"), "--limits-state", lim, "--forward", none])
+                return code, buf.getvalue()
+            with open(c2, "w") as fh:
+                json.dump(cfg(max_loss_per_trade_inr=400), fh)
+            code, text = run_(c2)                              # the day's first check: 400, the reel's 489 is over
+            self.assertEqual(code, 1)
+            with open(lim) as fh:
+                self.assertEqual(json.load(fh)["limits"]["max_loss_per_trade_inr"], 400)
+            with open(c2, "w") as fh:
+                json.dump(cfg(max_loss_per_trade_inr=1000), fh)
+            code, text = run_(c2)                              # raised after a loss: still 400 today
+            self.assertEqual(code, 1)
+            self.assertIn("max_loss_per_trade_inr was loosened today (to 1000); this morning's 400 holds", text)
 
 
 if __name__ == "__main__":

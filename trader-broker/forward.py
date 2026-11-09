@@ -254,10 +254,21 @@ def cmd_shadow(a):
                                      + ticket._money(abs(t["net"])), t["R"]) for t in ts)) if ts else ""))
     trades = [t for d in sorted(sh["sessions"]) for t in sh["sessions"][d]]
     res = evaluate(dict(test, signals=[]), trades)
+    record(test, "shadow", res, today)
+    write(a.file, test)
     print("Shadow so far: %d sessions, %d trades, average %s R, total %+.2f R. %s"
           % (len(sh["sessions"]), res["trades"], "%+.2f" % res["avg_R"] if res["avg_R"] is not None else "n/a",
              res["total_R"], res["verdict"]))
     return 0 if res["state"] != "stop" else 1
+
+
+def record(test, kind, res, today):
+    """Keep each verdict in the test file with its date, so trader-risk can read it: live trading stays locked
+    until both the shadow and your own paper trades say PASSED (and not long ago)."""
+    v = test.setdefault("verdicts", {})
+    old = v.get(kind) or {}
+    v[kind] = {"state": res["state"], "date": today, "trades": res["trades"], "avg_R": res["avg_R"],
+               "passed_on": (old.get("passed_on") or today) if res["state"] == "passed" else None}
 
 
 def cmd_start(a):
@@ -311,6 +322,13 @@ def cmd_status(a):
     paper = test.get("account", "paper") == "paper"
     trades, still_open = ticket.round_trips(state, test["started"], a.today, paper=paper, rates=cfg.get("charges"))
     res = evaluate(test, trades)
+    today = a.today or datetime.date.today().isoformat()
+    record(test, "paper" if paper else "live", res, today)
+    sh = (test.get("shadow") or {}).get("sessions") or {}
+    sr = evaluate(dict(test, signals=[]), [t for d in sorted(sh) for t in sh[d]]) if sh else None
+    if sr:
+        record(test, "shadow", sr, today)
+    write(a.file, test)
     if a.json:
         print(json.dumps(res, indent=2))
         return 0 if res["state"] != "stop" else 1
@@ -334,10 +352,7 @@ def cmd_status(a):
     if still_open:
         print("  Still open: " + ", ".join("%s %s" % (x["date"], x["symbol"]) for x in still_open))
     print(res["verdict"])
-    sh = (test.get("shadow") or {}).get("sessions") or {}
-    if sh:
-        st = [t for d in sorted(sh) for t in sh[d]]
-        sr = evaluate(dict(test, signals=[]), st)
+    if sr:
         print("Shadow (every signal, the first %d a day, replayed after the close): %d sessions, %d trades, "
               "average %s R, total %+.2f R, worst run %.2f R."
               % ((test.get("shadow") or {}).get("per_day", PER_DAY), len(sh), sr["trades"],

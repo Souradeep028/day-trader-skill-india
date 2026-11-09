@@ -207,6 +207,14 @@ stop. A short's loss has no ceiling if the stock gaps up through the stop,
 and a stock locked at its upper band cannot be bought back until it
 reopens: paper trade shorts first.
 
+## On a live account
+
+`size.py` applies trader-risk's live rules before it proposes anything: with
+`"paper": false` and no PASSED forward test it refuses ("live trading is
+locked"), and once it has passed it sizes at the live ramp (25 %, then 50 %,
+then 100 % of `max_loss_per_trade_inr`) and says so on a "Size:" line. It
+reads trader/forward.json (`--forward`) and trader-broker's log (`--state`).
+
 ## The core: a monthly SIP into the index (sip.py)
 
 Every test in this pack ended the same way: after charges and tax, holding

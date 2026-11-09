@@ -273,6 +273,20 @@ class PlanRules(unittest.TestCase):
         self.assertEqual(size.drawdown(st, 100000), (102987.44, 98979.37, 3.89))
         self.assertEqual(size.size_trade(plan(), cfg(), today=TODAY, state=st)["qty"], 41)   # under 5 %: full size
 
+    def test_live_sizing_follows_the_lock_and_the_ramp(self):
+        live = cfg(paper=False)
+        s = size.size_trade(plan(), live, today=TODAY)
+        self.assertIn("live trading is locked: no forward test", s["refusal"])
+        self.assertIsNone(size.bracket_order(s))
+        fw = {"expected": {"low": -0.1}, "verdicts": {
+            "shadow": {"state": "passed", "date": TODAY, "passed_on": TODAY},
+            "paper": {"state": "passed", "date": TODAY, "passed_on": TODAY}}}
+        s = size.size_trade(plan(), live, today=TODAY, forward=fw)
+        # 25 % of 500 = 125: 10 shares (107 + 12.32 of charges = 119.32); 11 would be 131.25
+        self.assertEqual((s["qty"], s["refusal"]), (10, None))
+        self.assertIn("live ramp: 0 live trades", s["drawdown_note"])
+        self.assertEqual(size.size_trade(plan(), cfg(), today=TODAY, forward=None)["qty"], 41)   # paper: full size
+
     def test_each_limit_can_bind(self):
         self.assertEqual(size.size_trade(plan(), cfg(max_order_inr=30000), today=TODAY)["bound_by"], "max order")
         s = size.size_trade(plan(), cfg(max_position_pct=20), today=TODAY)

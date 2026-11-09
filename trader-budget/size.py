@@ -395,14 +395,42 @@ def max_loss_now(c, dd):
     return base, None
 
 
-def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=None, state=None):
+def live_rules(c, forward, state, today):
+    """trader-risk's live lock and ramp, so the size it proposes is one the risk check passes. Returns
+    (refusal or None, the ramp's size factor, a note or None). Paper is always open."""
+    if c.get("paper", True):
+        return None, 1.0, None
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(here), "trader-risk")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    try:
+        import check as risk
+    except ImportError:
+        return None, 1.0, "trader-risk is not next to trader-budget: the live lock is checked there"
+    day = today or to_ist(parse_now(None)).date().isoformat()
+    ok, why = risk.live_gate(forward, day)
+    if not ok:
+        return ("live trading is locked: %s. Paper trade (\"paper\": true) until it passes. No order." % why), 0.0, None
+    ramp = risk.live_ramp(forward, state, day, c.get("charges"))
+    if ramp["stop"]:
+        return "live trading stopped: %s. Back to paper. No order." % ramp["stop"], 0.0, None
+    if ramp["factor"] < 1:
+        return None, ramp["factor"], ("live ramp: %d live trades since the forward test passed, so %d %% of the max "
+                                      "loss per trade" % (ramp["trades"], int(ramp["factor"] * 100)))
+    return None, 1.0, None
+
+
+def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=None, state=None, forward=None):
     """Pure function: one plan + your rules -> the sizing (a dict). qty may be 0.
 
     limit  the limit price for a limit order (None = market)
     price  a FRESH latest price; a market order is sized at the higher of it and the plan's entry
     cash   the cash in trader/portfolio.json, if there is one
     today  IST date (YYYY-MM-DD); a plan for another day is refused
-    state  trader-broker's log (trader/state/broker.json): its closed trades drive the drawdown rule"""
+    state  trader-broker's log (trader/state/broker.json): its closed trades drive the drawdown rule
+    forward trader-broker's forward test (trader/forward.json): on a live account it unlocks trading and
+           sets the ramp"""
     c = dict(DEFAULTS)
     c.update(inr_keys(cfg or {}))
     if not isinstance(plan, dict):
@@ -492,6 +520,11 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     limits = []
     dd = drawdown(state, budget, rates) if state else None
     max_loss, dd_note = max_loss_now(c, dd)
+    live_refusal, ramp_factor, ramp_note = live_rules(c, forward, state, today)
+    if ramp_factor < 1 and max_loss:
+        max_loss = round(min(max_loss, (_f(c.get("max_loss_per_trade_inr")) or 0) * ramp_factor), 2)
+    if ramp_note:
+        dd_note = (dd_note + "; " if dd_note else "") + ramp_note
     if max_loss:
         n = shares_for(max_loss, risk)
         while n > 0 and n * risk_c / 100.0 + rt(n, stop) > max_loss + 0.005:
@@ -526,7 +559,9 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     cost_pct = round(100.0 * charges_stop / loss_price, 1) if loss_price > 0 else 0.0
     cost_cap = _f(c.get("max_charges_pct_of_risk"))
     refusal = None
-    if qty == 0:
+    if live_refusal:
+        refusal = live_refusal
+    elif qty == 0:
         if bound[0] == "max loss":
             refusal = ("one share risks %s (%s), more than your %s max loss per trade. "
                        "No order. Skip this trade, or plan a closer stop with trader-exit."
@@ -614,7 +649,7 @@ def plan_report(s, order, notes=()):
     for n in notes:
         lines.append(n)
     if s.get("drawdown_note"):
-        lines.append("Drawdown: " + s["drawdown_note"] + ".")
+        lines.append(("Drawdown: " if "under its peak" in s["drawdown_note"] else "Size: ") + s["drawdown_note"] + ".")
     src = {"plan": "the plan's entry", "price": "the latest price, %s the plan's entry" % ("below" if short_ else "above"),
            "limit": "your limit price"}[s["entry_from"]]
     lines.append("Sized at %s (%s). Risk %s a share (%s). Reward:risk %.2f on price."
@@ -983,7 +1018,8 @@ def run_plan(a, cfg):
         pf = read_json(a.portfolio, "portfolio")
         cash = _f(pf.get("cash")) if isinstance(pf, dict) else None
     state = read_json(a.state, "broker state") if a.state and os.path.exists(a.state) else None
-    s = size_trade(plan, cfg, a.budget, limit, price, cash, today, state)
+    forward = read_json(a.forward, "forward test") if a.forward and os.path.exists(a.forward) else None
+    s = size_trade(plan, cfg, a.budget, limit, price, cash, today, state, forward)
     order = bracket_order(s)
     if order and a.write:
         src = "trader/plan.json (%s %s %s)" % (s["symbol"], s["setup"] or "plan", s["date"] or today)
@@ -1033,6 +1069,8 @@ def main(argv=None):
     ap.add_argument("--prices", help="prices JSON (default trader/prices.json if it exists)")
     ap.add_argument("--portfolio", default="trader/portfolio.json",
                     help="your account; its cash caps the size if it exists")
+    ap.add_argument("--forward", default="trader/forward.json",
+                    help="trader-broker's forward test: on a live account it unlocks trading and sets the ramp")
     ap.add_argument("--state", default="trader/state/broker.json",
                     help="trader-broker's log: its closed trades drive the drawdown rule")
     ap.add_argument("--now", help="pretend it is this IST time, e.g. \"2026-11-05 09:40\"")

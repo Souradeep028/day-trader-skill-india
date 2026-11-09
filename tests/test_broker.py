@@ -143,6 +143,7 @@ class FlowBase(unittest.TestCase):
         self.state = os.path.join(self.d, "state", "broker.json")
         self.pf = os.path.join(self.d, "portfolio.json")
         self.none = os.path.join(self.d, "none")
+        self.forward = os.path.join(self.d, "forward.json")
 
     def tearDown(self):
         shutil.rmtree(self.d)
@@ -151,8 +152,15 @@ class FlowBase(unittest.TestCase):
         with open(self.cfg) as fh:
             c = json.load(fh)
         c["paper"] = False
+        # the first 20 live trades go at 25 % size: with a 2,000 limit that is the reel's 500
+        c["max_loss_per_trade_inr"] = 2000
         with open(self.cfg, "w") as fh:
             json.dump(c, fh)
+        # a forward test that PASSED on both the shadow replay and paper, today: the live lock opens
+        with open(self.forward, "w") as fh:
+            json.dump({"expected": {"avg_R": 0.08, "low": -0.1}, "verdicts": {
+                "shadow": {"state": "passed", "date": TODAY, "passed_on": TODAY},
+                "paper": {"state": "passed", "date": TODAY, "passed_on": TODAY}}}, fh)
 
     def args(self, *extra, **kw):
         return list(extra) + ["--orders", self.orders, "--config", self.cfg, "--risk", self.risk,
@@ -162,7 +170,8 @@ class FlowBase(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             return check.main(["--orders", self.orders, "--config", self.cfg, "--portfolio", self.pf,
                                "--prices", self.none, "--state", self.state, "--bands", self.none, "--now", now,
-                               "--out", self.risk])
+                               "--out", self.risk, "--limits-state", os.path.join(self.d, "limits.json"),
+                               "--forward", self.forward])
 
     def state_doc(self):
         with open(self.state) as fh:

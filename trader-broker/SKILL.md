@@ -169,8 +169,14 @@ python3 "${CLAUDE_SKILL_DIR}/forward.py" shadow                    # today, afte
 python3 "${CLAUDE_SKILL_DIR}/forward.py" shadow --from 2026-11-10  # every session since
 ```
 
-On a STOP, drop the rule: do not re-tune it on the same trades. On a PASSED,
-go live at half size and keep the journal.
+Every `status` and `shadow` run writes its verdicts into trader/forward.json,
+and trader-risk reads them: a live account can only enter trades when the
+shadow replay AND your paper trades have both PASSED within the last 30 days.
+Then live trades start at 25 % of the max loss, go to 50 % and 100 % after
+each good block of 20, and stop by themselves after a bad block or a 5 R
+fall (trader-risk's `live` check).
+
+On a STOP, drop the rule: do not re-tune it on the same trades.
 
 ## Reconcile: what the broker holds against the plan
 

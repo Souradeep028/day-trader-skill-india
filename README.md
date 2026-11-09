@@ -247,6 +247,33 @@ cap, weekly and monthly losses, drawdown sizing, same-direction cap,
 charges, big-Nifty-day halt, results days, ex-dates, market events,
 surveillance) are there for the days it does not work.
 
+## How it keeps intraday losses small
+
+Nothing can promise no losing trades. What the pack does is make losing real
+money hard:
+
+- **Paper first, locked.** A live account (`"paper": false`) cannot enter a
+  trade until a frozen rule has PASSED its forward test on both the
+  automatic shadow replay and your own paper trades, within 30 days. The
+  lock is in the code, not the config.
+- **Ramp, then stop by itself.** Live trading starts at 25 % size, goes to
+  50 % and 100 % only after good blocks of 20 trades, and stops on a bad
+  block or a 5 R fall.
+- **Hard ceilings.** ₹500 a trade with charges (₹250 in a drawdown), ₹1,500
+  a day, ₹3,000 a week, ₹6,000 a month, two losses in a row ends the day,
+  ₹1,000 open on one side, two entries a sector.
+- **No loosening on a bad afternoon.** A limit raised after the day's first
+  check waits until the next day.
+- **No bad-odds trades.** Charges over 15 % of the risk, results days,
+  ex-dates, RBI and Budget days, a 3 % Nifty day, surveillance stocks, the
+  price bands, entries after 14:45, out by 15:10.
+- **No silent mistakes.** `ticket.py reconcile` finds a position without
+  its stop, a leftover stop that would open the opposite trade, a double
+  entry, a stop moved away.
+
+What still gets through: a stop can fill well past its price in a gap or
+not at all in a halt, orders placed outside the pack, and editing the code.
+
 ## Fine print
 
 **Not financial advice.** This is software that reads public data and does
