@@ -89,6 +89,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | window | (entries) before `no_entries_before` (09:30) or after `no_entries_after` (14:45), or the NSE is closed |
 | band | (entries) a buy within 1% of the upper price band, or a short within 1% of the lower one: the previous close plus or minus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |
 | cool-off | (entries) `max_losing_streak` (2) losing trades in a row today, after charges: no new entries for the rest of the day |
+| drawdown | (entries) while the account is `drawdown_cut_pct` (5) % or more under its peak, the loss check uses `drawdown_size_factor` (0.5) of the max loss per trade, and says so |
 | weekly / monthly loss | (entries) the loss realised since Monday (since the 1st) plus this trade's max loss over `max_weekly_loss_inr` (3,000) or `max_monthly_loss_inr` (6,000) |
 | direction | (entries) the max losses of today's still-open entries on the same side, longs or shorts, plus this one over `max_same_side_risk_inr` (1,000): three longs in three sectors still fall together on a Nifty selloff |
 | index | (entries) Nifty 50 has moved `max_index_move_pct` (3) % or more from yesterday's close (`^NSEI` in `trader/prices.json`; a missing or stale one is a warning). At 10 % the market-wide circuit breaker halts all trading |

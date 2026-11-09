@@ -21,7 +21,7 @@ PRICES = {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53
 CONTRACT_CFG = {
     "budget": 100000, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 75000, "min_order_inr": 500,
     "max_loss_per_trade_inr": 500, "max_daily_loss_inr": 1500, "max_weekly_loss_inr": 3000,
-    "max_monthly_loss_inr": 6000, "max_same_side_risk_inr": 1000, "max_trades_per_day": 3, "max_orders_per_day": 10,
+    "max_monthly_loss_inr": 6000, "max_same_side_risk_inr": 1000, "drawdown_cut_pct": 5, "drawdown_size_factor": 0.5, "max_trades_per_day": 3, "max_orders_per_day": 10,
     "max_losing_streak": 2, "max_entries_per_sector": 2, "min_reward_risk": 1.0, "max_charges_pct_of_risk": 15, "require_stop": True,
     "no_entries_before": "09:30", "no_entries_after": "14:45", "flat_by": "15:10",
     "fractional": False, "broker": "zerodha", "exchange": "NSE", "product": "MIS", "paper": True, "blocked": [],
@@ -249,6 +249,29 @@ class PlanRules(unittest.TestCase):
         self.assertEqual((s["entry"], s["entry_from"], s["risk_per_share"]), (1135.0, "price", 15.2))
         s = size.size_trade(short, cfg(allow_short=True), price=1142.0, today=TODAY)
         self.assertEqual(s["entry_from"], "plan")
+
+    def fills(self, day, buy, sell, sym="ABC.NS", qty="100"):
+        return [{"status": "filled", "date": day, "symbol": sym, "side": "buy", "qty": qty, "price": buy},
+                {"status": "filled", "date": day, "symbol": sym, "side": "sell", "qty": qty, "price": sell}]
+
+    def test_a_drawdown_halves_the_size(self):
+        # bought 100 at 100 (4.22 of charges), sold at 40 (1.20 + 1.00 STT + 0.12 + 0.24 GST = 2.56):
+        # -6,000 - 6.78 = -6,006.78, so 93,993.22 against a 1,00,000 peak: 6.01 % under it
+        st = {"orders": self.fills("2026-11-02", 100.0, 40.0)}
+        self.assertEqual(size.drawdown(st, 100000), (100000.0, 93993.22, 6.01))
+        s = size.size_trade(plan(), cfg(), today=TODAY, state=st)
+        # the max loss is 250 now: 20 shares (214 + 24.52 of charges = 238.52); 21 would be 250.44
+        self.assertEqual((s["qty"], s["max_loss"]), (20, 238.52))
+        self.assertEqual(size.round_trip(21, 1160.5, 1149.8), 25.74)
+        self.assertIn("6.0% under its peak", s["drawdown_note"])
+        self.assertIn("Drawdown: the account is 6.0% under its peak", size.plan_report(s, size.bracket_order(s)))
+        self.assertEqual(size.size_trade(plan(), cfg(drawdown_cut_pct=0), today=TODAY, state=st)["qty"], 41)
+
+    def test_the_peak_moves_up_with_wins(self):
+        # +3,000 - 12.56 of charges = +2,987.44 (a new peak), then -4,000 - 8.07 = 98,979.37: 3.89 % under it
+        st = {"orders": self.fills("2026-11-02", 100.0, 130.0) + self.fills("2026-11-03", 100.0, 60.0, "XYZ.NS")}
+        self.assertEqual(size.drawdown(st, 100000), (102987.44, 98979.37, 3.89))
+        self.assertEqual(size.size_trade(plan(), cfg(), today=TODAY, state=st)["qty"], 41)   # under 5 %: full size
 
     def test_each_limit_can_bind(self):
         self.assertEqual(size.size_trade(plan(), cfg(max_order_inr=30000), today=TODAY)["bound_by"], "max order")

@@ -78,14 +78,18 @@ BACKOFF = 5.0
 OPEN_MIN = 9 * 60 + 15
 INDEX = "^NSEI"
 VIX = "^INDIAVIX"
-SETUPS = ("orb15", "orb30", "pdb", "vwap")
+SETUPS = ("orb15", "orb30", "orb15s", "orb30s", "pdb", "vwap")
 SIDES = ("long", "short")
 STOPS = ("tight", "wide")
 TARGETS = (1.0, 1.5, 2.0, 3.0)
-SINGLE = ("none", "with_nifty", "stronger", "volume", "no_gap", "calm_vix", "low_cost", "not_expiry")
+SINGLE = ("none", "with_nifty", "stronger", "volume", "no_gap", "calm_vix", "low_cost", "not_expiry", "not_10_to_11")
 FILTERS = SINGLE + tuple("low_cost+" + f for f in SINGLE[1:] if f != "low_cost")
-SETUP_NAMES = {"orb15": "15-min range break", "orb30": "30-min range break", "pdb": "previous-day break",
-               "vwap": "VWAP pullback"}
+SETUP_NAMES = {"orb15": "15-min range break", "orb30": "30-min range break",
+               "orb15s": "15-min range stop entry", "orb30s": "30-min range stop entry",
+               "pdb": "previous-day break", "vwap": "VWAP pullback"}
+TAX_PCT = 30.0            # speculative business income is taxed at the slab rate: 30 % plus cess at the top
+TRADES_PER_DAY = 3        # trader-budget's max_trades_per_day
+CAPITAL = 100000.0
 MIN_TRADES = 30
 MAX_COST_PCT = 15.0
 EXPIRY_WEEKDAY = 1        # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
@@ -322,15 +326,31 @@ def prepare(days, index_days, vix_days, cfg):
 
 
 def trigger(s, setup, long, cfg):
-    """(entry bar, tight stop, wide stop) for one session, or None. Prices are raw; the trade rounds them."""
+    """(entry bar, tight stop, wide stop, fill) for one session, or None. Prices are raw; the trade rounds
+    them. fill is None for a close entry (the bar's close); a stop entry fills inside the bar."""
     B, first, last_entry = s["bars"], cfg["first_slot"], cfg["last_entry_slot"]
+    if setup in ("orb15s", "orb30s"):
+        # a buy-stop resting a tick over the range high (a sell-stop a tick under the low) from the first bar
+        # that STARTS inside the entry window: it fills the moment the price gets there, or at the open of a
+        # bar that gaps through it
+        n = 3 if setup == "orb15s" else 6
+        oh = max(b[1] for b in B[:n])
+        ol = min(b[2] for b in B[:n])
+        t = s["tick"]
+        trig = tick_up(oh + t, t) if long else tick_down(ol - t, t)
+        k = next((k for k in range(max(n, first + 1), last_entry + 1)
+                  if (B[k][1] >= trig if long else B[k][2] <= trig)), None)
+        if k is None:
+            return None
+        fill = max(trig, B[k][0]) if long else min(trig, B[k][0])
+        return k, (oh + ol) / 2.0, ol if long else oh, fill
     if setup in ("orb15", "orb30"):
         n = 3 if setup == "orb15" else 6
         oh = max(b[1] for b in B[:n])
         ol = min(b[2] for b in B[:n])
         k = next((k for k in range(max(n, first), last_entry + 1)
                   if (B[k][3] > oh if long else B[k][3] < ol)), None)
-        return None if k is None else (k, (oh + ol) / 2.0, ol if long else oh)
+        return None if k is None else (k, (oh + ol) / 2.0, ol if long else oh, None)
     if setup == "pdb":
         level = s["prev_high"] if long else s["prev_low"]
         if level is None:
@@ -347,8 +367,8 @@ def trigger(s, setup, long, cfg):
     if k is None:
         return None
     if long:
-        return k, B[k][2], min(b[2] for b in B[:k + 1])
-    return k, B[k][1], max(b[1] for b in B[:k + 1])
+        return k, B[k][2], min(b[2] for b in B[:k + 1]), None
+    return k, B[k][1], max(b[1] for b in B[:k + 1]), None
 
 
 def trades_for(sym, sessions, setup, side, stop_rule, target_r, cfg):
@@ -361,15 +381,15 @@ def trades_for(sym, sessions, setup, side, stop_rule, target_r, cfg):
         got = trigger(s, setup, long, cfg)
         if got is None:
             continue
-        k, tight, wide = got
+        k, tight, wide, fill = got
         B, t = s["bars"], s["tick"]
-        close = B[k][3]
+        px = B[k][3] if fill is None else fill
         raw = tight if stop_rule == "tight" else wide
         if long:
-            entry, stop = tick_up(close + slip * t, t), tick_down(raw, t)
+            entry, stop = tick_up(px + slip * t, t), tick_down(raw, t)
             risk = round(entry - stop, 2)
         else:
-            entry, stop = tick_down(close - slip * t, t), tick_up(raw, t)
+            entry, stop = tick_down(px - slip * t, t), tick_up(raw, t)
             risk = round(stop - entry, 2)
         if risk <= 0 or risk < entry * MIN_RISK_PCT / 100.0:
             continue
@@ -380,7 +400,12 @@ def trades_for(sym, sessions, setup, side, stop_rule, target_r, cfg):
         if qty <= 0:
             continue
         outcome, exit_px = "close", None
+        if fill is not None and ((B[k][2] <= stop) if long else (B[k][1] >= stop)):
+            # the entry bar reached the stop too, and 5-minute bars cannot say which came first: count the loss
+            outcome, exit_px = "stop", tick_down(stop - slip * t, t) if long else tick_up(stop + slip * t, t)
         for j in range(k + 1, last + 1):
+            if exit_px is not None:
+                break
             o, h, l, c, v = B[j]
             if long and l <= stop:
                 outcome, exit_px = "stop", tick_down(min(stop, o) - slip * t, t)
@@ -398,22 +423,28 @@ def trades_for(sym, sessions, setup, side, stop_rule, target_r, cfg):
         charges = round_trip(qty, buy, sell, cfg.get("charges"))
         pnl = round(sign * qty * (exit_px - entry) - charges, 2)
         at_stop = round_trip(qty, *((entry, stop) if long else (stop, entry)), rates=cfg.get("charges"))
-        n_at = s["nifty"].get(k, (None,) * 4)[3] if s["nifty"] else None
+        # the filters see only what was known at the entry: the entry bar's close for a close entry, the bar
+        # before it for a stop entry (which fills inside its bar)
+        fk = k if fill is None else k - 1
+        close = B[fk][3]
+        n_at = s["nifty"].get(fk, (None,) * 4)[3] if s["nifty"] else None
         n_open, s_open = s["n_open"], B[0][0]
-        prior = [b[4] for b in B[:k]]
+        prior = [b[4] for b in B[:fk]]
         avg_v = sum(prior) / float(len(prior)) if prior else 0
         cost_pct = round(100.0 * at_stop / (qty * risk), 2)
+        at_min = OPEN_MIN + 5 * (k + 1 if fill is None else k)
         filt = {
             "none": True,
             "with_nifty": bool(n_open and n_at and (n_at > n_open if long else n_at < n_open)),
             "stronger": bool(n_open and n_at and sign * ((close / s_open - 1) - (n_at / n_open - 1)) > 0),
-            "volume": bool(avg_v and B[k][4] >= avg_v),
+            "volume": bool(avg_v and B[fk][4] >= avg_v),
             "no_gap": bool(s["prev_close"] and abs(s_open / s["prev_close"] - 1) * 100 < GAP_PCT),
             "calm_vix": bool(s["calm"]),
             "low_cost": cost_pct <= cfg["max_cost_pct"],
             "not_expiry": not s["expiry"],
+            "not_10_to_11": not 600 <= at_min < 660,
         }
-        out.append({"symbol": sym, "date": s["date"], "time": "%d:%02d" % divmod(OPEN_MIN + 5 * (k + 1), 60),
+        out.append({"symbol": sym, "date": s["date"], "time": "%d:%02d" % divmod(at_min, 60),
                     "slot": k, "side": side, "entry": entry, "stop": stop, "target": target, "exit": exit_px,
                     "outcome": outcome, "qty": qty, "risk": risk, "charges": charges, "pnl": pnl,
                     "cost_pct": cost_pct, "R_gross": round(sign * (exit_px - entry) / risk, 4),
@@ -493,7 +524,8 @@ def edge_report(charts, index_text=None, vix_text=None, cfg=None):
     """{symbol: chart text} -> the report document."""
     c = {"max_loss": 500.0, "max_order": 75000.0, "slippage_ticks": 1, "no_entries_before": "09:30",
          "no_entries_after": "14:45", "flat_by": "15:10", "max_cost_pct": MAX_COST_PCT,
-         "expiry_weekday": EXPIRY_WEEKDAY, "bootstrap": BOOTSTRAP, "setups": SETUPS, "sides": SIDES}
+         "expiry_weekday": EXPIRY_WEEKDAY, "bootstrap": BOOTSTRAP, "setups": SETUPS, "sides": SIDES,
+         "tax_pct": TAX_PCT, "trades_per_day": TRADES_PER_DAY, "capital": CAPITAL}
     c.update({k: v for k, v in (cfg or {}).items() if v is not None})
     c["first_slot"] = hhmm_slot(c["no_entries_before"], "no_entries_before")
     c["last_entry_slot"] = hhmm_slot(c["no_entries_after"], "no_entries_after")
@@ -604,8 +636,35 @@ def edge_report(charts, index_text=None, vix_text=None, cfg=None):
         "by_setup": by_setup,
         "rows": [_slim(r) for r in rows],
     }
+    nifty_pct = None
+    if index_days:
+        nd = sorted(d for d in dates if d in index_days and index_days[d])
+        if nd and 0 in index_days[nd[0]]:
+            last_bar = index_days[nd[-1]][max(index_days[nd[-1]])]
+            nifty_pct = round(100.0 * (last_bar[3] / index_days[nd[0]][0][0] - 1), 2)
+    doc["benchmark"] = {"nifty_pct": nifty_pct, "capital": c["capital"], "tax_pct": c["tax_pct"],
+                        "trades_per_day": c["trades_per_day"]}
+    pick = max(doc["held_up"], key=lambda r: r["out_of_sample"]["avg_R"]) if doc["held_up"] else None
+    doc["earnings"] = {name: dict(rule=r["rule"], filter=r["filter"], **(earnings(r, len(dates), c) or {}))
+                       for name, r in (("best", best), ("best_held_up", pick), ("baseline", doc["baseline"])) if r}
     doc["verdict"] = verdict(doc)
     return doc
+
+
+def earnings(r, sessions, cfg):
+    """What one person could have taken from a rule: the grid takes every signal on every stock, a person
+    takes at most trades_per_day a day. So: the rule's average rupees a trade (after charges) x the trades
+    a day you would take (its signals a session, capped) x the sessions, then tax on a profit."""
+    a = r["all"]
+    if not a.get("trades") or not sessions:
+        return None
+    per_trade = a["pnl"] / a["trades"]
+    per_day = min(float(cfg["trades_per_day"]), a["trades"] / float(sessions))
+    rupees = round(per_trade * per_day * sessions, 2)
+    tax = round(max(rupees, 0) * cfg["tax_pct"] / 100.0, 2)
+    return {"per_trade": round(per_trade, 2), "trades_per_day": round(per_day, 2), "rupees": rupees,
+            "tax": tax, "after_tax": round(rupees - tax, 2),
+            "pct_of_capital": round(100.0 * (rupees - tax) / cfg["capital"], 2) if cfg["capital"] else None}
 
 
 def rank_key(r):
@@ -707,6 +766,23 @@ def report(doc, top=12):
     if ci.get("median_pct") is not None:
         lines.append("Charges at the stop are a median %.1f %% of the planned risk; %.0f %% of trades are under the "
                      "low-cost limit of %g %%." % (ci["median_pct"], ci["share_under_limit"], s["max_cost_pct"]))
+    bm, ea = doc.get("benchmark") or {}, doc.get("earnings") or {}
+    if ea:
+        lines += ["", "What it would have made for one person over these %d sessions, taking at most %d trades a day "
+                  "on a %s account, with %g %% tax on a profit:" % (doc["sessions"], bm.get("trades_per_day", 3),
+                                                                  money(bm.get("capital") or 0), bm.get("tax_pct", 30))]
+        for name, label in (("best", "best rule"), ("best_held_up", "best that held up"), ("baseline", "pack's default")):
+            e = ea.get(name)
+            if not e or e.get("rupees") is None:
+                continue
+            lines.append("  %-18s %s: %.1f trades a day, %s a trade, %s, %s after tax (%+.1f %%)"
+                         % (label, rule_name(e), e["trades_per_day"], money(e["per_trade"]), money(e["rupees"]),
+                            money(e["after_tax"]), e["pct_of_capital"] or 0))
+        if bm.get("nifty_pct") is not None:
+            lines.append("  Holding Nifty 50 over the same sessions: %+.2f %% (before the index fund's small costs)."
+                         % bm["nifty_pct"])
+        lines.append("  The best rules are picked with hindsight from %d tries: a fresh period usually gives back "
+                     "much of it. Only the default was fixed in advance." % doc["combinations"])
     lines += ["", doc["verdict"],
               "A rule passes only when it made money after charges in both halves (%d+ trades each) and its "
               "session-bootstrap p-value is under %s (0.05 shared across %d tests)." % (
@@ -751,6 +827,9 @@ def main(argv=None):
                    help="the low_cost filter: charges at the stop at most this %% of the planned risk")
     p.add_argument("--expiry-weekday", type=int, default=EXPIRY_WEEKDAY, help="0 Monday ... 4 Friday (1, Tuesday)")
     p.add_argument("--bootstrap", type=int, default=BOOTSTRAP, help="session resamples per positive rule")
+    p.add_argument("--tax-pct", type=float, default=TAX_PCT, help="your slab rate on a profit (30)")
+    p.add_argument("--trades-per-day", type=int, default=TRADES_PER_DAY, help="the most you would take a day (3)")
+    p.add_argument("--capital", type=float, default=CAPITAL, help="the account, for the return (1,00,000)")
     p.add_argument("--top", type=int, default=12, help="rows to print")
     p.add_argument("--write", nargs="?", const="trader/edge.json", metavar="PATH")
     p.add_argument("--json", action="store_true")
@@ -777,6 +856,7 @@ def main(argv=None):
         cfg = {"max_loss": a.max_loss, "max_order": a.max_order, "slippage_ticks": a.slippage_ticks,
                "no_entries_before": a.no_entries_before, "no_entries_after": a.no_entries_after, "flat_by": a.flat_by,
                "max_cost_pct": a.max_cost_pct, "expiry_weekday": a.expiry_weekday, "bootstrap": a.bootstrap,
+               "tax_pct": a.tax_pct, "trades_per_day": a.trades_per_day, "capital": a.capital,
                "setups": tuple(x.strip() for x in a.setups.split(",")) if a.setups else None,
                "sides": tuple(x.strip() for x in a.sides.split(",")) if a.sides else None}
         doc = edge_report(charts, idx, vix, cfg)

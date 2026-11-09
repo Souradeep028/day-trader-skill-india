@@ -9,6 +9,8 @@
   "max_weekly_loss_inr": 3000,
   "max_monthly_loss_inr": 6000,
   "max_same_side_risk_inr": 1000,
+  "drawdown_cut_pct": 5,
+  "drawdown_size_factor": 0.5,
   "max_trades_per_day": 3,
   "max_orders_per_day": 10,
   "max_losing_streak": 2,

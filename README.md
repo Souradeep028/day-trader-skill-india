@@ -162,6 +162,8 @@ python3 trader-broker/ticket.py paper --index 1 --price 1160.50        # paper: 
 python3 trader-broker/ticket.py paper-check                            # paper: stop or target hit?
 python3 trader-broker/ticket.py reconcile --paper                      # no position without its stop
 python3 trader-broker/ticket.py journal --paper                        # win rate, R, P&L after charges
+python3 trader-broker/forward.py start --rule "orb30 short tight 2R low_cost+with_nifty"  # freeze a rule
+python3 trader-broker/forward.py status                                # the forward test's verdict
 python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
 python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by 15:10
 python3 trader-alerts/alerts.py check                                  # rings what hit, once
@@ -185,35 +187,39 @@ counts written separately in the tests.
 
 ## Does it make money?
 
-Not yet, as far as the data shows. The Time Machine's `edge.py` tests 64
-intraday rules (15- and 30-minute range breaks, a break of the previous
-day's high or low, VWAP pullbacks; long and short; two stops; four targets)
-alone and with 13 filters, 896 combinations, over every Nifty 50 stock and
-session. Each trade is sized and charged the way this pack trades, with a
-tick of slippage. A rule passes only if it made money after charges in the
-earlier AND the later sessions, and by more than luck explains across 896
-tries (a session bootstrap, p under 0.05 / 896).
+Not yet, as far as the data shows. The Time Machine's `edge.py` tests 96
+intraday rules (15- and 30-minute range breaks entered on the close or with a
+stop order, a break of the previous day's high or low, VWAP pullbacks; long
+and short; two stops; four targets) alone and with 15 filters, 1,536
+combinations, over every Nifty 50 stock and session. Each trade is sized and
+charged the way this pack trades, with a tick of slippage. A rule passes only
+if it made money after charges in the earlier AND the later sessions, and by
+more than luck explains across 1,536 tries (a session bootstrap, p under
+0.05 / 1,536). It also says what one person would have made at 3 trades a
+day, after 30 % tax, against simply holding Nifty 50.
 
 Over the 58 sessions to 6 November 2026:
 
-- **No rule passed.** 11 held up in both halves, none by more than luck.
+- **No rule passed.** 34 held up in both halves, none by more than luck.
 - **Charges are what loses.** The pack's default (long 15-minute range
   break, midpoint stop, 2R) took 1,607 trades and lost ₹1,15,780, of which
-  ₹1,06,901 was charges: close to break-even before them. At the stop,
-  charges were a median 16.8 % of the risk. Dropping the trades where they
-  were over 15 % cut the loss of the average rule from -0.28 R to -0.09 R a
-  trade, so trader-budget and trader-risk now refuse those trades
-  (`max_charges_pct_of_risk`).
-- **The best lead** is a short (the 30-minute range break, with Nifty also
-  falling and charges under 15 %): +0.08 R a trade over 309 trades, positive
-  in both halves, but well within luck (p 0.21). Shorts are off by default:
-  set `"allow_short": true` to paper trade it, and keep the journal.
+  ₹1,06,901 was charges. For one person on ₹1,00,000 that is -12.5 % in 58
+  sessions; holding Nifty 50 made +2.5 %. Dropping the trades whose charges
+  were over 15 % of the risk cut the loss of the average rule from -0.28 R to
+  -0.09 R a trade, so trader-budget and trader-risk now refuse those trades.
+- **A stop entry gets a better price and loses more**: it also takes every
+  wick through the range that falls back.
+- **The best lead** is a short on the 30-minute range (low cost, Nifty also
+  falling, or outside 10 to 11): about +0.1 R a trade, positive in both
+  halves, but within luck (p 0.13 at best) and picked with hindsight.
 
-So: run `edge.py` on fresh data, paper trade what looks promising, keep
-`ticket.py journal`, and go live only if the journal holds up. The risk
-check's cool-off, sector cap, weekly and monthly loss limits, same-direction
-cap, charges limit, big-Nifty-day halt, results-day, ex-date, market-event and surveillance
-blocks are there for the days it does not.
+So: freeze one rule with `forward.py start`, paper trade every signal it
+gives, and let `forward.py status` judge it by limits set before the first
+trade (40 trades, an 8 R drawdown stop, the backtest's low end). Go live
+only on a PASSED, at half size. The risk check's limits (cool-off, sector
+cap, weekly and monthly losses, drawdown sizing, same-direction cap,
+charges, big-Nifty-day halt, results days, ex-dates, market events,
+surveillance) are there for the days it does not work.
 
 ## Fine print
 
@@ -293,7 +299,7 @@ trader-exit/        SKILL.md, exit.py
 trader-timemachine/ SKILL.md, timemachine.py, edge.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
+trader-broker/      SKILL.md, ticket.py, forward.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py
 trader-pelosi/      SKILL.md, ptr.py

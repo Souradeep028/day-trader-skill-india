@@ -57,6 +57,9 @@ What blocks an entry (on top):
   window        before no_entries_before or after no_entries_after (IST
                 time), or the market is closed (weekend, NSE holiday, outside
                 9:15 to the 15:30 close)
+  drawdown      while the account (the budget plus every closed trade, after charges) is
+                drawdown_cut_pct (5) % or more under its peak, the max loss per trade is
+                drawdown_size_factor (0.5) of it, until it is back within 5 %
   cool-off      max_losing_streak (2) losing trades in a row today, after charges
   weekly loss   the loss realised since Monday plus this trade's max loss over
                 max_weekly_loss_inr (3,000); monthly the same from the 1st
@@ -111,6 +114,7 @@ DEFAULTS = {
     "max_charges_pct_of_risk": 15, "skip_results_days": True, "skip_expiry_days": False,
     "max_weekly_loss_inr": 3000, "max_monthly_loss_inr": 6000, "max_same_side_risk_inr": 1000,
     "skip_ex_dates": True, "skip_market_event_days": True, "max_index_move_pct": 3,
+    "drawdown_cut_pct": 5, "drawdown_size_factor": 0.5,
     "block_surveillance": True,
 }
 EXPIRY_WEEKDAY = 1         # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
@@ -470,6 +474,41 @@ def open_today(state, today):
     return {k: v for k, v in pos.items() if abs(v) > 1e-9}
 
 
+def drawdown(state, start_equity, rates=None):
+    """(peak, equity, percent under the peak) from every round trip closed so far, in order, after charges,
+    starting from start_equity (the budget). Each day's fills per symbol are paired back to flat."""
+    if not start_equity:
+        return None
+    per, eq = {}, float(start_equity)
+    peak = eq
+    rows = sorted((r for r in (state or {}).get("orders", []) if r.get("status") == "filled"),
+                  key=lambda r: (str(r.get("date") or str(r.get("at", ""))[:10]), str(r.get("at", ""))))
+    for r in rows:
+        key = (str(r.get("date") or str(r.get("at", ""))[:10]), str(r.get("symbol", "")).upper())
+        x = per.setdefault(key, {"pos": 0.0, "cash": 0.0})
+        q, px, side = _f(r.get("qty")) or 0, _f(r.get("price")) or 0, r.get("side")
+        x["cash"] += (-1 if side == "buy" else 1) * q * px - order_charges(side, q * px, rates)["total"]
+        x["pos"] += q if side == "buy" else -q
+        if abs(x["pos"]) < 1e-9:
+            eq += x["cash"]
+            peak = max(peak, eq)
+            per[key] = {"pos": 0.0, "cash": 0.0}
+    return round(peak, 2), round(eq, 2), round(100.0 * (peak - eq) / peak, 2) if peak > 0 else 0.0
+
+
+def max_loss_now(c, dd):
+    """The max loss per trade after the drawdown rule: drawdown_size_factor (0.5) of it while the account is
+    drawdown_cut_pct (5) % or more under its peak. Returns (max loss, the note, or None)."""
+    base = _f(c.get("max_loss_per_trade_inr"))
+    cut, factor = _f(c.get("drawdown_cut_pct")), _f(c.get("drawdown_size_factor"))
+    if base and cut and factor and dd and dd[2] >= cut - 1e-9:
+        return round(base * factor, 2), ("the account is %.1f%% under its peak (%s, now %s), at or past your %s%% "
+                                         "drawdown_cut_pct: the max loss per trade is cut to %s until it is back "
+                                         "within %s%%" % (dd[2], money(dd[0]), money(dd[1]), _num(cut),
+                                                          money(round(base * factor, 2)), _num(cut)))
+    return base, None
+
+
 def expiry_day(d):
     """True when d is Nifty's weekly F&O expiry: a trading day with no trading day between it and the next
     expiry weekday (Tuesday). So the Tuesday itself, or the Monday when the Tuesday is a holiday."""
@@ -584,6 +623,10 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     week_net = round(sum(t[2] for t in recent if t[0] >= week_from), 2)
     month_net = round(sum(t[2] for t in recent if t[0] >= month_from), 2)
     still_open = open_today(state, today)
+    dd = drawdown(state, _f(c.get("budget")) or (acct["cash"] if portfolio is None else None), rates0)
+    loss_cap, dd_note = max_loss_now(c, dd)
+    if dd_note:
+        day_warn.append("drawdown: " + dd_note)
     side_risk = {"buy": 0.0, "sell": 0.0}
     for r in entries_today:
         sym_r = str(r.get("symbol", "")).upper()
@@ -844,11 +887,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     charges = (round_trip(shares, ref, stop, rates) if long
                                else round_trip(shares, stop, ref, rates))
                     max_loss = round(price_loss + charges, 2)
-                    cap = _f(c.get("max_loss_per_trade_inr"))
+                    cap = loss_cap
                     if cap and max_loss > cap + CENT:
                         later.append("loss: %s shares x %s risk a share = %s at the stop, plus %s charges = %s, over "
-                                     "your %s max loss per trade" % (_num(shares), _p(risk_ps), money(price_loss),
-                                                                     money(charges), money(max_loss), money(cap)))
+                                     "your %s max loss per trade%s" % (_num(shares), _p(risk_ps), money(price_loss),
+                                                                       money(charges), money(max_loss), money(cap),
+                                                                       " (cut for the drawdown)" if dd_note else ""))
                     cost_cap = _f(c.get("max_charges_pct_of_risk"))
                     cost_pct = round(100.0 * charges / price_loss, 1) if price_loss > 0 else 0.0
                     if cost_cap and cost_pct > cost_cap + 0.05:

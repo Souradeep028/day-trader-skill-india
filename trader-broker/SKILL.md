@@ -129,6 +129,34 @@ measures R from the stop overhead.
   business income, filed on ITR-3, and its losses only set off against
   speculative income. Check it against the broker's tax P&L and a CA.
 
+## The forward test: prove a rule on trades after it
+
+A backtest picks the best of many tries, so it flatters. `forward.py` in
+this folder freezes ONE rule and judges it on the trades taken after that,
+by limits written down before the first one:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/forward.py" start --rule "orb30 short tight 2R low_cost+with_nifty"  # reads trader/edge.json
+python3 "${CLAUDE_SKILL_DIR}/forward.py" signal INFY.NS --taken            # log EVERY signal of the rule
+python3 "${CLAUDE_SKILL_DIR}/forward.py" signal TCS.NS --skipped --reason "results tomorrow"
+python3 "${CLAUDE_SKILL_DIR}/forward.py" status                            # trades, R, the verdict
+```
+
+- **start** saves the rule, what the backtest expects (its average R after
+  charges and the low end of its 95 % bootstrap range, from `edge.py run
+  --write`), and the stop rules: no verdict before 40 trades
+  (`--min-trades`); STOP whenever the trades fall 8 R from their best
+  (`--max-drawdown-r`); at 40, STOP if the average is 0 or less or under the
+  low end, PASSED if above both.
+- **signal** logs each signal, taken or skipped with a reason. Skipping more
+  than a fifth of them means the test measures your picks, not the rule.
+- **status** pairs the paper (or `--live`) fills since the start into round
+  trips and flags trades off the plan: a loss over 1.25 R (a stop moved, or a
+  fill far past it), no stop recorded, or a trade with no logged signal.
+
+On a STOP, drop the rule: do not re-tune it on the same trades. On a PASSED,
+go live at half size and keep the journal.
+
 ## Reconcile: what the broker holds against the plan
 
 Kite has no bracket order for stocks, so the stop and the target are two

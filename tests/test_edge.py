@@ -144,6 +144,34 @@ class Pieces(unittest.TestCase):
         self.assertEqual(t["pnl"], round(53 * (1146.4 - 1139.5) - t["charges"], 2))
         self.assertEqual(t["pnl"], 301.27)
 
+    def test_a_stop_entry_by_hand(self):
+        # INFY, 5 November: a buy-stop a tick over the 1154.70 range high, at 1154.80. The 9:30 bar tops out at
+        # 1152.30; the 9:35 bar opens at 1151.30 and runs to 1160.50, so the stop fills at 1154.80, plus one tick
+        # of slippage: 1154.90, 5.70 better than the close entry's 1160.60
+        _, days = self._infy()
+        b = days["2026-11-05"]
+        self.assertEqual((b[3][1], b[4][0], b[4][1]), (1152.3, 1151.3, 1160.5))
+        sess = edge.prepare(days, {}, {}, self._cfg())
+        t = [x for x in edge.trades_for("INFY.NS", sess, "orb15s", "long", "tight", 2.0, self._cfg())
+             if x["date"] == "2026-11-05"][0]
+        # risk 1154.90 - 1149.80 = 5.10, 2R target 1165.10; 64 shares (the 75,000 max order binds)
+        self.assertEqual((t["time"], t["entry"], t["stop"], t["target"], t["qty"]), ("9:35", 1154.9, 1149.8, 1165.1, 64))
+        # the target fills: 64 x 10.20 = 652.80 less 28.58 + 45.02 of charges = 579.20
+        self.assertEqual((t["outcome"], t["exit"], t["charges"], t["pnl"]), ("target", 1165.1, 73.6, 579.2))
+        # no lookahead: the filters read the 9:30 bar, the last one closed before the fill (its 1,77,357 shares
+        # are under the opening bars' average, so the volume filter is off)
+        self.assertFalse(t["filters"]["volume"])
+        self.assertTrue(t["filters"]["not_10_to_11"])
+
+    def test_a_stop_entry_that_gaps_fills_at_the_open(self):
+        _, days = self._infy()
+        sess = edge.prepare(days, {}, {}, self._cfg())
+        for t in edge.trades_for("INFY.NS", sess, "orb15s", "long", "wide", 2.0, self._cfg()):
+            s_ = [x for x in sess if x["date"] == t["date"]][0]
+            bar = s_["bars"][t["slot"]]
+            trig = edge.tick_up(max(c[1] for c in s_["bars"][:3]) + s_["tick"], s_["tick"])
+            self.assertEqual(t["entry"], edge.tick_up(max(trig, bar[0]) + s_["tick"], s_["tick"]))
+
     def test_every_setup_finds_trades(self):
         _, days = self._infy()
         sess = edge.prepare(days, {}, {}, self._cfg())
@@ -167,14 +195,14 @@ class Report(unittest.TestCase):
 
     def test_the_grid_and_the_split(self):
         d = self.doc
-        # 4 setups x 2 sides x 2 stops x 4 targets x 14 filters (7 alone, low cost with 6 others, none)
-        self.assertEqual((d["symbols"], d["sessions"], d["combinations"]), (5, 58, 896))
+        # 6 setups x 2 sides x 2 stops x 4 targets x 16 filters (8 alone, low cost with 7 others, none)
+        self.assertEqual((d["symbols"], d["sessions"], d["combinations"]), (5, 58, 1536))
         self.assertEqual(d["in_sample"], {"from": "2026-08-13", "to": "2026-10-08", "sessions": 39})
         self.assertEqual(d["out_of_sample"], {"from": "2026-10-09", "to": "2026-11-06", "sessions": 19})
-        self.assertEqual(d["significance"], float("%.3g" % (0.05 / 896)))
+        self.assertEqual(d["significance"], float("%.3g" % (0.05 / 1536)))
         self.assertEqual(d["passed"], [])
         self.assertIn("2026-10-19", d["expiry_sessions"])                  # Dussehra Tuesday: the Monday
-        self.assertEqual(len(d["by_setup"]), 8)
+        self.assertEqual(len(d["by_setup"]), 12)
 
     def test_the_default_rule(self):
         b = self.doc["baseline"]["all"]
@@ -194,8 +222,8 @@ class Report(unittest.TestCase):
     def test_held_up_rules_get_a_p_value(self):
         for r in self.doc["held_up"]:
             self.assertIsNotNone(r["bootstrap"])
-            self.assertFalse(r["passed"])                                  # none clears 0.05 / 896
-        self.assertIn("none by more than luck would explain across 896 tests", self.doc["verdict"])
+            self.assertFalse(r["passed"])                                  # none clears 0.05 / 1536
+        self.assertIn("none by more than luck would explain across 1536 tests", self.doc["verdict"])
 
     def test_a_tighter_cost_limit_keeps_fewer_trades(self):
         n = {}
@@ -212,21 +240,32 @@ class Report(unittest.TestCase):
              for s in (0, 1, 2)]
         self.assertTrue(r[0] > r[1] > r[2], r)
 
+    def test_what_it_would_have_made(self):
+        e = self.doc["earnings"]["baseline"]
+        # 144 trades lost 17,476.73 in 58 sessions: 2.48 a session (under the cap of 3), so all of it; no tax on a loss
+        self.assertEqual((e["trades_per_day"], e["per_trade"], e["rupees"], e["tax"]), (2.48, -121.37, -17476.73, 0.0))
+        self.assertEqual(e["pct_of_capital"], -17.48)
+        self.assertEqual(self.doc["benchmark"]["nifty_pct"], 2.46)
+        fake = {"all": {"trades": 580, "pnl": 5800.0}}
+        self.assertEqual(edge.earnings(fake, 58, {"trades_per_day": 3, "tax_pct": 30, "capital": 100000}),
+                         {"per_trade": 10.0, "trades_per_day": 3.0, "rupees": 1740.0, "tax": 522.0,
+                          "after_tax": 1218.0, "pct_of_capital": 1.22})
+
     def test_the_verdicts(self):
         held = {"rule": edge.rule_key("orb30", "short", "tight", 3.0), "filter": "low_cost+with_nifty",
                 "in_sample": {"avg_R": 0.07}, "out_of_sample": {"avg_R": 0.10}}
         v = edge.verdict(dict(self.doc, held_up=[held], passed=[]))
-        self.assertIn("1 of 896 combinations made money after charges in both halves, but none", v)
+        self.assertIn("1 of 1536 combinations made money after charges in both halves, but none", v)
         self.assertIn("short 30-min range break, midpoint stop, 3R, low cost + with nifty", v)
         v = edge.verdict(dict(self.doc, held_up=[held], passed=[held]))
         self.assertIn("AND by more than luck would explain", v)
         self.assertIn("paper trade it", v)
         v = edge.verdict(dict(self.doc, held_up=[], passed=[]))
-        self.assertIn("none of the 896 combinations had an edge after costs", v)
+        self.assertIn("none of the 1536 combinations had an edge after costs", v)
 
     def test_without_the_index_its_filters_are_left_out(self):
         doc = edge.edge_report(charts(), cfg={"bootstrap": 50})
-        self.assertEqual(doc["combinations"], 64 * 8)       # no with_nifty, stronger or calm_vix, alone or with cost
+        self.assertEqual(doc["combinations"], 96 * 10)      # no with_nifty, stronger or calm_vix, alone or with cost
 
     def test_bad_settings(self):
         short = {s: json.dumps({"chart": {"result": [{"meta": {}, "timestamp": [], "indicators": {"quote": [{}]}}]}})
@@ -250,16 +289,18 @@ class Cli(unittest.TestCase):
             self.assertEqual(code, 0, err)
             self.assertIn("Edge report: 5 stocks, 58 sessions", text)
             self.assertIn("The pack's default (long 15-min range break, midpoint stop, 2R, no filter): 144 trades", text)
-            self.assertIn("896 combinations", text)
+            self.assertIn("1536 combinations", text)
+            self.assertIn("What it would have made for one person", text)
+            self.assertIn("Holding Nifty 50 over the same sessions: +2.46 %", text)
             self.assertIn("Best of each setup", text)
             self.assertIn("No data for: ZZZZ.NS", text)
             self.assertIn("Not financial advice", text)
             with open(out) as fh:
-                self.assertEqual(json.load(fh)["combinations"], 896)
+                self.assertEqual(json.load(fh)["combinations"], 1536)
             code, text, err = run(["run", "--symbols", ",".join(FIVE), "--offline", DIR, "--setups", "orb30",
                                    "--sides", "short", "--max-cost-pct", "10", "--bootstrap", "50"])
             self.assertEqual(code, 0, err)
-            self.assertIn("112 combinations: 30-min range break; short;", text)
+            self.assertIn("128 combinations: 30-min range break; short;", text)
             self.assertIn("low-cost limit of 10 %", text)
         code, _, err = run(["run", "--offline", DIR])
         self.assertEqual(code, 1)

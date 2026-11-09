@@ -782,6 +782,13 @@ class LossLimits(unittest.TestCase):
         self.assertIn("already at risk in open longs today", reasons(res, 2))
         self.assertIn("over your ₹1,000 same-direction limit", reasons(res, 2))
 
+    def test_a_drawdown_halves_the_max_loss(self):
+        st = {"orders": self.fills("2026-10-20", 100.0, 40.0)}         # last month: 6.01 % under the peak
+        res = self.one(st)
+        self.assertIn("loss: 41 shares x 10.70 risk a share = ₹438.70 at the stop, plus ₹50.30 charges = ₹489, over "
+                      "your ₹250 max loss per trade (cut for the drawdown)", reasons(res))
+        self.assertTrue(any(w.startswith("drawdown: the account is 6.0% under its peak") for w in res["warnings"]))
+
     def test_only_open_entries_count(self):
         placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
                   "max_loss": 600.0}

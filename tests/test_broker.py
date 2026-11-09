@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -9,6 +10,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from _load import load, ROOT, FIX
 
 ticket = load("trader-broker", "ticket")
+forward = load("trader-broker", "forward")
 check = load("trader-risk", "check")
 
 CFG_PATH = os.path.join(ROOT, "trader-budget", "config.example.json")
@@ -613,6 +615,118 @@ class Reconcile(unittest.TestCase):
             self.assertIn("nothing open", text)
         finally:
             shutil.rmtree(d)
+
+
+class Forward(unittest.TestCase):
+    """A frozen rule judged on the trades after it. Each made-up trade: 10 shares bought at 100 with the stop at
+    99 (1 R = 10 rupees), sold at 102 (a win, about +1.9 R after charges) or at 99 (a loss, about -1.09 R)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.f, self.st = os.path.join(self.d, "forward.json"), os.path.join(self.d, "broker.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def trade(self, day, sym, sell, stop=99.0):
+        return [{"status": "approved", "date": day, "symbol": sym, "side": "buy", "kind": "entry", "qty": "10",
+                 "stop": stop},
+                {"status": "filled", "date": day, "symbol": sym, "side": "buy", "qty": "10", "price": 100.0,
+                 "paper": True},
+                {"status": "filled", "date": day, "symbol": sym, "side": "sell", "qty": "10", "price": sell,
+                 "paper": True}]
+
+    def days(self, n):
+        d = datetime.date(2026, 11, 10)
+        return [(d + datetime.timedelta(days=i)).isoformat() for i in range(n)]
+
+    def state(self, sells):
+        orders = []
+        for day, sell in zip(self.days(len(sells)), sells):
+            orders += self.trade(day, "ABC.NS", sell)
+        with open(self.st, "w") as fh:
+            json.dump({"orders": orders}, fh)
+
+    def start(self, *extra):
+        return run_fwd(["start", "--rule", "orb30 short tight 2R low_cost+with_nifty", "--file", self.f,
+                        "--today", "2026-11-10"] + list(extra))
+
+    def status(self):
+        return run_fwd(["status", "--file", self.f, "--state", self.st, "--config", os.path.join(self.d, "none"),
+                        "--today", "2026-12-31"])
+
+    def test_start_from_the_edge_report(self):
+        edge_doc = {"sessions": 58, "rows": [{"rule": {"setup": "orb30", "side": "short", "stop": "tight",
+                                                       "target_r": 2.0}, "filter": "low_cost+with_nifty",
+                                              "all": {"avg_R": 0.076, "trades": 309}, "in_sample": {"avg_R": 0.064},
+                                              "out_of_sample": {"avg_R": 0.096},
+                                              "bootstrap": {"ci95": [-0.145, 0.246], "p": 0.219}}]}
+        ep = os.path.join(self.d, "edge.json")
+        with open(ep, "w") as fh:
+            json.dump(edge_doc, fh)
+        code, text, err = self.start("--edge", ep)
+        self.assertEqual(code, 0, err)
+        self.assertIn("Expected: +0.08 R a trade after charges, low end -0.14 R", text)
+        self.assertIn("no verdict before 40 trades", text)
+        code, _, err = self.start("--edge", ep)
+        self.assertEqual(code, 1)
+        self.assertIn("already running", err)
+        code, _, err = run_fwd(["start", "--rule", "orb30 sideways tight 2R", "--file", os.path.join(self.d, "x.json")])
+        self.assertIn("side is long or short", err)
+
+    def test_too_early_then_running(self):
+        self.start("--expect-r", "0.1", "--expect-low", "-0.1")
+        self.state([102.0, 99.0, 102.0])
+        code, text, _ = self.status()
+        self.assertEqual(code, 0)
+        self.assertIn("Too early: 3 trades of 40", text)
+        self.state([102.0, 99.0, 99.0] * 5)
+        self.assertIn("Running: 15 of 40 trades", self.status()[1])
+
+    def test_passed_and_stopped_at_40(self):
+        self.start("--expect-r", "0.1", "--expect-low", "-0.1", "--max-drawdown-r", "100")
+        self.state([102.0, 99.0] * 20)                                    # 20 wins, 20 losses: about +0.4 R
+        res = forward.evaluate(json.load(open(self.f)), ticket.round_trips(json.load(open(self.st)), "2026-11-10",
+                                                                          paper=True)[0])
+        self.assertEqual(res["trades"], 40)
+        self.assertGreater(res["avg_R"], 0)
+        self.assertEqual(res["state"], "passed")
+        self.assertIn("PASSED: after 40 trades", self.status()[1])
+        self.state([102.0, 99.0, 99.0, 99.0] * 10)                        # 10 wins, 30 losses: about -0.34 R
+        code, text, _ = self.status()
+        self.assertEqual(code, 1)
+        self.assertIn("STOP: after 40 trades the average is", text)
+        self.assertIn("do not re-tune it on these same trades", text)
+
+    def test_the_drawdown_stop_comes_early(self):
+        self.start("--expect-r", "0.1", "--expect-low", "-0.1", "--max-drawdown-r", "5")
+        self.state([99.0] * 5)                                            # 5 x -1.09 R
+        code, text, _ = self.status()
+        self.assertEqual(code, 1)
+        self.assertIn("past the 5 R limit set at the start", text)
+
+    def test_off_plan_trades_and_skipped_signals(self):
+        self.start("--expect-r", "0.1", "--expect-low", "-0.1")
+        orders = self.trade("2026-11-10", "ABC.NS", 98.0) + self.trade("2026-11-11", "XYZ.NS", 102.0)
+        with open(self.st, "w") as fh:
+            json.dump({"orders": orders}, fh)
+        run_fwd(["signal", "ABC", "--taken", "--date", "2026-11-10", "--file", self.f])
+        for sym in ("P", "Q"):
+            run_fwd(["signal", sym, "--skipped", "--reason", "felt wrong", "--date", "2026-11-11", "--file", self.f])
+        code, _, err = run_fwd(["signal", "R", "--skipped", "--file", self.f])
+        self.assertIn("needs --reason", err)
+        text = self.status()[1]
+        self.assertIn("2026-11-10 ABC.NS: lost 2.", text)                 # sold at 98: about -2.1 R
+        self.assertIn("2026-11-11 XYZ.NS: no logged signal of this rule that day", text)
+        self.assertIn("Signals: 1 taken, 2 skipped (felt wrong)", text)
+        self.assertIn("this tests your picks, not the rule", text)
+
+
+def run_fwd(argv):
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = forward.main(argv)
+    return code, out.getvalue(), err.getvalue()
 
 
 class JournalAndTax(unittest.TestCase):

@@ -82,6 +82,8 @@ DEFAULTS = {
     "max_weekly_loss_inr": 3000,
     "max_monthly_loss_inr": 6000,
     "max_same_side_risk_inr": 1000,
+    "drawdown_cut_pct": 5,
+    "drawdown_size_factor": 0.5,
     "max_trades_per_day": 3,
     "max_orders_per_day": 10,
     "min_reward_risk": 1.0,
@@ -358,13 +360,49 @@ def money(x):
 
 # ---------------------------------------------------------------- plan mode (the default)
 
-def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=None):
+def drawdown(state, start_equity, rates=None):
+    """(peak, equity, percent under the peak) from every round trip closed so far, in order, after charges,
+    starting from start_equity (the budget). Each day's fills per symbol are paired back to flat."""
+    if not start_equity:
+        return None
+    per, eq = {}, float(start_equity)
+    peak = eq
+    rows = sorted((r for r in (state or {}).get("orders", []) if r.get("status") == "filled"),
+                  key=lambda r: (str(r.get("date") or str(r.get("at", ""))[:10]), str(r.get("at", ""))))
+    for r in rows:
+        key = (str(r.get("date") or str(r.get("at", ""))[:10]), str(r.get("symbol", "")).upper())
+        x = per.setdefault(key, {"pos": 0.0, "cash": 0.0})
+        q, px, side = _f(r.get("qty")) or 0, _f(r.get("price")) or 0, r.get("side")
+        x["cash"] += (-1 if side == "buy" else 1) * q * px - order_charges(side, q * px, rates)["total"]
+        x["pos"] += q if side == "buy" else -q
+        if abs(x["pos"]) < 1e-9:
+            eq += x["cash"]
+            peak = max(peak, eq)
+            per[key] = {"pos": 0.0, "cash": 0.0}
+    return round(peak, 2), round(eq, 2), round(100.0 * (peak - eq) / peak, 2) if peak > 0 else 0.0
+
+
+def max_loss_now(c, dd):
+    """The max loss per trade after the drawdown rule: drawdown_size_factor (0.5) of it while the account is
+    drawdown_cut_pct (5) % or more under its peak. Returns (max loss, the note, or None)."""
+    base = _f(c.get("max_loss_per_trade_inr"))
+    cut, factor = _f(c.get("drawdown_cut_pct")), _f(c.get("drawdown_size_factor"))
+    if base and cut and factor and dd and dd[2] >= cut - 1e-9:
+        return round(base * factor, 2), ("the account is %.1f%% under its peak (%s, now %s), at or past your %s%% "
+                                         "drawdown_cut_pct: the max loss per trade is cut to %s until it is back "
+                                         "within %s%%" % (dd[2], money(dd[0]), money(dd[1]), _num(cut),
+                                                          money(round(base * factor, 2)), _num(cut)))
+    return base, None
+
+
+def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=None, state=None):
     """Pure function: one plan + your rules -> the sizing (a dict). qty may be 0.
 
     limit  the limit price for a limit order (None = market)
     price  a FRESH latest price; a market order is sized at the higher of it and the plan's entry
     cash   the cash in trader/portfolio.json, if there is one
-    today  IST date (YYYY-MM-DD); a plan for another day is refused"""
+    today  IST date (YYYY-MM-DD); a plan for another day is refused
+    state  trader-broker's log (trader/state/broker.json): its closed trades drive the drawdown rule"""
     c = dict(DEFAULTS)
     c.update(inr_keys(cfg or {}))
     if not isinstance(plan, dict):
@@ -452,7 +490,8 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
                         "margin rules" % (_num(lev), _num(MAX_LEVERAGE)))
 
     limits = []
-    max_loss = _f(c.get("max_loss_per_trade_inr"))
+    dd = drawdown(state, budget, rates) if state else None
+    max_loss, dd_note = max_loss_now(c, dd)
     if max_loss:
         n = shares_for(max_loss, risk)
         while n > 0 and n * risk_c / 100.0 + rt(n, stop) > max_loss + 0.005:
@@ -520,7 +559,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "max_loss_per_trade_inr": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
         "cost": cost, "loss_at_stop": loss_price, "charges_at_stop": charges_stop, "max_loss": loss,
         "charges_at_target": charges_target, "gain_at_target": gain, "reward_risk_net": net_rr,
-        "charges_pct_of_risk": cost_pct, "leverage": lev, "exchange": str(c.get("exchange") or "NSE").upper(),
+        "charges_pct_of_risk": cost_pct, "leverage": lev, "drawdown": dd, "drawdown_note": dd_note, "exchange": str(c.get("exchange") or "NSE").upper(),
         "product": str(c.get("product") or "MIS").upper(),
         "flat_by": plan.get("flat_by") or c.get("flat_by"),
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
@@ -574,6 +613,8 @@ def plan_report(s, order, notes=()):
                                              (": " + s["target_label"]) if s["target_label"] else ""))
     for n in notes:
         lines.append(n)
+    if s.get("drawdown_note"):
+        lines.append("Drawdown: " + s["drawdown_note"] + ".")
     src = {"plan": "the plan's entry", "price": "the latest price, %s the plan's entry" % ("below" if short_ else "above"),
            "limit": "your limit price"}[s["entry_from"]]
     lines.append("Sized at %s (%s). Risk %s a share (%s). Reward:risk %.2f on price."
@@ -941,7 +982,8 @@ def run_plan(a, cfg):
     if a.portfolio and os.path.exists(a.portfolio):
         pf = read_json(a.portfolio, "portfolio")
         cash = _f(pf.get("cash")) if isinstance(pf, dict) else None
-    s = size_trade(plan, cfg, a.budget, limit, price, cash, today)
+    state = read_json(a.state, "broker state") if a.state and os.path.exists(a.state) else None
+    s = size_trade(plan, cfg, a.budget, limit, price, cash, today, state)
     order = bracket_order(s)
     if order and a.write:
         src = "trader/plan.json (%s %s %s)" % (s["symbol"], s["setup"] or "plan", s["date"] or today)
@@ -991,6 +1033,8 @@ def main(argv=None):
     ap.add_argument("--prices", help="prices JSON (default trader/prices.json if it exists)")
     ap.add_argument("--portfolio", default="trader/portfolio.json",
                     help="your account; its cash caps the size if it exists")
+    ap.add_argument("--state", default="trader/state/broker.json",
+                    help="trader-broker's log: its closed trades drive the drawdown rule")
     ap.add_argument("--now", help="pretend it is this IST time, e.g. \"2026-11-05 09:40\"")
     ap.add_argument("--write", nargs="?", const="trader/orders.json", metavar="PATH",
                     help="write the proposed order (default trader/orders.json)")

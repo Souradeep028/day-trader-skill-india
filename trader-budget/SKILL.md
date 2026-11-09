@@ -71,6 +71,8 @@ If `trader/config.json` does not exist, copy `config.example.json` into
   today), **max_entries_per_sector** (2 a day in one industry),
   **max_weekly_loss_inr** (3,000) and **max_monthly_loss_inr** (6,000),
   **max_same_side_risk_inr** (1,000 at risk in open longs, or open shorts),
+  **drawdown_cut_pct** (5) and **drawdown_size_factor** (0.5: the max loss per
+  trade is halved while the account is 5 % or more under its peak),
   **max_index_move_pct** (3: no entries on a 3 % Nifty day),
   **skip_ex_dates** and **skip_market_event_days** (true),
   **max_charges_pct_of_risk** (15: the round trip's charges at the stop at
@@ -124,6 +126,13 @@ happened), the plan is for another day, the symbol is blocked, leverage is
 set without `allow_margin`, or the plan is a short while `allow_short` is
 false (or not intraday MIS). Say the reason to the
 user in one line.
+
+In a drawdown it sizes smaller by itself: it adds every round trip closed so
+far in trader-broker's log (`--state`, after charges) to the budget, and while
+that is `drawdown_cut_pct` (5) % or more under its best, the max loss per
+trade is `drawdown_size_factor` (0.5) of it. The report says so on a
+"Drawdown:" line. Full size comes back when the account is within 5 % of its
+peak again. Losing streaks are normal; this keeps one from becoming ruin.
 
 Why the charges limit: charges are mostly a percentage of the money traded,
 so the closer the stop, the more shares, and the bigger the charges against

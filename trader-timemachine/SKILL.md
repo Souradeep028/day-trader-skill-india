@@ -9,7 +9,7 @@ description: >-
   stop first, or neither by your flat-by time, where the price sits then, the
   average R before and after Zerodha's charges, the history, and one honest
   verdict, then hands off to /trader-budget. Its edge report (edge.py) tests
-  896 intraday rules across a list of stocks (opening-range breaks,
+  1,536 intraday rules across a list of stocks (opening-range breaks,
   previous-day breaks, VWAP pullbacks; long and short; with filters for Nifty,
   volume, gaps, VIX, charges and expiry) after charges and slippage, in two
   halves, with a bootstrap luck test. Use when the user says "run the time
@@ -170,24 +170,29 @@ python3 "${CLAUDE_SKILL_DIR}/edge.py" run --watchlist trader/nifty50.txt --setup
 python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ticks 2 --max-cost-pct 10
 ```
 
-- **64 rules**: four setups, long and short, a tight or a wide stop, a 1R,
+- **96 rules**: six setups, long and short, a tight or a wide stop, a 1R,
   1.5R, 2R or 3R target, entries 9:30 to 14:45, out by 15:10.
   - `orb15`, `orb30`: the first close beyond the 15- or 30-minute opening
     range. Stops: the range midpoint, or the far side of the range.
+  - `orb15s`, `orb30s`: the same ranges with a stop entry: a buy-stop a tick
+    over the range high (a sell-stop under the low) that fills the moment the
+    price gets there, or at the open of a bar that gaps through. The filters
+    read the bar before the fill, so nothing is known before it happened.
   - `pdb`: the first close beyond the previous session's high (low for a
     short), having closed on the other side the bar before.
   - `vwap`: a pullback to VWAP that closes back on the trend's side, with the
     price above the day's open (below, for a short).
   - For `pdb` and `vwap` the tight stop is the entry bar's low (high), the
     wide stop the day's low (high) so far.
-- **14 filters**: none; `with_nifty` (Nifty has moved the trade's way since
+- **16 filters**: none; `with_nifty` (Nifty has moved the trade's way since
   9:15); `stronger` (the stock has moved its way more than Nifty);
   `volume` (the entry bar beat the day's average bar so far); `no_gap`
   (opened within 1 % of the last close); `calm_vix` (India VIX opened under
   its 20-session median); `low_cost` (the charges at the stop are at most
   15 % of the risk, `--max-cost-pct`, the same rule as trader-budget's
   `max_charges_pct_of_risk`); `not_expiry` (not Nifty's weekly expiry);
-  and `low_cost` together with each of the others. 896 combinations.
+  `not_10_to_11` (no entries 10:00 to 11:00, the worst hour for the default);
+  and `low_cost` together with each of the others. 1,536 combinations.
 - **Each trade the way the pack would take it**: sized like trader-budget
   (the most shares whose loss at the stop plus charges fits the max loss),
   Zerodha's charges (a short pays STT on its sale and stamp duty on its buy),
@@ -196,30 +201,41 @@ python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ti
   bar's open). R is the result after charges over the planned risk.
 - **Two halves and a luck test**: a rule "held up" when it made money after
   charges in both the first two thirds of the sessions and the last third,
-  with 30 or more trades in each. With 896 combinations tested, some will
+  with 30 or more trades in each. With 1,536 combinations tested, some will
   hold up by luck, so a rule only PASSES when a session bootstrap (whole
   days resampled, since one day's trades move together) also gives it a
-  p-value under 0.05 / 896 = 0.000056.
+  p-value under 0.05 / 1,536 = 0.000033.
+
+- **What one person would have made**: the grid takes every signal on
+  every stock; a person takes 3 a day. The report scales each rule to that
+  (`--trades-per-day`), takes 30 % tax off a profit (`--tax-pct`, the slab
+  rate on speculative income) and sets it against a `--capital` account and
+  against simply holding Nifty 50 over the same sessions.
 
 **What it found** on the Nifty 50 over the 58 sessions to 6 November 2026:
 
-- **Nothing passed.** 11 of 896 combinations held up in both halves, every
-  one with a p-value of 0.18 or more: well inside what luck produces.
+- **Nothing passed.** 34 of 1,536 combinations held up in both halves, the
+  best with a p-value of 0.13: well inside what luck produces.
 - **Charges are the problem.** At the stop they were a median 16.8 % of the
   risk, so most trades started 0.15 to 0.2 R behind. The pack's default
   (long 15-minute range break, midpoint stop, 2R) took 1,607 trades and lost
-  ₹1,15,780, ₹1,06,901 of it charges: -0.05 R before charges, -0.26 R after.
-  Keeping only the trades whose charges were under 15 % of the risk took the
-  default to -0.06 R (433 trades), and the average of all 64 rules from
-  -0.28 R to -0.09 R. That is why trader-budget and trader-risk now refuse
-  those trades.
-- **The best lead**: short the 30-minute range break, midpoint stop, 3R
-  target, low cost and Nifty also falling: 309 trades, +0.08 R a trade after
-  charges (+0.07 in the earlier sessions, +0.10 in the later), but a 95 %
-  interval of -0.15 to +0.26 R and a p-value of 0.21. Shorts lost less than
-  longs in this stretch (-0.24 R against -0.31 R unfiltered), which may be
-  the market of those weeks more than the rule. Shorts are off by default
-  (`allow_short` in the config); turn them on to paper trade the lead.
+  ₹1,15,780, ₹1,06,901 of it charges. For one person taking 3 a day on
+  ₹1,00,000 that is -12.5 % in 58 sessions, while holding Nifty 50 made
+  +2.5 %. Keeping only trades whose charges were under 15 % of the risk took
+  the average rule from -0.28 R to -0.09 R: why trader-budget and
+  trader-risk refuse the rest.
+- **Stop entries get a better price and lose more.** Unfiltered, the long
+  15-minute range break went from -0.26 R on a close entry to -0.38 R on a
+  buy-stop: the stop also catches every wick that pokes through the range and
+  falls back, which waiting for the close filters out.
+- **Skipping 10:00 to 11:00** barely moves the average rule (-0.25 R to
+  -0.23 R). It lifts the short 30-minute lead to +0.11 R and +0.10 R in the
+  two halves (p 0.13), but that hour was picked from this same data.
+- **The best lead** is still a short on the 30-minute range, low cost, with
+  Nifty falling or outside 10 to 11: about +0.1 R a trade after charges,
+  roughly 5 % on ₹1 lakh after tax over the 58 sessions in hindsight, and
+  within luck. Shorts are off by default (`allow_short`). Freeze it with
+  trader-broker's `forward.py` and paper trade it before any money goes in.
 
 Say this plainly when the user asks whether a setup works. Run the report
 again on fresh data before trusting any rule, and paper trade a lead before
