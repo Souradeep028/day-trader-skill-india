@@ -575,9 +575,10 @@ def cmd_check(a):
         for e in errors:
             print("error: " + e)
         if rings:
-            print("An alert is information, not an order. A bracket's stop-loss and take-profit already sit at "
-                  "the broker: check get_open_position and record any fill (ticket.py fill). To close a "
-                  "position yourself: ticket.py flatten, then trader-risk and your yes.")
+            print("An alert is information, not an order. Paper: ticket.py paper-check fills an open stop-loss or "
+                  "target. Live: check the Kite positions (get_positions), record any fill (ticket.py fill) and "
+                  "cancel the other leg. To close a position yourself: ticket.py flatten, then trader-risk and "
+                  "your yes.")
     return 0 if rings else 1
 
 

@@ -588,7 +588,7 @@ class SkillDoc(unittest.TestCase):
         for must in ("bar by bar", "can lag", "day trading loses most people money", "/trader-exit", "longs only",
                      "in the background", "/loop", "nothing was placed", "9:40 am", "1,160.50", "bar 4", "ist"):
             self.assertIn(must, low)
-        for never in ("—", "tick " + "by tick", "real " + "time", "pro" + "fit", "tsla", "new york"):
+        for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit", "tsla", "new york"):
             self.assertNotIn(never, low)
 
 

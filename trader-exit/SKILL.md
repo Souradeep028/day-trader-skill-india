@@ -5,7 +5,7 @@ description: >-
   when to get out. Reads the entry from trader-entry (or a price you give),
   puts the stop at the opening-range midpoint by default (or the range low,
   your price, a percent, or a multiple of the ATR), rounds it down to the
-  cent, and sets the target at 2R (or 1R, or your price). Refuses a stop at or
+  NSE tick, and sets the target at 2R (or 1R, or your price) on the tick. Refuses a stop at or
   above the entry, a target at or below it, or a stop too tight to survive the
   spread, and says why. Writes trader/plan.json for the Time Machine, the
   Budget Manager and Price Alerts. Long side only. Use when the user says
@@ -28,23 +28,25 @@ and a neat plan does not change that.
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan                          # trader/entry.json: midpoint stop, 2R target
-python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --stop or-mid --target 1R --write
+python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --stop or-mid --target 2R --write
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --stop atr:1.5           # needs the session's bars (Yahoo or --offline)
-python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --symbol TSLA --entry 364.18 --or-high 362.18 --or-low 354.47
+python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --symbol INFY.NS --entry 1160.50 --or-high 1154.70 --or-low 1144.90
 python3 "${CLAUDE_SKILL_DIR}/exit.py" show                          # the current trader/plan.json
 ```
 
-Other flags: `--flat-by 15:15`, `--json`, `--now "2026-10-19 10:15"` (IST time), `--entry PRICE` with a waiting entry.json to plan ahead, `--setup
-level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
+Other flags: `--flat-by 15:10`, `--tick 0.05` (the stock's tick, if NSE set
+it differently from its price band), `--json`, `--now "2026-11-05 09:40"`
+(IST time), `--entry PRICE` with a waiting entry.json to plan ahead,
+`--setup level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
 
 ## What it reads and writes
 
 | file | what |
 | --- | --- |
 | `trader/entry.json` | the trigger from trader-entry: symbol, entry price, time, bar, opening range |
-| `trader/config.json` | `flat_by` (15:15) and `min_reward_risk` (1.0: a note here, trader-risk enforces it) |
+| `trader/config.json` | `flat_by` (15:10) and `min_reward_risk` (1.0: a note here, trader-risk enforces it after charges) |
 | Yahoo chart API | only for an `atr:K` stop: the session's bars up to the entry bar, free and unofficial |
-| `trader/plan.json` | with `--write`: entry, stop and its rule, target and its R, risk a share, reward:risk, flat by. trader-timemachine, trader-budget and trader-alerts read it |
+| `trader/plan.json` | with `--write`: entry, stop and its rule, target and its R, risk a share, reward:risk, tick, flat by. trader-timemachine, trader-budget and trader-alerts read it |
 
 ## Stops and targets
 
@@ -58,16 +60,23 @@ level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
 
 A level setup has no opening range to lean on, so it needs a stop you name.
 
-- **Rounding.** The stop rounds AWAY from the entry to the cent (down, for a
-  long). Risk = entry minus stop. Target = entry + R x risk, rounded half up
-  to the cent. `2R` by default; `1R`, `1.5R` or `price:X` also work.
+- **The NSE tick.** Prices trade in steps that depend on the price (NSE
+  circular CMTR/67133, in force since 15 April 2025): 0.01 under 250, 0.05
+  from 250, 0.10 from 1,000, 0.50 from 5,000, 1.00 from 10,000 and 5.00 from
+  20,000. An order off the tick is rejected, so the stop rounds DOWN to the
+  tick (away from the entry, for a long) and the target rounds half up to it.
+  NSE reviews each stock's tick monthly; `--tick` sets it by hand.
+- **Risk** = entry minus stop. **Target** = entry + R x risk on the tick.
+  `2R` by default; `1R`, `1.5R` or `price:X` also work. After charges a 1R
+  target is usually a losing bet: trader-budget shows it.
 - **Refused, with the reason.** A stop at or above the entry. A target at or
   below it. A risk under 0.05% of the price: too tight to survive the
   spread, normal wiggle would stop you out. An entry.json that has not
   triggered (unless you give `--entry`). A short: v2 plans longs only.
-- **Flat by.** 15:15 by default (or `flat_by` in the config). Out by then,
-  win or lose, no overnight hold. The NSE has no early closes, so it never
-  moves. An entry at or after the flat-by time is refused.
+- **Flat by.** 15:10 by default (or `flat_by` in the config). Out by then,
+  win or lose, no overnight hold, and before Zerodha squares off open
+  intraday (MIS) positions at about 3:20 PM for a fee. A flat-by at or after
+  the 15:30 close is refused, and so is an entry at or after the flat-by time.
 
 ## Steps
 
@@ -87,22 +96,21 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 
 ## Example: the reel
 
-TSLA, Monday 2026-10-19. The entry is 364.18 at 10:15 AM (the 10:10 bar,
-bar 8) and the opening range is 354.47 to 362.18. `exit.py plan --stop
-or-mid --target 1R --write`:
+INFY.NS, Thursday 5 November 2026. The entry is 1160.50 at 9:40 AM (the 9:35
+bar, bar 4) and the opening range is 1144.90 to 1154.70. `exit.py plan --write`:
 
 ```
-Exit plan: TSLA long, Mon 2026-10-19, opening-range breakout on 5-minute bars
-  Entry         ₹364.18 at 10:15 AM (bar 8)
-  Stop          ₹358.32  opening-range midpoint: (₹362.18 + ₹354.47) / 2 = ₹358.325, rounded down
-  Target        ₹370.04  1R (one times the risk)
-  Risk a share  ₹5.86 (1.61% of the entry)
-  Reward:risk   1.0
-  Flat by       15:15 IST, win or lose: no overnight hold
+Exit plan: INFY.NS long, Thu 2026-11-05, opening-range breakout on 5-minute bars
+  Entry         ₹1,160.50 at 9:40 AM (bar 4)
+  Stop          ₹1,149.80  opening-range midpoint: (₹1,154.70 + ₹1,144.90) / 2 = ₹1149.8
+  Target        ₹1,181.90  2R (two times the risk)
+  Risk a share  ₹10.70 (0.92% of the entry)
+  Reward:risk   2.0
+  Flat by       15:10 IST, win or lose: no overnight hold
 ```
 
-The default 2R target would be 364.18 + 2 x 5.86 = 375.90. trader-budget then
-sizes it: a ₹50 max loss per trade buys floor(50 / 5.86) = 8 shares.
+The midpoint is already on the 0.10 tick. A 1R target would be 1171.20.
+trader-budget then sizes it: a 500 max loss with charges buys 41 shares.
 
 ## Rules
 
@@ -110,22 +118,25 @@ sizes it: a ₹50 max loss per trade buys floor(50 / 5.86) = 8 shares.
 - Never move a stop further from the entry once the trade is on.
 - Plain numbers only: entry, stop, target, risk a share, reward:risk. It
   never prints a P&L or a return.
-- Nothing here promises winning trades or money. A 1R target is not a
+- Nothing here promises winning trades or money. A 2R target is not a
   prediction that the price gets there.
 - Long side only. v2 plans longs only.
 
 ## What it never does
 
 It never places an order, never sizes a position, never widens a stop to
-make a plan pass, and never calls a stop a guarantee.
+make a plan pass, never puts a price off the NSE tick, and never calls a
+stop a guarantee.
 
 ## Safety
 
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
-- Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
-- Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
-  user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
-  (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
-- No options, margin, short selling or leverage unless the config allows it and the user confirms.
-- Broker keys live in environment variables or the Claude Desktop config, never in the chat.
+- Paper trading by default (`"paper": true`): ticket.py fills paper orders itself and no broker sees
+  them. Going live is the user's own decision, in their own config.
+- Nothing in this pack places a real order except trader-broker, and only when all three hold:
+  trader-risk passed that exact order today, the user typed an explicit yes for that one order in the
+  chat, and the user clicked Allow once on Claude's own card because the order tool is set to "Needs
+  approval" (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
+- No futures and options, margin (MIS leverage) or short selling unless the config allows it and the
+  user confirms.
+- Broker keys (the Kite Connect API key and secret) live in the Claude Desktop config, never in the chat.

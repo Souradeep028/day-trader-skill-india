@@ -6,7 +6,7 @@ description: >-
   Transaction Reports (PTRs) as soon as they are posted, alerts once per new
   filing, and turns each PDF into clean rows (who, owner, stock, ticker,
   buy or sell, options strike and expiry, trade date, amount range, how many
-  days it took to disclose). Flags trades in stocks you hold. Senate reports
+  days it took to disclose). Flags trades in US stocks you hold. US only: it says nothing about NSE stocks. Senate reports
   are covered by a documented manual route. Use when the user says "what is
   Pelosi buying", "track Nancy Pelosi", "Congress trades", "politician stock
   trades", "did any congressman buy X", "alert me when Pelosi files", or
@@ -25,6 +25,13 @@ It is fast. It is not early. A PTR is due within 30 days of the member
 learning of the trade and never more than 45 days after it, so by the time
 anyone can read it the trade is days or weeks old. There is no inside
 information here: only public filings, read quickly. Say that every time.
+
+**US only.** These are US Congress filings about US-listed stocks. They say
+nothing about NSE stocks, and the "stocks you hold" check only matches when
+the user holds the same US ticker. India has no equivalent disclosure for
+members of Parliament. For Indian insiders, the nearest public records are
+the insider-trading (SEBI PIT) and SAST disclosures and the bulk and block
+deals on nseindia.com and bseindia.com; read those in a browser.
 
 Tool in this folder (standard library Python; `pdftotext` from poppler is
 optional, to read the PDFs locally):
@@ -143,16 +150,13 @@ does not click it or automate it. The route:
 
 ## Safety
 
-- Education and tooling, not financial advice. Nothing in this pack is a
-  recommendation to buy or sell anything.
-- Paper trading by default (`"paper": true` in `trader/config.json`).
-- Nothing places an order except `/trader-broker`, and only after
-  `/trader-risk` passes AND the user types an explicit yes for that order in
-  the chat, AND the brokerage tool is set to "Needs approval" in Claude
-  (Customize > Connectors > tool permissions) so Claude's own "Allow once /
-  Deny" card appears too. Never "Always allow" an order tool.
-- No options, margin, shorting or leverage unless the config allows it and
-  the user confirms.
-- Congressional trades are PUBLIC disclosures filed up to 45 days after the
-  trade (STOCK Act). This skill reads them fast; it has no inside
-  information, and it says so.
+- Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
+- Paper trading by default (`"paper": true`): ticket.py fills paper orders itself and no broker sees
+  them. Going live is the user's own decision, in their own config.
+- Nothing in this pack places a real order except trader-broker, and only when all three hold:
+  trader-risk passed that exact order today, the user typed an explicit yes for that one order in the
+  chat, and the user clicked Allow once on Claude's own card because the order tool is set to "Needs
+  approval" (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
+- No futures and options, margin (MIS leverage) or short selling unless the config allows it and the
+  user confirms.
+- Broker keys (the Kite Connect API key and secret) live in the Claude Desktop config, never in the chat.

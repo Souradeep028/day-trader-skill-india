@@ -10,7 +10,7 @@ SKILLS = ["trader-scanner", "trader-news", "trader-entry", "trader-exit", "trade
           "trader-risk", "trader-budget", "trader-broker", "trader-alerts", "trader-analyst",
           "trader-pelosi"]
 ABOUT = ("11 Claude skills for day trading: scan thousands of charts, track breaking news, time every "
-         "entry and exit, and replay every outcome before you risk a dollar.")
+         "entry and exit, and replay every outcome before you risk a rupee.")
 # skills on the way to an order carry the safety block
 ORDER_PATH = ["trader-scanner", "trader-entry", "trader-exit", "trader-timemachine", "trader-budget",
               "trader-pelosi", "trader-risk", "trader-broker", "trader-alerts"]
@@ -40,7 +40,9 @@ class Repo(unittest.TestCase):
 
     def test_root_matches_the_reel(self):
         root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
+        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests", "trader"] + SKILLS))
+        # trader/ ships the NSE watchlists only: personal config and state stay out of git
+        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "trader"))), ["banknifty.txt", "nifty50.txt"])
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:
@@ -121,12 +123,15 @@ class Repo(unittest.TestCase):
     def test_day_trading_limits_ship_in_the_example_config(self):
         with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
-        for k in ("max_loss_per_trade_usd", "max_daily_loss_usd", "max_trades_per_day",
+        for k in ("max_loss_per_trade_inr", "max_daily_loss_inr", "max_trades_per_day",
                   "min_reward_risk", "require_stop", "no_entries_after", "flat_by"):
             self.assertIn(k, cfg, k)
         self.assertIs(cfg["require_stop"], True)
         self.assertIs(cfg.get("allow_short", False), False)
         self.assertIs(cfg.get("allow_margin", False), False)
+        self.assertEqual((cfg["exchange"], cfg["product"], cfg["intraday_leverage"]), ("NSE", "MIS", 1))
+        self.assertLess(cfg["flat_by"], "15:20")           # before Zerodha squares off MIS positions itself
+        self.assertLess(cfg["no_entries_after"], cfg["flat_by"])
 
     def test_paper_trading_is_the_default(self):
         with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:

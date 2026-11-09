@@ -294,8 +294,9 @@ class SkillDoc(unittest.TestCase):
         low = " ".join(text.lower().split())
         for must in ("before the entry", "a stop is a plan, not a guarantee", "day trading loses most people money", "/trader-timemachine", "/trader-budget", "longs only", "₹1,149.80", "₹1,181.90", "₹10.70", "tick", "too tight to survive the spread"):
             self.assertIn(must, low)
-        for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit", "tsla", "$"):
+        for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit", "tsla"):
             self.assertNotIn(never, low)
+        self.assertNotRegex(low, r"\$\d")                              # no dollar amounts left
 
 
 if __name__ == "__main__":
