@@ -246,6 +246,12 @@ def to_yahoo(sym):
     return (s if s.endswith(".NS") else s.replace(".", "-"))
 
 
+def from_yahoo(sym):
+    """Yahoo's name back to ours: an NSE symbol (BAJAJ-AUTO.NS, M&M.NS) stays as it is."""
+    s = str(sym).upper()
+    return s if s.endswith(".NS") else s.replace("-", ".")
+
+
 def spark_path(symbols, rng, interval):
     return "/v7/finance/spark?symbols=%s&range=%s&interval=%s" % (
         ",".join(urllib.parse.quote(to_yahoo(s), safe="") for s in symbols), rng, interval)
@@ -284,7 +290,7 @@ def parse_spark(text_or_doc, wanted=None):
         if not resp:
             continue
         ysym = item.get("symbol") or (resp[0].get("meta") or {}).get("symbol") or ""
-        sym = (wanted or {}).get(ysym.upper(), ysym.upper().replace("-", "."))
+        sym = (wanted or {}).get(ysym.upper(), from_yahoo(ysym))
         out[sym] = series_from_result(resp[0])
     if err and not out:
         raise ScanError("Yahoo spark: %s" % (err.get("description") or err.get("code") or err))
@@ -331,7 +337,7 @@ def _absorb(doc, name_hint, data, errors):
                 sym = (doc["chart"].get("result") or [{}])[0]["meta"]["symbol"]
             except (AttributeError, KeyError, TypeError, IndexError):
                 raise ScanError("an offline v8 chart without a symbol: name the file <TICKER>.json")
-        sym = sym.upper().replace("-", ".")
+        sym = from_yahoo(sym)
         try:
             data[sym] = parse_chart(doc, sym)
         except ScanError as e:
@@ -543,7 +549,7 @@ def session_bars(series, day, cutoff):
         if et.date() != day or et.second or et.minute % BAR_MIN:
             continue  # another day, or the live tick off the grid
         if et.time() < OPEN or et.time() >= close_t:
-            continue  # pre-market, after hours, the 4:00 PM closing print
+            continue  # the pre-open auction, after hours, the 15:30 closing print
         if et + datetime.timedelta(minutes=BAR_MIN) > cutoff:
             continue  # still in progress at the cutoff
         v = series.get("v")
@@ -615,7 +621,7 @@ def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
     else:
         cutoff = now.replace(second=0, microsecond=0)
         if cutoff >= close_dt:
-            raise ScanError("The market closed at %s IST on %s. Replay the session with --at 10:15."
+            raise ScanError("The market closed at %s IST on %s. Replay the session with --at 09:40."
                             % (clock_label(close_dt), day_label(day)))
     if cutoff < first_close:
         raise ScanError("It is %s IST: the %d-minute opening range runs 9:15 to %s and the first bar after it "
@@ -625,7 +631,7 @@ def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
     if until is not None and cutoff.time() > until:
         raise ScanError("It is %s IST, after %s, your last time for new entries (no_entries_after): an "
                         "opening-range breakout found now is expired. Run orb tomorrow after %s, or replay "
-                        "today with --at 10:15." % (clock_label(cutoff), until.strftime("%H:%M"),
+                        "today with --at 09:40." % (clock_label(cutoff), until.strftime("%H:%M"),
                                                       clock_label(first_close)))
     return day, cutoff
 
@@ -926,7 +932,7 @@ def cmd_orb(a):
     now = parse_now(a.now)
     at = parse_hhmm(a.at) if a.at else None
     cfg = read_config(a.config)
-    until = parse_hhmm(a.until or cfg.get("no_entries_after") or "15:15", "--until")
+    until = parse_hhmm(a.until or cfg.get("no_entries_after") or "14:45", "--until")
     data = failed = None
     explicit_day = None
     offline_syms = None
@@ -1047,7 +1053,7 @@ def main(argv=None):
     p.add_argument("--max-confirm", type=int, default=MAX_CONFIRM,
                    help="v8 charts to fetch in stage 2, most traded first (%d; 0 = all)" % MAX_CONFIRM)
     p.add_argument("--at", help="cut the clock at this IST time, HH:MM")
-    p.add_argument("--until", help="no new entries after HH:MM (default: config no_entries_after, 15:15)")
+    p.add_argument("--until", help="no new entries after HH:MM (default: config no_entries_after, 14:45)")
     p.add_argument("--config", default="trader/config.json")
     a = ap.parse_args(argv)
     if not a.cmd:

@@ -13,7 +13,7 @@
     python3 alerts.py check                          # rings what hit, once; exit 1 if nothing rang
     python3 alerts.py check --now "2026-11-05 15:10" --offline tests/fixtures/trader-alerts
     python3 alerts.py list
-    python3 alerts.py reset infy-ns-plan-stop
+    python3 alerts.py reset infy.ns-plan-stop
 
 Rule types:
   above / target  the price is at or above "price"

@@ -63,7 +63,8 @@ KEEP_DAYS = 30
 MOVE_PCT = 3.0  # a stock this far from yesterday's close is flagged as moving
 
 KEYWORDS = [
-    ("earnings", r"\bearnings\b|\bresults\b|\bQ[1-4]\b|\bEPS\b|\bguidance\b|\bprofit\b|\bnet loss\b|\brevenue\b"),
+    ("earnings", r"\bearnings\b|\b(Q[1-4]|quarterly|financial|half.yearly|annual)\s+results\b|\bresults (date|day)\b"
+                 r"|\bQ[1-4](FY)?\d*\b|\bEPS\b|\bguidance\b|\bprofit\b|\bnet loss\b|\brevenue\b"),
     ("analyst", r"\bupgrade[sd]?\b|\bdowngrade[sd]?\b|price target|target price|\boutperform\b|\bunderperform\b"
                 r"|\b(buy|sell|hold|accumulate) rating\b|\bbrokerages?\b"),
     ("legal", r"\blawsuit\b|\bsued\b|\bprobe\b|\binvestigation\b|\bSEBI order\b|\bshow.cause\b|\braids?\b"
@@ -324,6 +325,8 @@ def mention_patterns(watch):
     for t, name in watch.items():
         b = bare(t)
         alts = [r"\(%s\)" % re.escape(b), r"\b(?:NSE|BSE)\s*:\s*%s\b" % re.escape(b)]
+        if len(b) >= 3:
+            alts.append(r"(?-i:(?<![\w&-])%s(?![\w&-]))" % re.escape(b))    # "TCS", in capitals, as a word
         sn = short_name(name, t) if name else ""
         if sn and len(sn) >= 4:
             alts.append(r"\b%s\b" % re.escape(sn).replace(r"\ ", r"[\s-]"))

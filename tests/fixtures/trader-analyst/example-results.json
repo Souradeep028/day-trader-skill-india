@@ -1,0 +1,8 @@
+{"symbol": "EXAMPLE.NS", "name": "Example Industries", "basis": "consolidated", "unit": "crore",
+ "source": "made-up numbers for the tests",
+ "quarters": [
+  {"end": "2025-09-30", "revenue": 1000, "ebitda": 200, "operating_profit": 170, "pat": 120, "eps": 6.0},
+  {"end": "2025-12-31", "revenue": 1050, "ebitda": 215, "operating_profit": 180, "pat": 126, "eps": 6.3},
+  {"end": "2026-03-31", "revenue": 1100, "ebitda": 230, "operating_profit": 190, "pat": 210, "eps": 10.5, "exceptional": 75},
+  {"end": "2026-06-30", "revenue": 1080, "ebitda": 220, "operating_profit": 185, "pat": 135, "eps": 6.75},
+  {"end": "2026-09-30", "revenue": 1150, "ebitda": 241.5, "operating_profit": 200, "pat": 144, "eps": 7.2}]}
