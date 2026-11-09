@@ -846,5 +846,16 @@ class Calendar(unittest.TestCase):
         self.assertTrue(any("no Nifty 50 price in trader/prices.json" in w for w in res["warnings"]))
 
 
+class Upkeep(unittest.TestCase):
+    def test_december_and_old_charges(self):
+        d = datetime.date
+        self.assertEqual(check.staleness(d(2026, 11, 9)), [])
+        self.assertIn("NSE publishes 2027's trading holidays in December", check.staleness(d(2026, 12, 2))[0])
+        old = check.staleness(d(2027, 11, 10))
+        self.assertTrue(any("read from zerodha.com/charges on 2026-11-08, 367 days ago" in w for w in old))
+        res = check.check([infy()], cfg(), now=at("2026-12-02 10:00"), surveillance={"symbols": {}})
+        self.assertTrue(any("2027's trading holidays" in w for w in res["warnings"]))
+
+
 if __name__ == "__main__":
     unittest.main()

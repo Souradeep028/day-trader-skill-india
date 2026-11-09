@@ -166,6 +166,7 @@ NSE_SPECIAL_SESSIONS = {  # one-off sessions on closed days: the pack does not t
 INDEX = "^NSEI"
 MWCB_PCT = 10.0            # a 10 % move in Nifty or the Sensex halts all trading (market-wide circuit breaker)
 CALENDAR_YEARS = (2026,)
+CHARGES_READ = "2026-11-08"   # when CHARGES was last checked against zerodha.com/charges
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)
@@ -509,6 +510,21 @@ def max_loss_now(c, dd):
     return base, None
 
 
+def staleness(d):
+    """Warnings for the dates this pack has to be told: next year's NSE holidays (published in December) and
+    the broker's charges (checked once a year)."""
+    out = []
+    if d.month == 12 and d.year + 1 not in CALENDAR_YEARS:
+        out.append("NSE publishes %d's trading holidays in December: add them to NSE_HOLIDAYS (trader-alerts, "
+                   "trader-entry, trader-risk, trader-scanner) and %d to CALENDAR_YEARS before 1 January"
+                   % (d.year + 1, d.year + 1))
+    age = (d - datetime.date.fromisoformat(CHARGES_READ)).days
+    if age > 365:
+        out.append("the charges were read from zerodha.com/charges on %s, %d days ago: check them, and the "
+                   "\"charges\" in trader/config.json" % (CHARGES_READ, age))
+    return out
+
+
 def expiry_day(d):
     """True when d is Nifty's weekly F&O expiry: a trading day with no trading day between it and the next
     expiry weekday (Tuesday). So the Tuesday itself, or the Monday when the Tuesday is a holiday."""
@@ -616,6 +632,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             day_warn.append("trader/surveillance.json is %d days old: NSE changes the ASM and GSM lists every "
                             "week, refresh it (scan.py surveillance)" % age)
     is_expiry = expiry_day(today_d)
+    for w in staleness(today_d):
+        day_warn.append(w)
     rates0 = c.get("charges") or {}
     week_from = (today_d - datetime.timedelta(days=today_d.weekday())).isoformat()
     month_from = today_d.replace(day=1).isoformat()

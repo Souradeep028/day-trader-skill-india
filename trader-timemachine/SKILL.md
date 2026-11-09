@@ -281,6 +281,45 @@ by average R made about 7.6 % a year after tax with 5 positions; holding
 Nifty 50 made 10.6 % a year. Say so plainly: on this evidence an index fund
 beat every rule tested, intraday or swing.
 
+## The factor rotation report: momentum and low volatility
+
+`rotation.py` tests the two factors with the most evidence behind them,
+rebalanced once a month on the Nifty 100 (`trader/nifty100.txt`) over ten
+years of daily bars:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/rotation.py" run --watchlist trader/nifty100.txt
+python3 "${CLAUDE_SKILL_DIR}/rotation.py" run --watchlist trader/nifty100.txt --capital 500000 --write
+```
+
+- **12 portfolios**: momentum (the return from 12 or 6 months ago to a
+  month ago) or low volatility (the steadiest 252 days), the top 10 or 20,
+  with and without a trend filter (cash while Nifty closes the month under
+  its 200-day average). Ranked on each month's last close, traded at the
+  next open, whole shares, delivery charges, tax paid each April (20 % short
+  term, 12.5 % long term over ₹1.25 lakh, today's rates throughout).
+- **Benchmarks**: the same stocks held equal-weight (it carries the same
+  survivorship bias, so beating it is what counts) and Nifty 50 held.
+- **The reality check**: real factor ETFs (Aditya Birla Sun Life's Nifty
+  200 Momentum 30, `MOMENTUM.NS`; ICICI Prudential's Nifty 100 Low
+  Volatility 30, `LOWVOLIETF.NS`) against the Nifty 50 ETF `NIFTYBEES.NS`
+  over the same dates. Their indexes picked the stocks at the time, so they
+  have no survivorship. When the backtest and the funds disagree, believe
+  the funds.
+
+**What it found**, December 2017 to November 2026: the backtest looks
+spectacular and is not to be believed. Today's Nifty 100 held equal-weight
+made +21.7 % a year, against +10.3 % for the Nifty 50 itself: that gap is
+survivorship, the companies that grew into the index. Momentum top 10 made
++32.5 % a year after tax, but against the equal-weight list it was within
+luck (p 0.047, the bar 0.0042) and lagged it in the last three years;
+low volatility trailed it every way. Nothing passed. The real funds tell the
+truth: the momentum ETF made 8.9 % a year from August 2022 against 9.5 % for
+NIFTYBEES (and fell 31 % against 15 %); the low-volatility ETF made 11.9 % a
+year from May 2018 against 11.6 %, with a smaller worst fall (28 % against
+36 %). Low volatility matched the index with a smoother ride; momentum did
+not beat it in the years a real fund has existed.
+
 ## Rules
 
 - Every number comes from the run. Never round a coin flip up into an edge.

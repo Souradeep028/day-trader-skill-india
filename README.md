@@ -156,6 +156,8 @@ python3 trader-exit/exit.py plan --stop or-mid --target 2R --write     # -> trad
 python3 trader-timemachine/timemachine.py run --write                  # 10,000 replays + the history
 python3 trader-timemachine/edge.py run --watchlist trader/nifty50.txt  # which rules made money after charges
 python3 trader-timemachine/swing.py run --watchlist trader/nifty50.txt # multi-day rules on 10 years of data
+python3 trader-timemachine/rotation.py run --watchlist trader/nifty100.txt   # momentum and low-vol, vs real funds
+python3 trader-budget/sip.py status                                    # the index-fund core, XIRR, trading beside it
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
@@ -178,6 +180,8 @@ python3 trader-pelosi/ptr.py index --member pelosi                     # her PTR
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+GitHub Actions runs the same tests on every push (`.github/workflows/tests.yml`).
 
 The tests run offline, on fixtures cut from real data: Infosys's 5-minute bars
 for the 60 sessions to 6 November 2026, the Nifty 50's 5-minute and daily
@@ -220,6 +224,19 @@ Nifty 50 daily bars with `swing.py`: 40 rules, delivery charges, against
 simply holding the same stocks. Nothing passed. The best made about 7.6 % a
 year after tax with 5 positions; holding Nifty 50 made 10.6 % a year. On
 this evidence an index fund beat every rule tested, intraday or swing.
+
+**Factor portfolios** (momentum and low volatility, rebalanced monthly on the
+Nifty 100) look spectacular in a backtest, and `rotation.py` shows why not to
+believe it: today's Nifty 100 held equal-weight made 21.7 % a year against
+10.3 % for the Nifty 50, which is survivorship, and no factor portfolio beat
+that list by more than luck. The real funds settle it: the Nifty 200
+Momentum 30 ETF made 8.9 % a year since August 2022 against 9.5 % for the
+Nifty 50 ETF; the Nifty 100 Low Volatility 30 ETF made 11.9 % since May 2018
+against 11.6 %, with a smaller worst fall.
+
+**So the core is the index.** `sip.py` tracks a monthly SIP into a Nifty 50
+fund and puts any trading's P&L beside it. Treat trading as a small,
+separately measured experiment:
 
 So: freeze one rule with `forward.py start`, paper trade every signal it
 gives, and let `forward.py status` judge it by limits set before the first
@@ -305,14 +322,14 @@ trader-scanner/     SKILL.md, scan.py, morning.py
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py
 trader-exit/        SKILL.md, exit.py
-trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py
+trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py
 trader-risk/        SKILL.md, check.py
-trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
+trader-budget/      SKILL.md, size.py, sip.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, forward.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py
 trader-pelosi/      SKILL.md, ptr.py
-trader/             nifty50.txt, banknifty.txt, sectors.json (NSE's index lists and industries)
+trader/             nifty50.txt, nifty100.txt, banknifty.txt, sectors.json (NSE's index lists and industries)
 tests/              unittest suite + offline fixtures
 ```
 

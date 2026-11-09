@@ -39,6 +39,7 @@ NEWS = os.path.join(SKILLS, "trader-news", "news.py")
 EXPIRY_WEEKDAY = 1        # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
 STALE_DAYS = 7
 SPECIAL_SESSIONS = {"2026-11-08": "Diwali Muhurat trading, a short Sunday session"}   # as in trader-risk
+CHARGES_READ = "2026-11-08"                                                        # as in trader-risk
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
           "November", "December")
@@ -125,6 +126,8 @@ def brief(today, steps, cfg):
                  % (u.get("error", "no answer"),
                     "trader/bands.json is %d day(s) old." % u["bands_age"] if u.get("bands_age") is not None
                     else "There is no trader/bands.json: the risk check cannot test price bands."))
+    for w in steps.get("stale") or []:
+        L.append("- Upkeep: " + w + ".")
     age = steps.get("surveillance")
     if age is None:
         L.append("- ASM/GSM lists: no trader/surveillance.json. Save the CSVs from nseindia.com/reports/asm and "
@@ -216,7 +219,13 @@ def main(argv=None):
         return 0
     cfg = read_json(a.config) or {}
     now_arg = ["--now", a.now] if a.now else []
-    steps = {"expiry": expiry_day(today), "next": next_trading_day(today)}
+    steps = {"expiry": expiry_day(today), "next": next_trading_day(today), "stale": []}
+    if today.month == 12 and today.year + 1 not in scan.CALENDAR_YEARS:
+        steps["stale"].append("NSE publishes %d's holidays in December: add them to the pack before 1 January"
+                              % (today.year + 1))
+    if (today - datetime.date.fromisoformat(CHARGES_READ)).days > 365:
+        steps["stale"].append("the charges were checked on %s, over a year ago: compare zerodha.com/charges"
+                              % CHARGES_READ)
     bands_age = file_age_days("trader/bands.json", today, "as_of")
     if a.skip_universe:
         steps["universe"] = {"skipped": True, "bands_age": bands_age}

@@ -207,6 +207,26 @@ stop. A short's loss has no ceiling if the stock gaps up through the stop,
 and a stock locked at its upper band cannot be bought back until it
 reopens: paper trade shorts first.
 
+## The core: a monthly SIP into the index (sip.py)
+
+Every test in this pack ended the same way: after charges and tax, holding
+the index beat the trading rules. So the sensible core is a plain monthly SIP
+into a low-cost Nifty 50 fund, with any trading kept small and judged
+against it. `sip.py` in this folder tracks it:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/sip.py" plan --monthly 10000                  # this month's NIFTYBEES units
+python3 "${CLAUDE_SKILL_DIR}/sip.py" add --date 2026-11-11 --amount 9984.60 --units 35
+python3 "${CLAUDE_SKILL_DIR}/sip.py" status                               # invested, value, XIRR, trading beside it
+```
+
+`plan` turns a monthly amount into whole units at the ETF's price; you buy
+them yourself as a delivery order (or use a direct-plan index mutual fund
+and record each purchase). `add` records what the contract note says.
+`status` shows the money in, its value, the gain and the XIRR, and puts the
+trading's realised P&L after charges since the first SIP next to it, so it
+is plain which one is earning its keep. It never buys anything.
+
 ## What it never does
 
 It never places an order, never sizes a short unless `allow_short` is on, never rounds up past a limit,

@@ -501,5 +501,58 @@ class WeightsMode(unittest.TestCase):
             self.assertIn("no weights file", err)
 
 
+class Sip(unittest.TestCase):
+    sip = load("trader-budget", "sip")
+
+    def run_sip(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = self.sip.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_xirr_by_hand(self):
+        import datetime as dt
+        d = dt.date
+        # 100 in, 110 back a year (365 days) later: 10 %
+        self.assertAlmostEqual(self.sip.xirr([(d(2025, 1, 1), -100.0), (d(2026, 1, 1), 110.0)]), 0.10, places=6)
+        # 100 in twice, six months apart (181 days), 210 a year after the first: r solves
+        # -100 - 100 / (1 + r) ** (181/365) + 210 / (1 + r) = 0
+        r = self.sip.xirr([(d(2025, 1, 1), -100.0), (d(2025, 7, 1), -100.0), (d(2026, 1, 1), 210.0)])
+        self.assertAlmostEqual(-100 - 100 / (1 + r) ** (181 / 365.0) + 210 / (1 + r), 0, places=6)
+        self.assertTrue(0.06 < r < 0.07)
+        self.assertIsNone(self.sip.xirr([(d(2025, 1, 1), -100.0)]))
+
+    def test_plan_add_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "sip.json")
+            code, text, _ = self.run_sip(["plan", "--monthly", "10000", "--price", "284.22", "--file", f])
+            # 10,000 // 284.22 = 35 units = 9,947.70; 52.30 left over
+            self.assertIn("35 units of NIFTYBEES.NS at about ₹284.22 = ₹9,947.70; ₹52.30 left over", text)
+            self.run_sip(["add", "--date", "2025-11-10", "--amount", "10000", "--units", "40", "--file", f])
+            self.run_sip(["add", "--date", "2026-05-11", "--amount", "10000", "--units", "36", "--file", f])
+            state = os.path.join(d, "broker.json")
+            with open(state, "w") as fh:
+                json.dump({"orders": [
+                    {"status": "filled", "date": "2026-06-01", "symbol": "ABC.NS", "side": "buy", "qty": "10",
+                     "price": 100.0, "paper": True},
+                    {"status": "filled", "date": "2026-06-01", "symbol": "ABC.NS", "side": "sell", "qty": "10",
+                     "price": 99.0, "paper": True}]}, fh)
+            code, text, err = self.run_sip(["status", "--price", "284.22", "--today", "2026-11-09", "--file", f,
+                                            "--state", state])
+            self.assertEqual(code, 0, err)
+            # 76 units x 284.22 = 21,600.72 on 20,000 in: +1,600.72 (+8.00 %)
+            self.assertIn("Invested ₹20,000.00, worth ₹21,600.72 at ₹284.22: +₹1,600.72 (+8.00 %), XIRR", text)
+            # -10 on price, less 0.42 + 0.64 of intraday charges
+            self.assertIn("Trading (paper) since 2025-11-10: 1 round trips, -₹11.06 after charges", text)
+            code, text, _ = self.run_sip(["status", "--price", "284.22", "--today", "2026-11-09", "--file", f,
+                                          "--json", "--state", ""])
+            s = json.loads(text)
+            self.assertEqual((s["units"], s["invested"], s["value"]), (76.0, 20000.0, 21600.72))
+            self.assertTrue(10 < s["xirr_pct"] < 12)                       # 8 % in about 9 months on average
+            code, _, err = self.run_sip(["status", "--file", os.path.join(d, "none.json")])
+            self.assertEqual(code, 1)
+            self.assertIn("record a purchase with sip.py add", err)
+
+
 if __name__ == "__main__":
     unittest.main()

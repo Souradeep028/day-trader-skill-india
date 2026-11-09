@@ -162,7 +162,25 @@ def daily_bars(text, sym, today=None):
         if today and d >= today:
             continue
         out[d] = tuple(round(v, 2) for v in vals)
-    return [(d,) + out[d] for d in sorted(out)]
+    return drop_spikes([(d,) + out[d] for d in sorted(out)])
+
+
+def drop_spikes(bars, jump=0.4, back=0.2, most=3):
+    """Leave out bad prints: up to `most` days whose close is `jump` (40 %) or more away from the last good close
+    when a later close within `most` days is back within `back` (20 %) of it. Yahoo shows these around unit
+    splits that it adjusted on all but a day or two (NIFTYBEES.NS, December 2019: 129 to 13 and back)."""
+    out, i = [], 0
+    while i < len(bars):
+        if out and abs(bars[i][4] / out[-1][4] - 1) >= jump:
+            ref = out[-1][4]
+            k = next((k for k in range(i + 1, min(i + 1 + most, len(bars)))
+                      if abs(bars[k][4] / ref - 1) < back), None)
+            if k is not None:
+                i = k
+                continue
+        out.append(bars[i])
+        i += 1
+    return out
 
 
 # ---------------------------------------------------------------- indicators

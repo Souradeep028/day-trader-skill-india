@@ -42,7 +42,7 @@ class Repo(unittest.TestCase):
         root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
         self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests", "trader"] + SKILLS))
         # trader/ ships NSE's lists only: personal config and state stay out of git
-        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "trader"))), ["banknifty.txt", "nifty50.txt", "sectors.json"])
+        self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "trader"))), ["banknifty.txt", "nifty100.txt", "nifty50.txt", "sectors.json"])
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:
@@ -138,6 +138,30 @@ class Repo(unittest.TestCase):
             cfg = json.load(fh)
         self.assertIs(cfg["paper"], True)
         self.assertIs(cfg.get("allow_options", False), False)
+
+
+class SharedTables(unittest.TestCase):
+    """The pack copies a few tables into each skill so each one runs alone. They must stay the same."""
+
+    def test_the_holiday_lists_match(self):
+        from _load import load
+        mods = [load("trader-alerts", "alerts"), load("trader-entry", "entry"), load("trader-risk", "check"),
+                load("trader-scanner", "scan")]
+        for m in mods[1:]:
+            self.assertEqual(m.NSE_HOLIDAYS, mods[0].NSE_HOLIDAYS, m.__name__)
+            self.assertEqual(m.CALENDAR_YEARS, mods[0].CALENDAR_YEARS, m.__name__)
+
+    def test_the_intraday_charges_match(self):
+        from _load import load
+        mods = [load("trader-budget", "size"), load("trader-risk", "check"), load("trader-broker", "ticket"),
+                load("trader-timemachine", "timemachine"), load("trader-timemachine", "edge")]
+        for m in mods[1:]:
+            self.assertEqual(m.CHARGES, mods[0].CHARGES, m.__name__)
+
+    def test_ci_runs_the_tests(self):
+        with open(os.path.join(ROOT, ".github", "workflows", "tests.yml")) as fh:
+            wf = fh.read()
+        self.assertIn("python -m unittest discover -s tests", wf)
 
 
 if __name__ == "__main__":
