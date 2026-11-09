@@ -154,6 +154,21 @@ python3 "${CLAUDE_SKILL_DIR}/forward.py" status                            # tra
   trips and flags trades off the plan: a loss over 1.25 R (a stop moved, or a
   fill far past it), no stop recorded, or a trade with no logged signal.
 
+**The shadow test** runs the same rule with no human in it. After each close,
+`forward.py shadow` replays the frozen rule on that session's real 5-minute
+bars for the Nifty 50 (trader-timemachine's edge.py: the same trades,
+charges and slippage as the backtest), takes the first 3 signals of the day
+as one person would (`--per-day`), and stores them in trader/forward.json.
+`--from DATE` fills in every session since the start (Yahoo keeps 60 days).
+`status` prints the shadow next to your own trades: the gap between them is
+your execution. Because it only replays bars, it can run on a schedule with
+nothing to remember.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/forward.py" shadow                    # today, after 15:30
+python3 "${CLAUDE_SKILL_DIR}/forward.py" shadow --from 2026-11-10  # every session since
+```
+
 On a STOP, drop the rule: do not re-tune it on the same trades. On a PASSED,
 go live at half size and keep the journal.
 

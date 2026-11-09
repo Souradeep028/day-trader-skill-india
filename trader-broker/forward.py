@@ -9,6 +9,8 @@ advance, traded on every signal it gives (on paper first), and judged by limits 
     python3 forward.py signal INFY.NS --taken                     # every signal the rule gives, taken or not
     python3 forward.py signal TCS.NS --skipped --reason "results tomorrow"
     python3 forward.py status                                     # the trades since the start against the plan
+    python3 forward.py shadow                                     # replay today's real bars: every signal, automatically
+    python3 forward.py shadow --from 2026-11-10                   # every session since the start (Yahoo keeps 60 days)
 
 start   freezes the rule in trader/forward.json with what the backtest expects: its average R after
         charges and the low end of its 95 % bootstrap range (edge.py --write saved both), or --expect-r
@@ -24,6 +26,13 @@ status  pairs the broker log's fills (trader/state/broker.json, paper by default
         the verdict, and the trades that went off the plan: a loss bigger than 1.25 R (a stop moved, or a
         fill far past it), no stop recorded (no R), or a trade on a day and stock with no logged signal.
 
+shadow  the automatic forward test: replays the frozen rule on each session's real 5-minute bars
+        (trader-timemachine's edge.py, the same trade logic, charges and slippage as the backtest) for
+        every stock on --watchlist, takes the first --per-day (3) signals of the day by entry time, as one
+        person would, and records them in trader/forward.json under "shadow" (a session replayed again is
+        replaced, not doubled). status then judges the shadow trades by the same stop rules. No human
+        picks, no skipped signals: the rule itself, going forward. Run it after the close each day.
+
 A forward test is evidence, not proof: 40 trades still leave a wide range. Not financial advice.
 """
 
@@ -36,9 +45,12 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(1, os.path.join(os.path.dirname(HERE), "trader-timemachine"))
 import ticket  # noqa: E402  (this folder's broker log reader)
+import edge  # noqa: E402  (trader-timemachine's edge report: the same trades as the backtest)
 
 MIN_TRADES = 40
+PER_DAY = 3
 MAX_DRAWDOWN_R = 8.0
 OFF_PLAN_R = -1.25
 EARLY = 10
@@ -158,6 +170,96 @@ def rule_text(test):
     return "%s %s %s %gR %s" % (r["setup"], r["side"], r["stop"], r["target_r"], test["filter"])
 
 
+def shadow_trades(test, charts, index_text, vix_text, days, per_day=PER_DAY, cfg=None):
+    """The frozen rule replayed on these sessions: {date: [trades]} with at most per_day a day, the earliest
+    entries first. charts {SYM: chart text} as edge.py reads them."""
+    c = {"max_loss": 500.0, "max_order": 75000.0, "slippage_ticks": 1, "max_cost_pct": edge.MAX_COST_PCT}
+    c.update(cfg or {})
+    c["first_slot"] = edge.hhmm_slot(c.get("no_entries_before") or "09:30", "no_entries_before")
+    c["last_entry_slot"] = edge.hhmm_slot(c.get("no_entries_after") or "14:45", "no_entries_after")
+    c["flat_slot"] = edge.hhmm_slot(c.get("flat_by") or "15:10", "flat_by")
+    index_days = edge.sessions_of(index_text, edge.INDEX) if index_text else {}
+    vix_days = edge.sessions_of(vix_text, edge.VIX) if vix_text else {}
+    per_sym = {}
+    for sym, text in charts.items():
+        try:
+            per_sym[sym] = edge.sessions_of(text, sym)
+        except edge.EdgeError:
+            continue
+    all_days = set(index_days)
+    for d in per_sym.values():
+        all_days |= set(d)
+    c["dates"] = set(days)
+    c["expiry"] = edge.expiry_dates(all_days)
+    r, need = test["rule"], test["filter"].split("+")
+    found = {}
+    for sym, d in per_sym.items():
+        sess = edge.prepare(d, index_days, vix_days, c)
+        for t in edge.trades_for(sym, sess, r["setup"], r["side"], r["stop"], r["target_r"], c):
+            if all(t["filters"].get(x, False) for x in need):
+                found.setdefault(t["date"], []).append(t)
+    out = {}
+    for day in sorted(days):
+        ts = sorted(found.get(day, []), key=lambda t: (t["slot"], t["symbol"]))[:per_day]
+        out[day] = [{"date": t["date"], "symbol": t["symbol"], "time": t["time"], "side": t["side"],
+                     "entry": t["entry"], "stop": t["stop"], "target": t["target"], "exit": t["exit"],
+                     "outcome": t["outcome"], "qty": t["qty"], "charges": t["charges"], "net": t["pnl"],
+                     "R": t["R"]} for t in ts]
+    return out
+
+
+def cmd_shadow(a):
+    test = read(a.file, "forward test (forward.py start first)")
+    cfg = read(a.config, "config", required=False) or {}
+    syms = edge.symbols_from(argparse.Namespace(symbols=a.symbols, watchlist=a.watchlist))
+    charts = {}
+    for i, s in enumerate(syms + [edge.INDEX, edge.VIX]):
+        try:
+            if a.offline:
+                charts[s] = edge.read_offline(a.offline, s)
+            else:
+                if i:
+                    edge._sleep(edge.PAUSE)
+                charts[s] = edge.fetch(s)
+        except edge.EdgeError as e:
+            print("No data for %s: %s" % (s, e), file=sys.stderr)
+    idx, vix = charts.pop(edge.INDEX, None), charts.pop(edge.VIX, None)
+    if not charts:
+        raise ForwardError("no charts to replay")
+    seen = set()
+    for t in charts.values():
+        try:
+            seen |= set(edge.sessions_of(t, "x"))
+        except edge.EdgeError:
+            pass
+    today = a.today or datetime.date.today().isoformat()
+    first = max(a.date_from or a.date or today, test["started"])
+    last = a.date or today
+    days = sorted(d for d in seen if first <= d <= last)
+    if not days:
+        raise ForwardError("no sessions from %s in the data (the test started %s)" % (first, test["started"]))
+    lim = {k: cfg[k] for k in ("no_entries_before", "no_entries_after", "flat_by") if cfg.get(k)}
+    lim["max_loss"] = float(cfg.get("max_loss_per_trade_inr") or 500)
+    lim["max_order"] = float(cfg.get("max_order_inr") or 75000)
+    got = shadow_trades(test, charts, idx, vix, days, a.per_day, lim)
+    sh = test.setdefault("shadow", {"per_day": a.per_day, "sessions": {}})
+    sh["per_day"] = a.per_day
+    for d, ts in got.items():
+        sh["sessions"][d] = ts
+    write(a.file, test)
+    for d in days:
+        ts = got[d]
+        print("%s: %d trade%s%s" % (d, len(ts), "" if len(ts) == 1 else "s", (": " + "; ".join(
+            "%s %s %s %s %+.2f R" % (t["time"], t["symbol"], t["outcome"], ("+" if t["net"] >= 0 else "-")
+                                     + ticket._money(abs(t["net"])), t["R"]) for t in ts)) if ts else ""))
+    trades = [t for d in sorted(sh["sessions"]) for t in sh["sessions"][d]]
+    res = evaluate(dict(test, signals=[]), trades)
+    print("Shadow so far: %d sessions, %d trades, average %s R, total %+.2f R. %s"
+          % (len(sh["sessions"]), res["trades"], "%+.2f" % res["avg_R"] if res["avg_R"] is not None else "n/a",
+             res["total_R"], res["verdict"]))
+    return 0 if res["state"] != "stop" else 1
+
+
 def cmd_start(a):
     if os.path.exists(a.file) and not a.replace:
         raise ForwardError("a forward test is already running in %s (%s). Finish it, or --replace to start a "
@@ -232,6 +334,16 @@ def cmd_status(a):
     if still_open:
         print("  Still open: " + ", ".join("%s %s" % (x["date"], x["symbol"]) for x in still_open))
     print(res["verdict"])
+    sh = (test.get("shadow") or {}).get("sessions") or {}
+    if sh:
+        st = [t for d in sorted(sh) for t in sh[d]]
+        sr = evaluate(dict(test, signals=[]), st)
+        print("Shadow (every signal, the first %d a day, replayed after the close): %d sessions, %d trades, "
+              "average %s R, total %+.2f R, worst run %.2f R."
+              % ((test.get("shadow") or {}).get("per_day", PER_DAY), len(sh), sr["trades"],
+                 "%+.2f" % sr["avg_R"] if sr["avg_R"] is not None else "n/a", sr["total_R"], sr["worst_drawdown_R"]))
+        print("  " + sr["verdict"])
+        res["shadow"] = sr
     print("A forward test is evidence, not proof. Not financial advice.")
     return 0 if res["state"] != "stop" else 1
 
@@ -258,6 +370,14 @@ def main(argv=None):
     p.add_argument("--state", default="trader/state/broker.json")
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("shadow", help="replay the frozen rule on real bars after the close, every signal")
+    p.add_argument("--watchlist", default="trader/nifty50.txt")
+    p.add_argument("--symbols", help="INFY.NS,TCS.NS instead of the watchlist")
+    p.add_argument("--date", help="one session, YYYY-MM-DD (default: today)")
+    p.add_argument("--from", dest="date_from", help="every session from this date (never before the start)")
+    p.add_argument("--per-day", type=int, default=PER_DAY, help="the most trades a day, earliest first (3)")
+    p.add_argument("--offline", metavar="DIR", help="<SYMBOL>.json(.gz) charts instead of Yahoo")
+    p.add_argument("--config", default="trader/config.json")
     for sp in sub.choices.values():
         sp.add_argument("--file", default="trader/forward.json")
         sp.add_argument("--today", help="YYYY-MM-DD (default today)")
@@ -266,8 +386,8 @@ def main(argv=None):
         ap.print_help()
         return 1
     try:
-        return {"start": cmd_start, "signal": cmd_signal, "status": cmd_status}[a.cmd](a)
-    except (ForwardError, ticket.TicketError) as e:
+        return {"start": cmd_start, "signal": cmd_signal, "status": cmd_status, "shadow": cmd_shadow}[a.cmd](a)
+    except (ForwardError, ticket.TicketError, edge.EdgeError) as e:
         print("forward.py: %s" % e, file=sys.stderr)
         return 1
 

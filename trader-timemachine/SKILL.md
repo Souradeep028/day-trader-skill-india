@@ -12,7 +12,8 @@ description: >-
   1,536 intraday rules across a list of stocks (opening-range breaks,
   previous-day breaks, VWAP pullbacks; long and short; with filters for Nifty,
   volume, gaps, VIX, charges and expiry) after charges and slippage, in two
-  halves, with a bootstrap luck test. Use when the user says "run the time
+  halves, with a bootstrap luck test. Its swing report (swing.py) tests 40 multi-day delivery rules on ten
+  years of daily bars against holding the same stocks and Nifty. Use when the user says "run the time
   machine", "replay this trade", "what are the odds", "simulate this trade",
   "monte carlo", "backtest this setup", "how often does this hit the target",
   "is this a coin flip", "does any setup make money", "run the edge report", or after /trader-exit writes a plan, before
@@ -240,6 +241,45 @@ python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ti
 Say this plainly when the user asks whether a setup works. Run the report
 again on fresh data before trusting any rule, and paper trade a lead before
 any money goes in.
+
+## The swing report: multi-day trades on ten years of data
+
+Intraday rules lose to charges because the moves are small next to them.
+`swing.py` in this folder tests trades held for days, in delivery (CNC),
+where Zerodha charges no brokerage, on ten years of free daily bars:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/swing.py" run --watchlist trader/nifty50.txt          # Yahoo, 10 years of daily bars
+python3 "${CLAUDE_SKILL_DIR}/swing.py" run --watchlist trader/nifty50.txt --write  # also trader/swing.json
+```
+
+- **40 rules**: entries `breakout20` and `breakout55` (a close over the 20
+  or 55 closes before), `pullback` (over the 200-day average with a 2-day RSI
+  under 10) and `oversold` (a bounce after a 14-day RSI under 30), each
+  bought at the NEXT day's open; exits after 5, 10 or 20 days, a trailing
+  exit under the 10-day low, or a close over the 5-day average; every trade
+  with a 2 x ATR(14) stop; with and without Nifty over its 200-day average.
+- **Sized and charged for real**: ₹1,000 at risk a trade (`--risk`), at most
+  `--capital` / `--positions` (₹20,000) a position, delivery charges (STT
+  0.1 % each side, stamp duty 0.015 % on the buy, a ₹15.34 DP charge on each
+  sale).
+- **Four tests to pass**: money in both the earlier and the later years, in
+  at least 60 % of the years, more than luck explains across 40 rules (a
+  bootstrap over months), and more than the **drift**: simply buying the
+  same stocks on any day and holding as long. Today's Nifty 50 are the
+  stocks that survived ten years, so every long rule on them looks good; the
+  drift carries the same bias, and beating it is what counts.
+- It also says what one person would have made a year with 5 positions on
+  ₹1,00,000 after 20 % short-term capital gains tax, against holding Nifty.
+
+**What it found** on the Nifty 50, September 2017 to November 2026: nothing
+passed. Most rules made money only as much as the drift did. One beat the
+drift and made money in both halves and 6 of 10 years (a pullback in an
+uptrend, trailing exit, Nifty over its 200-day average: +0.13 R a trade),
+but at p 0.03 against a bar of 0.00125 that is within luck. The best rule
+by average R made about 7.6 % a year after tax with 5 positions; holding
+Nifty 50 made 10.6 % a year. Say so plainly: on this evidence an index fund
+beat every rule tested, intraday or swing.
 
 ## Rules
 

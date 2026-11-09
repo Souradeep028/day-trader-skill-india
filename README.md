@@ -155,6 +155,7 @@ python3 trader-entry/entry.py watch INFY.NS --every 30                 # bar by 
 python3 trader-exit/exit.py plan --stop or-mid --target 2R --write     # -> trader/plan.json
 python3 trader-timemachine/timemachine.py run --write                  # 10,000 replays + the history
 python3 trader-timemachine/edge.py run --watchlist trader/nifty50.txt  # which rules made money after charges
+python3 trader-timemachine/swing.py run --watchlist trader/nifty50.txt # multi-day rules on 10 years of data
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
@@ -163,6 +164,7 @@ python3 trader-broker/ticket.py paper-check                            # paper: 
 python3 trader-broker/ticket.py reconcile --paper                      # no position without its stop
 python3 trader-broker/ticket.py journal --paper                        # win rate, R, P&L after charges
 python3 trader-broker/forward.py start --rule "orb30 short tight 2R low_cost+with_nifty"  # freeze a rule
+python3 trader-broker/forward.py shadow                                # replay the rule on today's bars, every signal
 python3 trader-broker/forward.py status                                # the forward test's verdict
 python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
 python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by 15:10
@@ -213,9 +215,16 @@ Over the 58 sessions to 6 November 2026:
   falling, or outside 10 to 11): about +0.1 R a trade, positive in both
   halves, but within luck (p 0.13 at best) and picked with hindsight.
 
+**Swing trades** (held for days, in delivery) were tested on ten years of
+Nifty 50 daily bars with `swing.py`: 40 rules, delivery charges, against
+simply holding the same stocks. Nothing passed. The best made about 7.6 % a
+year after tax with 5 positions; holding Nifty 50 made 10.6 % a year. On
+this evidence an index fund beat every rule tested, intraday or swing.
+
 So: freeze one rule with `forward.py start`, paper trade every signal it
 gives, and let `forward.py status` judge it by limits set before the first
-trade (40 trades, an 8 R drawdown stop, the backtest's low end). Go live
+trade (40 trades, an 8 R drawdown stop, the backtest's low end), and let
+`forward.py shadow` replay it on every session after the close. Go live
 only on a PASSED, at half size. The risk check's limits (cool-off, sector
 cap, weekly and monthly losses, drawdown sizing, same-direction cap,
 charges, big-Nifty-day halt, results days, ex-dates, market events,
@@ -296,7 +305,7 @@ trader-scanner/     SKILL.md, scan.py, morning.py
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py
 trader-exit/        SKILL.md, exit.py
-trader-timemachine/ SKILL.md, timemachine.py, edge.py
+trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, forward.py, claude_desktop_config.example.json

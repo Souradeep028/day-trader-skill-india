@@ -11,6 +11,7 @@ from _load import load, ROOT, FIX
 
 ticket = load("trader-broker", "ticket")
 forward = load("trader-broker", "forward")
+edge = load("trader-timemachine", "edge")
 check = load("trader-risk", "check")
 
 CFG_PATH = os.path.join(ROOT, "trader-budget", "config.example.json")
@@ -720,6 +721,66 @@ class Forward(unittest.TestCase):
         self.assertIn("2026-11-11 XYZ.NS: no logged signal of this rule that day", text)
         self.assertIn("Signals: 1 taken, 2 skipped (felt wrong)", text)
         self.assertIn("this tests your picks, not the rule", text)
+
+
+class Shadow(unittest.TestCase):
+    """forward.py shadow on the edge report's real fixtures: five Nifty 50 stocks, Nifty and India VIX."""
+    EDGE = os.path.join(FIX, "trader-timemachine", "edge")
+    FIVE = "INFY.NS,TCS.NS,HDFCBANK.NS,RELIANCE.NS,SBIN.NS"
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.f = os.path.join(self.d, "forward.json")
+        run_fwd(["start", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--expect-low", "-0.1",
+                 "--file", self.f, "--today", "2026-10-09"])
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def shadow(self, *extra):
+        return run_fwd(["shadow", "--symbols", self.FIVE, "--offline", self.EDGE, "--file", self.f,
+                        "--config", os.path.join(self.d, "none"), "--today", "2026-11-06"] + list(extra))
+
+    def test_it_takes_the_first_three_signals_of_each_day(self):
+        code, text, err = self.shadow("--from", "2026-10-01")             # never before the 9 October start
+        self.assertIn("Shadow so far: 20 sessions", text, err)
+        with open(self.f) as fh:
+            sess = json.load(fh)["shadow"]["sessions"]
+        self.assertEqual(min(sess), "2026-10-09")
+        # the same trades edge.py takes, the earliest three a day
+        charts = {s: edge.read_offline(self.EDGE, s) for s in self.FIVE.split(",")}
+        cfg = {"slippage_ticks": 1, "first_slot": edge.hhmm_slot("09:30", "x"),
+               "last_entry_slot": edge.hhmm_slot("14:45", "x"), "flat_slot": edge.hhmm_slot("15:10", "x"),
+               "max_loss": 500.0, "max_order": 75000.0, "max_cost_pct": 15, "dates": set(sess)}
+        mine = {}
+        for sym, text_ in charts.items():
+            for t in edge.trades_for(sym, edge.prepare(edge.sessions_of(text_, sym), {}, {}, cfg),
+                                     "orb15", "long", "tight", 2.0, cfg):
+                mine.setdefault(t["date"], []).append(t)
+        for day, ts in sess.items():
+            want = sorted(mine.get(day, []), key=lambda t: (t["slot"], t["symbol"]))[:3]
+            self.assertEqual([(t["symbol"], t["entry"], t["net"]) for t in ts],
+                             [(t["symbol"], t["entry"], t["pnl"]) for t in want], day)
+        self.assertTrue(any(len(ts) == 3 for ts in sess.values()))
+
+    def test_a_session_replayed_again_is_not_doubled(self):
+        self.shadow("--date", "2026-11-05")
+        self.shadow("--date", "2026-11-05")
+        with open(self.f) as fh:
+            sh = json.load(fh)["shadow"]["sessions"]
+        self.assertEqual(list(sh), ["2026-11-05"])
+        self.assertLessEqual(len(sh["2026-11-05"]), 3)
+
+    def test_status_shows_the_shadow(self):
+        self.shadow("--from", "2026-10-09", "--per-day", "1")
+        code, text, _ = run_fwd(["status", "--file", self.f, "--state", os.path.join(self.d, "none"),
+                                 "--config", os.path.join(self.d, "none"), "--today", "2026-11-06"])
+        self.assertIn("Shadow (every signal, the first 1 a day, replayed after the close): 20 sessions", text)
+
+    def test_before_the_start_is_refused(self):
+        code, _, err = self.shadow("--date", "2026-10-01")
+        self.assertEqual(code, 1)
+        self.assertIn("no sessions from 2026-10-09", err)
 
 
 def run_fwd(argv):
