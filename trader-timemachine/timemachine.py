@@ -29,7 +29,8 @@ How the replays work (the reel's sim.py, same algorithm, same random draws):
      so a bar that touches both counts as the stop (the conservative call).
   4. Outcomes: "target" or "stop" (whichever was touched first), or "neither"
      when the trade is still open at --until (default: the plan's flat_by,
-     15:10, else 15:30, the close; the NSE has no early closes).
+     else flat_by in trader/config.json, else 15:10; never past the 15:30
+     close, and the NSE has no early closes).
      "green" = target first, or above the entry at --until (below for a sell).
      R = the target's R at the target, -1 at the stop, otherwise
      (price at --until - entry) / risk. A gap through the stop still counts
@@ -41,6 +42,7 @@ How the replays work (the reel's sim.py, same algorithm, same random draws):
   6. History: the plan's own rule (an opening-range breakout with the same
      opening range, stop rule and target R) re-run on every one of those past
      full sessions, first close beyond the range = entry, same stop-first rule.
+     Its stops and targets land on the NSE tick, like trader-exit's.
 
 Charges: the average R is also shown after charges (Zerodha's equity intraday
 rates on the NSE, see trader-budget) for the size trader-budget would buy:
@@ -111,6 +113,7 @@ CHARGES = {  # Zerodha, equity intraday on the NSE: zerodha.com/charges, read 20
     "sebi_per_crore": 10.0, "stamp_buy_pct": 0.003, "gst_pct": 18.0,
 }
 DEFAULT_MAX_LOSS = 500.0
+DEFAULT_FLAT_BY = "15:10"   # trader-exit's default: out before the broker squares off MIS positions
 
 
 def order_charges(side, value, rates=None):
@@ -473,20 +476,46 @@ def cents_away(x, long):
     return (math.floor(c) if long else math.ceil(c)) / 100.0
 
 
+TICKS = ((250, 0.01), (1000, 0.05), (5000, 0.10), (10000, 0.50), (20000, 1.00))
+
+
+def tick_for(price):
+    """The NSE tick size for a price (CMTR/67133, from 15 April 2025), as in trader-exit."""
+    for below, tick in TICKS:
+        if price < below:
+            return tick
+    return 5.00
+
+
+def tick_away(x, long, tick):
+    """A stop on the tick, away from the entry: down for a buy, up for a sell."""
+    units = x / tick
+    n = math.floor(units + 1e-6) if long else math.ceil(units - 1e-6)
+    return round(n * tick, 2)
+
+
+def tick_round(x, tick):
+    """A target on the tick, half up."""
+    return round(math.floor(x / tick + 0.5 + 1e-6) * tick, 2)
+
+
 def opening_range(D, n):
-    """(high, low) of the first n bars of a session given as {slot: bar} or a list."""
+    """(high, low) of the first n bars of a session given as {slot: bar} or a list, to the paisa
+    (Yahoo's floats, like 1154.699951171875, are 1154.70 on the exchange)."""
     rows = [D[i] for i in range(n)]
-    return max(b["h"] for b in rows), min(b["l"] for b in rows)
+    return round(max(b["h"] for b in rows), 2), round(min(b["l"] for b in rows), 2)
 
 
 def rule_stop(rule, oh, ol, entry, long):
+    """The rule's stop for one session, on the NSE tick, the way trader-exit sets it."""
     r = rule["stop_rule"]
+    tick = tick_for(entry)
     if r == "or_mid":
-        return cents_away((oh + ol) / 2, long)
+        return tick_away((oh + ol) / 2, long, tick)
     if r in ("or_low", "or_high"):
-        return cents_away(ol if long else oh, long)
+        return tick_away(ol if long else oh, long, tick)
     frac = rule["stop_pct"] / 100.0
-    return cents_away(entry * (1 - frac) if long else entry * (1 + frac), long)
+    return tick_away(entry * (1 - frac) if long else entry * (1 + frac), long, tick)
 
 
 def history_replay(sessions, rule, last, side="buy"):
@@ -498,7 +527,8 @@ def history_replay(sessions, rule, last, side="buy"):
     trades = []
     for d, D in sessions:
         oh, ol = opening_range(D, n)
-        kk = next((i for i in range(n, last + 1) if (D[i]["c"] > oh if long else D[i]["c"] < ol)), None)
+        kk = next((i for i in range(n, last + 1)
+                   if (round(D[i]["c"], 2) > oh if long else round(D[i]["c"], 2) < ol)), None)   # a close AT the high is not above it
         if kk is None:
             continue
         e = round(D[kk]["c"], 2)
@@ -506,7 +536,7 @@ def history_replay(sessions, rule, last, side="buy"):
         risk = (e - s) if long else (s - e)
         if risk <= 0:
             continue
-        t = round(e + rule["target_r"] * risk, 2) if long else round(e - rule["target_r"] * risk, 2)
+        t = tick_round(e + rule["target_r"] * risk if long else e - rule["target_r"] * risk, tick_for(e))
         oc = None
         for b in D[kk + 1:last + 1]:
             if (b["l"] <= s) if long else (b["h"] >= s):
@@ -649,10 +679,12 @@ def resolve_rule(plan, entry_day):
         rule["stop_rule"] = "pct"
         if all(i in entry_day for i in range(n)):
             oh, ol = opening_range(entry_day, n)
-            if abs(cents_away((oh + ol) / 2, long) - plan["stop"]) < 0.005:
-                rule["stop_rule"] = "or_mid"
-            elif abs(cents_away(ol if long else oh, long) - plan["stop"]) < 0.005:
-                rule["stop_rule"] = far
+            for r in ("or_mid", far):
+                cents = cents_away((oh + ol) / 2 if r == "or_mid" else (ol if long else oh), long)
+                ticked = rule_stop({"stop_rule": r}, oh, ol, plan["entry"], long)
+                if abs(cents - plan["stop"]) < 0.005 or abs(ticked - plan["stop"]) < 0.005:
+                    rule["stop_rule"] = r
+                    break
     elif rule["stop_rule"] in ("or_low", "or_high") and rule["stop_rule"] != far:
         rule["stop_rule"] = "pct"
     elif rule["stop_rule"] not in ("or_mid", far):
@@ -718,7 +750,7 @@ def verdict_notes(mc):
 
 
 def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=None, source="yahoo",
-                 qty=None, max_loss=DEFAULT_MAX_LOSS, rates=None):
+                 qty=None, max_loss=DEFAULT_MAX_LOSS, rates=None, flat_by=DEFAULT_FLAT_BY):
     """Chart JSON text + a normalized plan -> the timemachine.json document."""
     if not 1 <= replays <= 1000000:
         raise TMError("--replays must be between 1 and 1,000,000")
@@ -738,9 +770,9 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     k = plan["entry_bar"]
     early = plan["date"] in NSE_EARLY_CLOSE
     end_min = EARLY_MIN if early else CLOSE_MIN
-    if until is None and plan.get("flat_by"):
+    if until is None and (plan.get("flat_by") or flat_by):
         try:
-            fb = parse_clock(plan["flat_by"], "flat_by")
+            fb = parse_clock(plan.get("flat_by") or flat_by, "flat_by")
         except TMError:
             fb = None
         if fb and not (fb - OPEN_MIN) % 5 and OPEN_MIN < fb <= end_min:
@@ -959,7 +991,7 @@ def compute(a):
             raise TMError("could not read %s: %s" % (a.config, e))
     max_loss = cfg.get("max_loss_per_trade_inr", cfg.get("max_loss_per_trade_usd")) or DEFAULT_MAX_LOSS
     return time_machine(text, plan, now, a.replays, a.seed, a.window, a.until, source,
-                        a.qty, float(max_loss), cfg.get("charges"))
+                        a.qty, float(max_loss), cfg.get("charges"), cfg.get("flat_by") or DEFAULT_FLAT_BY)
 
 
 def cmd_run(a):
@@ -1013,7 +1045,7 @@ def main(argv=None):
         p.add_argument("--replays", type=int, default=10000)
         p.add_argument("--seed", type=int, default=19)
         p.add_argument("--window", type=int, default=2, help="draw from the same time of day +- this many bars")
-        p.add_argument("--until", help="end each replay at this time (default: the plan's flat_by, else 15:30)")
+        p.add_argument("--until", help="end each replay at this time (default: the plan's flat_by, else 15:10)")
         p.add_argument("--qty", type=int, help="shares for the charges (default: what trader-budget would buy)")
         p.add_argument("--config", default="trader/config.json", help="max_loss_per_trade_inr and charges")
         p.add_argument("--offline", metavar="FILE", help="a saved Yahoo chart JSON (.json or .json.gz), no network")

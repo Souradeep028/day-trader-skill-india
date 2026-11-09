@@ -1,0 +1,15 @@
+{
+  "created_by": "trader-budget",
+  "created_at": "2026-11-06T10:05:00Z",
+  "status": "proposed",
+  "paper": true,
+  "note": "Delivery (CNC) buys sized at the 6 November 2026 closes, for the long-term checks. Not a recommendation.",
+  "source": "test fixture",
+  "orders": [
+    {"symbol": "RELIANCE.NS", "exchange": "NSE", "product": "CNC", "side": "buy", "qty": "13", "type": "market", "time_in_force": "day"},
+    {"symbol": "TCS.NS", "exchange": "NSE", "product": "CNC", "side": "buy", "qty": "7", "type": "market", "time_in_force": "day"},
+    {"symbol": "HDFCBANK.NS", "exchange": "NSE", "product": "CNC", "side": "buy", "qty": "22", "type": "market", "time_in_force": "day"},
+    {"symbol": "SBIN.NS", "exchange": "NSE", "product": "CNC", "side": "buy", "qty": "17", "type": "market", "time_in_force": "day"},
+    {"symbol": "ITC.NS", "exchange": "NSE", "product": "CNC", "side": "buy", "qty": "61", "type": "market", "time_in_force": "day"}
+  ]
+}
