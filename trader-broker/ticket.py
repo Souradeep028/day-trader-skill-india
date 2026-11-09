@@ -27,6 +27,10 @@ its work around the one moment that matters, your yes:
   flatten     builds a sell ticket that closes a symbol's open position by
               flat_by. It still goes through trader-risk and your yes.
   log         prints today's decisions and the realised P&L after charges.
+  journal     every closed trade (paper, live or both): win rate, average R, P&L
+              after charges, the longest run of losses, by day and by stock.
+  tax         a financial year's intraday round trips as a worksheet: gross P&L,
+              charges by type, net, and the turnover the tax-audit limits use.
 
     python3 ticket.py show                    # every order, READY or not
     python3 ticket.py show --index 1 --json   # one ticket as JSON
@@ -565,6 +569,176 @@ def day_pnl(state, today):
     return out
 
 
+# ---------------------------------------------------------------- journal and tax
+
+def fy_bounds(label):
+    """'FY27' -> ('2026-04-01', '2027-03-31'): India's financial year runs April to March."""
+    m = re.match(r"^FY ?(\d{2}|\d{4})$", str(label).strip().upper())
+    if not m:
+        raise TicketError("--fy wants a financial year like FY27 (April 2026 to March 2027)")
+    end = int(m.group(1)) % 100 + 2000
+    return "%d-04-01" % (end - 1), "%d-03-31" % end
+
+
+def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
+    """The day's fills per symbol, paired into round trips (bought and sold back to flat that day).
+    Returns (trades, open_positions). A trade: date, symbol, qty, buy and sell value, charges by type,
+    gross and net P&L, the entry's planned risk (from the stop recorded with its yes) and R."""
+    fills, stops = {}, {}
+    for r in state.get("orders", []):
+        d = rec_day(r)
+        if (date_from and d < date_from) or (date_to and d > date_to):
+            continue
+        if r.get("status") in ("approved", "placed") and str(r.get("side")) == "buy" and _f(r.get("stop")):
+            stops[(d, str(r.get("symbol", "")).upper())] = _f(r["stop"])
+        if r.get("status") != "filled":
+            continue
+        if paper is not None and bool(r.get("paper")) != paper:
+            continue
+        fills.setdefault((d, str(r.get("symbol", "")).upper()), []).append(r)
+    trades, still_open = [], []
+    for (d, sym), rs in sorted(fills.items()):
+        pos, cur = 0.0, None
+        for r in rs:
+            q, px, side = float(r.get("qty") or 0), float(r.get("price") or 0), r.get("side")
+            if cur is None:
+                cur = {"date": d, "symbol": sym, "bought": 0.0, "sold": 0.0, "buy_value": 0.0, "sell_value": 0.0,
+                       "charges": {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0,
+                                   "gst": 0.0, "total": 0.0}, "paper": bool(r.get("paper"))}
+            ch = order_charges(side, q * px, rates)
+            for k in cur["charges"]:
+                cur["charges"][k] = round(cur["charges"][k] + ch[k], 2)
+            if side == "buy":
+                cur["bought"] += q
+                cur["buy_value"] += q * px
+                pos += q
+            else:
+                cur["sold"] += q
+                cur["sell_value"] += q * px
+                pos -= q
+            if abs(pos) < 1e-9:
+                cur["qty"] = cur["bought"]
+                cur["gross"] = round(cur["sell_value"] - cur["buy_value"], 2)
+                cur["net"] = round(cur["gross"] - cur["charges"]["total"], 2)
+                stop = stops.get((d, sym))
+                avg_buy = cur["buy_value"] / cur["bought"] if cur["bought"] else 0
+                cur["risk"] = round(cur["qty"] * (avg_buy - stop), 2) if stop and avg_buy > stop else None
+                cur["R"] = round(cur["net"] / cur["risk"], 3) if cur["risk"] else None
+                cur["buy_value"], cur["sell_value"] = round(cur["buy_value"], 2), round(cur["sell_value"], 2)
+                trades.append(cur)
+                cur = None
+        if cur is not None:
+            still_open.append({"date": d, "symbol": sym, "qty": round(pos, 6)})
+    return trades, still_open
+
+
+def journal_summary(trades):
+    if not trades:
+        return {"trades": 0}
+    nets = [t["net"] for t in trades]
+    wins = [n for n in nets if n > 0]
+    streak = worst = 0
+    for n in nets:
+        streak = streak + 1 if n <= 0 else 0
+        worst = max(worst, streak)
+    rs = [t["R"] for t in trades if t["R"] is not None]
+    by_day, by_sym = {}, {}
+    for t in trades:
+        by_day[t["date"]] = round(by_day.get(t["date"], 0) + t["net"], 2)
+        by_sym[t["symbol"]] = round(by_sym.get(t["symbol"], 0) + t["net"], 2)
+    return {"trades": len(trades), "wins": len(wins), "win_pct": round(100.0 * len(wins) / len(trades), 1),
+            "net": round(sum(nets), 2), "gross": round(sum(t["gross"] for t in trades), 2),
+            "charges": round(sum(t["charges"]["total"] for t in trades), 2),
+            "avg_R": round(sum(rs) / len(rs), 3) if rs else None, "best": max(nets), "worst": min(nets),
+            "longest_losing_streak": worst, "by_day": by_day, "by_symbol": by_sym}
+
+
+def _signed(x):
+    return "%s%s" % ("-" if x < 0 else "+", _money(abs(x)))
+
+
+def cmd_journal(a):
+    cfg = read_json(a.config, "config", required=False) or {}
+    state = load_state(a.state)
+    paper = True if a.paper else False if a.live else None
+    trades, still_open = round_trips(state, a.date_from, a.date_to, paper, cfg.get("charges"))
+    s = journal_summary(trades)
+    if a.json:
+        print(json.dumps({"summary": s, "trades": trades, "open": still_open}, indent=2))
+        return 0 if trades else 1
+    if not trades:
+        print("No closed trades%s in %s." % (" in that range" if a.date_from or a.date_to else "", a.state))
+        return 1
+    print("%-10s %-14s %5s %12s %12s %10s %10s %7s" % ("date", "symbol", "qty", "bought", "sold", "charges", "net",
+                                                         "R"))
+    for t in trades:
+        print("%-10s %-14s %5s %12s %12s %10s %10s %7s%s" % (
+            t["date"], t["symbol"], _str_num(t["qty"]), _money(t["buy_value"]), _money(t["sell_value"]),
+            _money(t["charges"]["total"]), _signed(t["net"]), ("%+.2f" % t["R"]) if t["R"] is not None else "-",
+            "  paper" if t["paper"] else ""))
+    print("")
+    print("%d trades, %d won (%.1f %%). Net %s after %s of charges (%s before). Average R %s." % (
+        s["trades"], s["wins"], s["win_pct"], _signed(s["net"]), _money(s["charges"]), _signed(s["gross"]),
+        ("%+.2f" % s["avg_R"]) if s["avg_R"] is not None else "n/a (no stop recorded)"))
+    print("Best %s, worst %s, longest run of losing trades %d." % (_signed(s["best"]), _signed(s["worst"]),
+                                                                  s["longest_losing_streak"]))
+    for o in still_open:
+        print("Still open: %s %s on %s (not counted)." % (_str_num(o["qty"]), o["symbol"], o["date"]))
+    if s["trades"] < 30:
+        print("Under 30 trades says little either way: keep the journal going before judging the setup.")
+    print("Charges here are worked from Zerodha's rates; your contract notes are the final word.")
+    return 0
+
+
+def cmd_tax(a):
+    cfg = read_json(a.config, "config", required=False) or {}
+    start, end = fy_bounds(a.fy)
+    state = load_state(a.state)
+    trades, still_open = round_trips(state, start, end, True if a.include_paper == "only" else
+                                     None if a.include_paper == "yes" else False, cfg.get("charges"))
+    gross = round(sum(t["gross"] for t in trades), 2)
+    ch = {k: round(sum(t["charges"][k] for t in trades), 2) for k in ("brokerage", "stt", "exchange", "sebi",
+                                                                      "stamp", "gst", "total")}
+    turnover = round(sum(abs(t["gross"]) for t in trades), 2)
+    doc = {"fy": a.fy.upper().replace(" ", ""), "from": start, "to": end, "trades": len(trades), "gross": gross,
+           "charges": ch, "net": round(gross - ch["total"], 2), "turnover": turnover,
+           "paper": a.include_paper, "open": still_open}
+    if a.csv:
+        import csv
+        d = os.path.dirname(a.csv)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(a.csv, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["date", "symbol", "qty", "buy_value", "sell_value", "gross_pnl", "brokerage", "stt",
+                        "exchange", "sebi", "stamp", "gst", "charges", "net_pnl", "paper"])
+            for t in trades:
+                c = t["charges"]
+                w.writerow([t["date"], t["symbol"], _str_num(t["qty"]), "%.2f" % t["buy_value"], "%.2f" % t["sell_value"],
+                            "%.2f" % t["gross"], c["brokerage"], c["stt"], c["exchange"], c["sebi"], c["stamp"],
+                            c["gst"], c["total"], "%.2f" % t["net"], "yes" if t["paper"] else "no"])
+    if a.json:
+        print(json.dumps(doc, indent=2))
+        return 0
+    print("%s (%s to %s), intraday equity: speculative business income." % (doc["fy"], start, end))
+    if a.include_paper != "no":
+        print("PAPER trades are included: they are not real income.")
+    print("  %d round trips. Gross P&L %s." % (len(trades), _signed(gross)))
+    print("  Charges %s: brokerage %s, STT %s, exchange %s, SEBI %s, stamp duty %s, GST %s." % (
+        _money(ch["total"]), _money(ch["brokerage"]), _money(ch["stt"]), _money(ch["exchange"]), _money(ch["sebi"]),
+        _money(ch["stamp"]), _money(ch["gst"])))
+    print("  Net after charges %s." % _signed(doc["net"]))
+    print("  Turnover for the tax-audit limits (each trade's profit or loss, added up without signs): %s."
+          % _money(turnover))
+    for o in still_open:
+        print("  Still open: %s %s on %s (not counted)." % (_str_num(o["qty"]), o["symbol"], o["date"]))
+    if a.csv:
+        print("Wrote %s, one row per trade." % a.csv)
+    print("A worksheet, not tax advice. Speculative losses only set off against speculative income. File with "
+          "ITR-3; check it against your broker's tax P&L (Zerodha Console) and ask a chartered accountant.")
+    return 0
+
+
 # ---------------------------------------------------------------- commands
 
 def _clock(a):
@@ -994,6 +1168,22 @@ def main(argv=None):
     p.add_argument("--plan", default="trader/plan.json")
     p.add_argument("--config", default="trader/config.json")
     clock(p)
+    p = sub.add_parser("journal", help="closed trades: win rate, average R, P&L after charges")
+    p.add_argument("--state", default="trader/state/broker.json")
+    p.add_argument("--config", default="trader/config.json")
+    p.add_argument("--from", dest="date_from", help="YYYY-MM-DD")
+    p.add_argument("--to", dest="date_to", help="YYYY-MM-DD")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--paper", action="store_true", help="paper trades only")
+    g.add_argument("--live", action="store_true", help="live trades only")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("tax", help="a financial year's intraday P&L, charges and turnover (a worksheet)")
+    p.add_argument("--fy", required=True, help="FY27 = April 2026 to March 2027")
+    p.add_argument("--state", default="trader/state/broker.json")
+    p.add_argument("--config", default="trader/config.json")
+    p.add_argument("--include-paper", choices=["no", "yes", "only"], default="no")
+    p.add_argument("--csv", metavar="PATH", help="also write one row per trade")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("log", help="today's decisions")
     p.add_argument("--state", default="trader/state/broker.json")
     clock(p)
@@ -1005,7 +1195,8 @@ def main(argv=None):
     try:
         return {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
                 "paper": cmd_paper, "paper-check": cmd_paper_check,
-                "fill": cmd_fill, "flatten": cmd_flatten, "log": cmd_log}[a.cmd](a)
+                "fill": cmd_fill, "flatten": cmd_flatten, "log": cmd_log, "journal": cmd_journal,
+                "tax": cmd_tax}[a.cmd](a)
     except TicketError as e:
         print("ticket.py: %s" % e, file=sys.stderr)
         return 1

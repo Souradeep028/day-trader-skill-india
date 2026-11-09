@@ -245,6 +245,9 @@ class Flow(unittest.TestCase):
         code, text, _ = run(["log", "--state", self.state, "--now", late])
         self.assertIn("2 placed today", text)
         self.assertIn("INFY.NS: P&L after ₹50.69 charges +₹129.71", text)   # 41 x 4.40 = 180.40 - 50.69
+        code, text, _ = run(["journal", "--state", self.state, "--paper", "--config", self.cfg])
+        self.assertIn("+₹129.71", text)
+        self.assertIn("+0.30  paper", text)                                  # 129.71 / 438.70 at the stop
         code, _, err = run(["flatten", "--symbol", "INFY.NS", "--orders", self.orders, "--portfolio", self.pf,
                             "--now", late])
         self.assertEqual(code, 1)
@@ -394,6 +397,75 @@ class Flow(unittest.TestCase):
                             "--portfolio", self.pf, "--config", self.cfg, "--state", self.state])
         self.assertEqual(code, 1)
         self.assertNotIn("Traceback", err)
+
+
+class JournalAndTax(unittest.TestCase):
+    """Closed trades from trader/state/broker.json. The log below is made up, so each number can be
+    worked by hand: three INFY.NS round trips, one of them in FY26."""
+
+    def fill(self, day, side, qty, price, paper=False):
+        return {"at": day + "T10:00:00+05:30", "date": day, "status": "filled", "symbol": "INFY.NS", "side": side,
+                "qty": str(qty), "price": price, "paper": paper}
+
+    def state(self):
+        yes = {"date": "2026-11-05", "status": "placed", "symbol": "INFY.NS", "side": "buy", "stop": 1149.8,
+               "at": "2026-11-05T09:41:00+05:30"}
+        return {"orders": [
+            self.fill("2026-03-30", "buy", 10, 1000.0), self.fill("2026-03-30", "sell", 10, 990.0),     # FY26
+            yes, self.fill("2026-11-05", "buy", 41, 1160.5), self.fill("2026-11-05", "sell", 41, 1164.9),
+            self.fill("2026-11-06", "buy", 20, 1180.0), self.fill("2026-11-06", "sell", 10, 1170.0),
+            self.fill("2026-11-06", "sell", 10, 1171.0),
+            self.fill("2026-11-09", "buy", 5, 1175.0)]}                                               # still open
+
+    def test_round_trips(self):
+        trades, still_open = ticket.round_trips(self.state(), "2026-04-01", "2027-03-31")
+        self.assertEqual([(t["date"], t["qty"], t["gross"]) for t in trades],
+                         [("2026-11-05", 41.0, 180.4), ("2026-11-06", 20.0, -190.0)])
+        first = trades[0]
+        self.assertEqual(first["charges"]["total"], 50.69)               # 20.05 on the buy + 30.64 on the sell
+        self.assertEqual(first["net"], 129.71)
+        self.assertEqual(first["risk"], 438.7)                           # 41 x (1160.50 - 1149.80)
+        self.assertEqual(first["R"], 0.296)
+        self.assertIsNone(trades[1]["R"])                                # no stop was recorded for it
+        self.assertEqual(still_open, [{"date": "2026-11-09", "symbol": "INFY.NS", "qty": 5.0}])
+
+    def test_journal_and_tax_from_the_cli(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = os.path.join(d, "broker.json")
+            with open(st, "w") as fh:
+                json.dump(self.state(), fh)
+            code, text, _ = run(["journal", "--state", st, "--config", os.path.join(d, "none")])
+            self.assertEqual(code, 0)
+            self.assertIn("3 trades, 1 won (33.3 %)", text)
+            self.assertIn("longest run of losing trades 1", text)
+            self.assertIn("Still open: 5 INFY.NS on 2026-11-09", text)
+            self.assertIn("Under 30 trades says little", text)
+            code, text, _ = run(["journal", "--state", st, "--from", "2026-11-01", "--json"])
+            j = json.loads(text)["summary"]
+            self.assertEqual((j["trades"], j["wins"], j["longest_losing_streak"]), (2, 1, 1))
+            self.assertEqual(j["by_day"]["2026-11-05"], 129.71)
+            csvp = os.path.join(d, "fy27.csv")
+            code, text, _ = run(["tax", "--fy", "FY27", "--state", st, "--csv", csvp])
+            self.assertEqual(code, 0)
+            self.assertIn("FY27 (2026-04-01 to 2027-03-31), intraday equity: speculative business income.", text)
+            self.assertIn("2 round trips. Gross P&L -₹9.60.", text)               # 180.40 - 190.00
+            self.assertIn("Turnover for the tax-audit limits", text)
+            self.assertIn("₹370.40", text)                                         # 180.40 + 190.00, without signs
+            self.assertIn("not tax advice", text)
+            with open(csvp) as fh:
+                rows = fh.read().splitlines()
+            self.assertEqual(len(rows), 3)
+            self.assertTrue(rows[1].startswith("2026-11-05,INFY.NS,41,47580.50,47760.90,180.40,"))
+            code, text, _ = run(["tax", "--fy", "FY26", "--state", st, "--json"])
+            self.assertEqual((json.loads(text)["trades"], json.loads(text)["gross"]), (1, -100.0))
+            self.assertEqual(run(["tax", "--fy", "2027", "--state", st])[0], 1)
+
+    def test_paper_is_kept_apart(self):
+        st = {"orders": [self.fill("2026-11-05", "buy", 41, 1160.5, True), self.fill("2026-11-05", "sell", 41, 1164.9, True)]}
+        self.assertEqual(ticket.round_trips(st, paper=False)[0], [])
+        self.assertEqual(len(ticket.round_trips(st, paper=True)[0]), 1)
+        self.assertEqual(ticket.fy_bounds("FY27"), ("2026-04-01", "2027-03-31"))
+        self.assertEqual(ticket.fy_bounds("fy 2026"), ("2025-04-01", "2026-03-31"))
 
 
 if __name__ == "__main__":
