@@ -48,6 +48,8 @@ What blocks an entry (on top):
                 (under 15 minutes old), so a stale plan cannot understate the risk
   reward:risk   the win at the target after charges / the loss at the stop with
                 charges, under min_reward_risk
+  charges       the round trip's charges at the stop over max_charges_pct_of_risk
+                (15) % of the loss on price: a stop too close for the charges
   daily loss    the max losses at the stops of today's entries plus this one
                 over max_daily_loss_inr (win or lose, each counts in full)
   trades        max_trades_per_day entries already placed today
@@ -57,6 +59,12 @@ What blocks an entry (on top):
   cool-off      max_losing_streak (2) losing trades in a row today, after charges
   sector        max_entries_per_sector (2) entries in one NSE industry today
                 (trader/sectors.json, from NSE's Nifty 500 list), this batch included
+  results       (skip_results_days, on) the stock's results day in trader/events.json, or
+                the trading day after it (results out after the close move the next open)
+  expiry        (skip_expiry_days, off: a warning instead) Nifty's weekly F&O expiry,
+                Tuesday or the trading day before a Tuesday holiday
+  surveillance  (block_surveillance, on) the stock is on NSE's ASM or GSM list in
+                trader/surveillance.json (trader-scanner: scan.py surveillance)
   band          the entry is within 1% of the stock's upper price band (NSE
                 circuit limit: 2, 5, 10 or 20% from the previous close, from
                 trader/bands.json, written by trader-scanner's universe): at the
@@ -75,6 +83,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -86,7 +95,11 @@ DEFAULTS = {
     "no_entries_before": "09:30", "no_entries_after": "14:45", "flat_by": "15:10",
     "paper": True, "blocked": [], "allow_options": False, "allow_margin": False, "allow_short": False,
     "intraday_leverage": 1, "charges": {}, "max_losing_streak": 2, "max_entries_per_sector": 2,
+    "max_charges_pct_of_risk": 15, "skip_results_days": True, "skip_expiry_days": False,
+    "block_surveillance": True,
 }
+EXPIRY_WEEKDAY = 1         # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
+STALE_SURVEILLANCE_DAYS = 7
 ORDER_FIELDS = ("symbol", "exchange", "product", "side", "qty", "notional", "type", "time_in_force",
                 "limit_price", "stop_price", "trail_price", "trail_percent", "extended_hours", "client_order_id",
                 "order_class", "take_profit_limit_price", "stop_loss_stop_price",
@@ -402,14 +415,49 @@ def losing_streak(state, today, rates=None):
     return n, closed
 
 
+def expiry_day(d):
+    """True when d is Nifty's weekly F&O expiry: a trading day with no trading day between it and the next
+    expiry weekday (Tuesday). So the Tuesday itself, or the Monday when the Tuesday is a holiday."""
+    if not trading_day(d)[0]:
+        return False
+    gap = (EXPIRY_WEEKDAY - d.weekday()) % 7
+    return all(not trading_day(d + datetime.timedelta(days=i))[0] for i in range(1, gap + 1))
+
+
+def previous_trading_day(d):
+    d -= datetime.timedelta(days=1)
+    for _ in range(10):
+        if trading_day(d)[0]:
+            return d
+        d -= datetime.timedelta(days=1)
+    return d
+
+
+def load_events(doc):
+    """trader/events.json -> {SYM: [(date, what)]}. {"events": [{"symbol", "date", "what"}]} or {SYM: [dates]}."""
+    out = {}
+    if not doc:
+        return out
+    rows = doc.get("events") if isinstance(doc, dict) and "events" in doc else None
+    if rows is None and isinstance(doc, dict):
+        rows = [{"symbol": k, "date": d} for k, v in doc.items() for d in (v if isinstance(v, list) else [v])]
+    for r in rows or []:
+        if isinstance(r, dict) and r.get("symbol") and re.match(r"^\d{4}-\d{2}-\d{2}$", str(r.get("date", ""))):
+            out.setdefault(str(r["symbol"]).upper(), []).append((str(r["date"]), r.get("what") or "results"))
+    return out
+
+
 def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None,
-          bands=None, prev_close=None, sectors=None):
+          bands=None, prev_close=None, sectors=None, events=None, surveillance=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
     now          naive UTC (default: the real clock); its IST date is "today"
     price_times  {SYM: naive UTC time of that price}; None = every price counts as fresh
     bands        {SYM: band percent, or None for no band}, from trader/bands.json
-    prev_close   {SYM: previous close}, from trader/prices.json"""
+    prev_close   {SYM: previous close}, from trader/prices.json
+    sectors      {SYM: industry}, from trader/sectors.json
+    events       {SYM: [(date, what)]}, from trader/events.json (results dates)
+    surveillance {"symbols": {SYM: list}, "updated": date}, from trader/surveillance.json"""
     c = dict(DEFAULTS)
     c.update(inr_keys(cfg or {}))
     prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
@@ -440,6 +488,27 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             sector_count[sec] = sector_count.get(sec, 0) + 1
     if c.get("max_entries_per_sector") and not sectors:
         top_warn.append("no trader/sectors.json: the sector cap (max_entries_per_sector) is off")
+    day_warn = []
+    today_d = datetime.date.fromisoformat(today)
+    day_before = previous_trading_day(today_d).isoformat()
+    events = {str(k).upper(): v for k, v in (events or {}).items()}
+    surv = (surveillance or {}).get("symbols") or {}
+    surv = {str(k).upper(): v for k, v in surv.items()}
+    if c.get("block_surveillance") and surveillance is None:
+        day_warn.append("no trader/surveillance.json: NSE's ASM and GSM lists are not checked "
+                        "(trader-scanner: scan.py surveillance)")
+    elif surveillance and surveillance.get("updated"):
+        try:
+            age = (today_d - datetime.date.fromisoformat(str(surveillance["updated"])[:10])).days
+        except ValueError:
+            age = None
+        if age is not None and age > STALE_SURVEILLANCE_DAYS:
+            day_warn.append("trader/surveillance.json is %d days old: NSE changes the ASM and GSM lists every "
+                            "week, refresh it (scan.py surveillance)" % age)
+    is_expiry = expiry_day(today_d)
+    if is_expiry and not c.get("skip_expiry_days"):
+        day_warn.append("today is Nifty's weekly F&O expiry: index moves can be sharper and reverse late "
+                        "(\"skip_expiry_days\": true blocks new entries on expiry days)")
     rates = c.get("charges") or {}
     bands = {str(k).upper(): v for k, v in (bands or {}).items()}
     prev_close = {str(k).upper(): _f(v) for k, v in (prev_close or {}).items() if _f(v)}
@@ -454,6 +523,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     if not c.get("paper", True):
         top_warn.append("LIVE account (\"paper\": false): these orders use real money")
     top_warn.extend(win_warns)
+    top_warn.extend(day_warn)
 
     def fresh(sym):
         if sym not in prices:
@@ -667,6 +737,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                         later.append("loss: %s shares x %s risk a share = %s at the stop, plus %s charges = %s, over "
                                      "your %s max loss per trade" % (_num(shares), _p(risk_ps), money(price_loss),
                                                                      money(charges), money(max_loss), money(cap)))
+                    cost_cap = _f(c.get("max_charges_pct_of_risk"))
+                    cost_pct = round(100.0 * charges / price_loss, 1) if price_loss > 0 else 0.0
+                    if cost_cap and cost_pct > cost_cap + 0.05:
+                        later.append("charges: %s at the stop is %.1f%% of the %s you risk on price, over your %s%% "
+                                     "limit (max_charges_pct_of_risk): the stop %s is too close for the charges; "
+                                     "widen it to about %s a share or more"
+                                     % (money(charges), cost_pct, money(price_loss), _num(cost_cap), _p(stop),
+                                        _p(math.ceil(risk_ps * cost_pct / cost_cap * 100) / 100.0)))
                     min_rr = _f(c.get("min_reward_risk"))
                     if target:
                         if (long and target <= ref + CENT) or (not long and target >= ref - CENT):
@@ -709,6 +787,19 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                              "sector would hit them all" % (sector_count[sec], sec, cap_sec))
             elif sectors and not sec:
                 warns.append("%s is not in trader/sectors.json: its sector is unknown" % sym)
+            if c.get("skip_results_days"):
+                for d, what in events.get(sym, []):
+                    if d == today:
+                        later.append("results: %s has %s today (trader/events.json): the price can gap or swing on "
+                                     "the numbers, so no new entries in it today" % (sym, what))
+                    elif d == day_before:
+                        later.append("results: %s had %s on %s, the last trading day (trader/events.json): today "
+                                     "is the first session to react to numbers out after the close" % (sym, what, d))
+            if c.get("skip_expiry_days") and is_expiry:
+                later.append("expiry: today is Nifty's weekly F&O expiry and \"skip_expiry_days\" is on")
+            if c.get("block_surveillance") and sym in surv:
+                later.append("surveillance: %s is on NSE's %s list (trader/surveillance.json): extra margins, "
+                             "often no intraday leverage, and sharp moves. No new entries" % (sym, surv[sym]))
             band = bands.get(sym, "unknown") if bands else "unknown"
             pc = prev_close.get(sym)
             if band not in ("unknown", None) and _f(band) and pc and ref:
@@ -892,6 +983,9 @@ def main(argv=None):
     ap.add_argument("--state", default="trader/state/broker.json", help="what trader-broker placed today")
     ap.add_argument("--bands", default="trader/bands.json", help="NSE price bands (trader-scanner: scan.py universe)")
     ap.add_argument("--sectors", default="trader/sectors.json", help="each stock's NSE industry, for the sector cap")
+    ap.add_argument("--events", default="trader/events.json", help="results dates (trader-analyst: results.py event)")
+    ap.add_argument("--surveillance", default="trader/surveillance.json",
+                    help="NSE's ASM and GSM lists (trader-scanner: scan.py surveillance)")
     ap.add_argument("--now", help="pretend it is this IST time, e.g. \"2026-11-05 09:40\"")
     ap.add_argument("--today", help="YYYY-MM-DD (default: today in India)")
     ap.add_argument("--out", default="trader/state/risk.json", help="where the verdicts are recorded")
@@ -914,7 +1008,9 @@ def main(argv=None):
         bands = load_bands(read_json(a.bands, "price bands", required=False))
         sdoc = read_json(a.sectors, "sectors", required=False) or {}
         res = check(orders, cfg, portfolio, prices, state, a.today, now, times, bands, load_prev_close(pdoc),
-                    sdoc.get("sectors", sdoc) if isinstance(sdoc, dict) else {})
+                    sdoc.get("sectors", sdoc) if isinstance(sdoc, dict) else {},
+                    load_events(read_json(a.events, "events", required=False)),
+                    read_json(a.surveillance, "surveillance lists", required=False))
         if pdoc.get("as_of"):
             res["prices_as_of"] = pdoc["as_of"]
         if not a.no_write:

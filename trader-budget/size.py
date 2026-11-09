@@ -35,7 +35,11 @@ plan's entry, or the price in trader/prices.json if that is fresh (under 15
 minutes old) and higher, because a price that ran up since the plan means a
 bigger loss at the same stop. Zero shares (the stop is too far away for your
 max loss) is a plain refusal: no order is written. So is a reward:risk under
-min_reward_risk (the price ran toward the target since the plan).
+min_reward_risk (the price ran toward the target since the plan), and so are
+charges at the stop over max_charges_pct_of_risk (15) % of the risk on price:
+with a stop that close, charges eat the trade. trader-timemachine's edge.py
+found exactly that: across the Nifty 50, trades whose charges were over 15 %
+of the risk lost about 0.2 R a trade more than the rest.
 
 Weights mode (kept from v1, no longer the headline): split a budget across a
 list of stocks by weight.
@@ -78,6 +82,7 @@ DEFAULTS = {
     "max_trades_per_day": 3,
     "max_orders_per_day": 10,
     "min_reward_risk": 1.0,
+    "max_charges_pct_of_risk": 15,
     "require_stop": True,
     "no_entries_before": "09:30",
     "no_entries_after": "14:45",
@@ -455,6 +460,8 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     loss = round(loss_price + charges_stop, 2)
     gain = round(qty * reward_c / 100.0 - charges_target, 2)
     net_rr = round(gain / loss, 2) if loss > 0 else 0.0
+    cost_pct = round(100.0 * charges_stop / loss_price, 1) if loss_price > 0 else 0.0
+    cost_cap = _f(c.get("max_charges_pct_of_risk"))
     refusal = None
     if qty == 0:
         if bound[0] == "max loss":
@@ -468,6 +475,13 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         refusal = ("reward:risk after charges is %.2f (win %s at the target, lose %s at the stop) under your "
                    "minimum %s, so trader-risk would block it. No order. Skip it, or make a new plan with "
                    "trader-exit." % (net_rr, money(gain), money(loss), _num(c["min_reward_risk"])))
+    elif cost_cap and cost_pct > cost_cap + EPS:
+        refusal = ("charges at the stop are %s, %.1f%% of the %s you risk on price, over your %s%% limit "
+                   "(max_charges_pct_of_risk): with a stop this close (%s a share, %.2f%% of the price) charges eat "
+                   "the trade. No order. Plan a wider stop with trader-exit (about %s a share or more, like the "
+                   "range low) or skip it." % (money(charges_stop), cost_pct, money(loss_price), _num(cost_cap),
+                                                _price(risk), 100.0 * risk / ref,
+                                                _price(math.ceil(risk * cost_pct / cost_cap * 100) / 100.0)))
     elif cost < float(c.get("min_order_inr") or 0) - 0.005:
         refusal = ("%d share%s of %s is %s, under your %s minimum order. No order."
                    % (qty, "" if qty == 1 else "s", sym, money(cost), money(c["min_order_inr"])))
@@ -481,7 +495,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "max_loss_per_trade_inr": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
         "cost": cost, "loss_at_stop": loss_price, "charges_at_stop": charges_stop, "max_loss": loss,
         "charges_at_target": charges_target, "gain_at_target": gain, "reward_risk_net": net_rr,
-        "leverage": lev, "exchange": str(c.get("exchange") or "NSE").upper(),
+        "charges_pct_of_risk": cost_pct, "leverage": lev, "exchange": str(c.get("exchange") or "NSE").upper(),
         "product": str(c.get("product") or "MIS").upper(),
         "flat_by": plan.get("flat_by") or c.get("flat_by"),
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
@@ -547,9 +561,9 @@ def plan_report(s, order, notes=()):
                     (", %s of it borrowed (%sx intraday leverage)" % (money(s["cost"] - s["cost"] / s["leverage"]),
                                                                     _num(s["leverage"])))
                     if s["leverage"] > 1 and s["cost"] > s["cash_available"] else ""))
-    lines.append("At the stop:   lose %d x %s = %s, plus %s charges = %s."
+    lines.append("At the stop:   lose %d x %s = %s, plus %s charges = %s (charges %.1f%% of the risk)."
                  % (s["qty"], _price(s["risk_per_share"]), money(s["loss_at_stop"]), money(s["charges_at_stop"]),
-                    money(s["max_loss"])))
+                    money(s["max_loss"]), s["charges_pct_of_risk"]))
     lines.append("At the target: win %s after %s charges. Reward:risk after charges %.2f."
                  % (money(s["gain_at_target"]), money(s["charges_at_target"]), s["reward_risk_net"]))
     lines.append("A stop is an order, not a promise: in a fast market it can fill below %s." % _price(s["stop"]))

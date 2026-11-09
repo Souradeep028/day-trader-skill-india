@@ -190,6 +190,17 @@ class DayTradeChecks(unittest.TestCase):
         self.assertEqual(verdicts(self.one(infy(take_profit_limit_price="1171.20"), min_reward_risk=0.75)),
                          ["PASS"])
 
+    def test_charges_too_big_for_the_risk(self):
+        o = infy(stop_loss_stop_price="1155.00", take_profit_limit_price="1171.50", qty="64")
+        o["plan"] = dict(o.get("plan") or {}, stop=1155.0, target=1171.5)
+        res = self.one(o)
+        self.assertEqual(res["results"][0]["reasons"],
+                         ["charges: ₹73.44 at the stop is 20.9% of the ₹352 you risk on price, over your "
+                          "15% limit (max_charges_pct_of_risk): the stop 1155.00 is too close for the "
+                          "charges; widen it to about 7.67 a share or more"])
+        self.assertEqual(verdicts(self.one(o, max_charges_pct_of_risk=25)), ["PASS"])
+        self.assertEqual(verdicts(self.one(infy())), ["PASS"])            # the reel's trade: 11.5%
+
     def test_a_fresh_higher_price_is_the_entry(self):
         res = check.check([infy()], cfg(), prices={"INFY.NS": 1164.0}, now=at("2026-11-05 09:50"),
                           price_times={"INFY.NS": QUOTE_TIME})
@@ -597,6 +608,75 @@ class Cli(unittest.TestCase):
         with redirect_stderr(err):
             self.assertEqual(check.main(["--orders", INFY_PATH, "--today", "monday", "--no-write"]), 1)
         self.assertIn("--today wants", err.getvalue())
+
+
+class SkipDays(unittest.TestCase):
+    def one(self, order=None, now=NOW, events=None, surveillance={"symbols": {}, "updated": TODAY}, **over):
+        return check.check([order or infy()], cfg(**over), now=at(now), events=events, surveillance=surveillance)
+
+    def test_expiry_days(self):
+        d = datetime.date
+        self.assertTrue(check.expiry_day(d(2026, 11, 3)))                  # a Tuesday
+        self.assertFalse(check.expiry_day(d(2026, 11, 2)))
+        self.assertTrue(check.expiry_day(d(2026, 10, 19)))                 # Monday: Tuesday is Dussehra
+        self.assertFalse(check.expiry_day(d(2026, 10, 20)))                # the holiday itself
+        self.assertTrue(check.expiry_day(d(2026, 11, 9)))                  # Monday: Tuesday the 10th is a holiday
+        self.assertFalse(check.expiry_day(d(2026, 11, 5)))
+        self.assertEqual(check.previous_trading_day(d(2026, 10, 21)), d(2026, 10, 19))
+        self.assertEqual(check.previous_trading_day(d(2026, 11, 9)), d(2026, 11, 6))
+
+    def test_expiry_warns_by_default_and_blocks_when_asked(self):
+        res = self.one(infy(), now="2026-11-03 09:40")
+        self.assertEqual(verdicts(res), ["PASS"])
+        self.assertTrue(any("weekly F&O expiry" in w for w in res["warnings"]))
+        res = self.one(infy(), now="2026-11-03 09:40", skip_expiry_days=True)
+        self.assertEqual(res["results"][0]["reasons"],
+                         ["expiry: today is Nifty's weekly F&O expiry and \"skip_expiry_days\" is on"])
+        self.assertFalse(any("expiry" in w for w in self.one(infy())["warnings"]))
+
+    def test_results_day_and_the_day_after(self):
+        ev = check.load_events({"events": [{"symbol": "INFY.NS", "date": "2026-11-05", "what": "Q2 FY27 results"}]})
+        self.assertEqual(ev, {"INFY.NS": [("2026-11-05", "Q2 FY27 results")]})
+        self.assertEqual(self.one(events=ev)["results"][0]["reasons"],
+                         ["results: INFY.NS has Q2 FY27 results today (trader/events.json): the price can gap or "
+                          "swing on the numbers, so no new entries in it today"])
+        ev = check.load_events({"INFY.NS": ["2026-11-04"], "TCS.NS": "2026-11-05"})
+        self.assertIn("results: INFY.NS had results on 2026-11-04, the last trading day", reasons(self.one(events=ev)))
+        # two days on, or results in another stock: no block
+        self.assertEqual(verdicts(self.one(events=check.load_events({"INFY.NS": ["2026-11-03"]}))), ["PASS"])
+        self.assertEqual(verdicts(self.one(events=check.load_events({"TCS.NS": ["2026-11-05"]}))), ["PASS"])
+        self.assertEqual(verdicts(self.one(events=ev, skip_results_days=False)), ["PASS"])
+        # the trading day after a Friday's results is the Monday
+        ev = check.load_events({"INFY.NS": ["2026-11-06"]})
+        self.assertIn("had results on 2026-11-06", reasons(self.one(events=ev, now="2026-11-09 09:40")))
+
+    def test_surveillance(self):
+        sv = {"symbols": {"INFY.NS": "ASM Stage I"}, "updated": TODAY}
+        self.assertEqual(self.one(surveillance=sv)["results"][0]["reasons"],
+                         ["surveillance: INFY.NS is on NSE's ASM Stage I list (trader/surveillance.json): extra "
+                          "margins, often no intraday leverage, and sharp moves. No new entries"])
+        self.assertEqual(verdicts(self.one(surveillance=sv, block_surveillance=False)), ["PASS"])
+        res = self.one(surveillance=None)
+        self.assertEqual(verdicts(res), ["PASS"])
+        self.assertTrue(any("no trader/surveillance.json" in w for w in res["warnings"]))
+        res = self.one(surveillance={"symbols": {}, "updated": "2026-10-20"})
+        self.assertTrue(any("16 days old" in w for w in res["warnings"]))
+
+    def test_cli_reads_both_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            ev, sv, orders = (os.path.join(d, x) for x in ("events.json", "surveillance.json", "orders.json"))
+            with open(ev, "w") as fh:
+                json.dump({"events": [{"symbol": "INFY.NS", "date": "2026-11-05", "what": "results"}]}, fh)
+            with open(sv, "w") as fh:
+                json.dump({"symbols": {}, "updated": TODAY}, fh)
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                code = check.main(["--orders", INFY_PATH, "--config", CFG_PATH, "--portfolio", os.path.join(d, "x"),
+                                   "--prices", os.path.join(d, "x"), "--state", os.path.join(d, "x"),
+                                   "--bands", os.path.join(d, "x"), "--sectors", os.path.join(d, "x"),
+                                   "--events", ev, "--surveillance", sv, "--now", NOW, "--no-write"])
+            self.assertEqual(code, 1)
+            self.assertIn("results: INFY.NS has results today", out.getvalue())
 
 
 if __name__ == "__main__":

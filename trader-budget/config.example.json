@@ -11,6 +11,7 @@
   "max_losing_streak": 2,
   "max_entries_per_sector": 2,
   "min_reward_risk": 1.0,
+  "max_charges_pct_of_risk": 15,
   "require_stop": true,
   "no_entries_before": "09:30",
   "no_entries_after": "14:45",

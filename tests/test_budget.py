@@ -21,7 +21,7 @@ PRICES = {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53
 CONTRACT_CFG = {
     "budget": 100000, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 75000, "min_order_inr": 500,
     "max_loss_per_trade_inr": 500, "max_daily_loss_inr": 1500, "max_trades_per_day": 3, "max_orders_per_day": 10,
-    "max_losing_streak": 2, "max_entries_per_sector": 2, "min_reward_risk": 1.0, "require_stop": True,
+    "max_losing_streak": 2, "max_entries_per_sector": 2, "min_reward_risk": 1.0, "max_charges_pct_of_risk": 15, "require_stop": True,
     "no_entries_before": "09:30", "no_entries_after": "14:45", "flat_by": "15:10",
     "fractional": False, "broker": "zerodha", "exchange": "NSE", "product": "MIS", "paper": True, "blocked": [],
     "allow_options": False, "allow_margin": False, "allow_short": False, "intraday_leverage": 1,
@@ -151,7 +151,7 @@ class TheReel(unittest.TestCase):
                                  "--now", NOW, "--write", out])
             self.assertEqual(code, 0)
             self.assertIn("Size: 41 shares of INFY.NS = ₹47,580.50 at 1160.50.", text)
-            self.assertIn("At the stop:   lose 41 x 10.70 = ₹438.70, plus ₹50.30 charges = ₹489.", text)
+            self.assertIn("At the stop:   lose 41 x 10.70 = ₹438.70, plus ₹50.30 charges = ₹489 (charges 11.5% of the risk).", text)
             self.assertIn("At the target: win ₹826.27 after ₹51.13 charges. Reward:risk after charges 1.69.", text)
             self.assertIn("on the NSE, market, MIS (intraday)", text)
             self.assertIn("<- binds", text)
@@ -196,6 +196,23 @@ class PlanRules(unittest.TestCase):
         self.assertIn("reward:risk after charges is 0.79 (win ₹387.85 at the target, lose ₹489 at the stop)",
                       s["refusal"])
         self.assertIsNone(size.bracket_order(s))
+
+    def test_charges_over_15_pct_of_the_risk_is_a_refusal(self):
+        # a stop 5.50 under 1160.50: 64 shares (the max order binds), ₹352 at the stop on price. Charges:
+        # the buy ₹74,272 pays ₹20 brokerage (capped) + 2.28 exchange + 0.07 SEBI + 2.23 stamp + 4.02 GST
+        # = 28.60; the sell at the stop ₹73,920 pays 20 + 18.48 STT + 2.27 + 0.07 + 4.02 = 44.84. 73.44 in all,
+        # 20.9% of 352
+        s = size.size_trade(plan(stop=1155.0, target=1171.5), cfg(), today=TODAY)
+        self.assertEqual((s["qty"], s["loss_at_stop"], s["charges_at_stop"], s["charges_pct_of_risk"]),
+                         (64, 352.0, 73.44, 20.9))
+        self.assertIn("charges at the stop are ₹73.44, 20.9% of the ₹352 you risk on price, over your 15% limit",
+                      s["refusal"])
+        self.assertIn("about 7.67 a share or more", s["refusal"])
+        self.assertIsNone(size.bracket_order(s))
+        self.assertIsNone(size.size_trade(plan(stop=1155.0, target=1171.5), cfg(max_charges_pct_of_risk=0),
+                                          today=TODAY)["refusal"])
+        # the reel's trade: 50.30 of charges on 438.70 at risk, 11.5%, inside the limit
+        self.assertEqual(size.size_trade(plan(), cfg(), today=TODAY)["charges_pct_of_risk"], 11.5)
 
     def test_each_limit_can_bind(self):
         self.assertEqual(size.size_trade(plan(), cfg(max_order_inr=30000), today=TODAY)["bound_by"], "max order")

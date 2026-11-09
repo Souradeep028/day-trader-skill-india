@@ -68,7 +68,12 @@ If `trader/config.json` does not exist, copy `config.example.json` into
   **require_stop** (true), **no_entries_before** / **no_entries_after**
   ("09:30" / "14:45") and **flat_by** ("15:10"), all IST, plus
   **max_losing_streak** (2: no new entries after two losing trades in a row
-  today) and **max_entries_per_sector** (2 a day in one industry). 15:10 is before
+  today), **max_entries_per_sector** (2 a day in one industry),
+  **max_charges_pct_of_risk** (15: the round trip's charges at the stop at
+  most 15 % of the loss on price), **skip_results_days** (true),
+  **skip_expiry_days** (false: a warning on expiry days) and
+  **block_surveillance** (true: no entries in stocks on NSE's ASM or GSM
+  lists). 15:10 is before
   Zerodha squares off open intraday positions itself (about 3:20 PM, for a
   fee).
 - **charges**: Zerodha's equity intraday rates are the default (read from
@@ -108,10 +113,19 @@ loss at the same stop, so fewer shares. A lower price never shrinks the risk.
 
 It refuses, and writes no order, when: the size is zero shares, the order is
 under the minimum, reward:risk after charges is under `min_reward_risk`, the
+charges at the stop are over `max_charges_pct_of_risk` of the risk (a stop so
+close that charges eat the trade: it says how far a stop needs to be), the
 stop is not below the entry, the target is not above it (the move already
 happened), the plan is for another day, the symbol is blocked, leverage is
 set without `allow_margin`, or the plan is a short. Say the reason to the
 user in one line.
+
+Why the charges limit: charges are mostly a percentage of the money traded,
+so the closer the stop, the more shares, and the bigger the charges against
+the same max loss. trader-timemachine's edge report found charges at the
+stop were a median 16.8 % of the risk across the Nifty 50, and the trades
+over 15 % were where most of the losses after charges came from. The size
+report shows the share on its "At the stop" line.
 
 ## Step 3: show the user
 

@@ -48,7 +48,10 @@ Charges: the average R is also shown after charges (Zerodha's equity intraday
 rates on the NSE, see trader-budget) for the size trader-budget would buy:
 the most shares whose loss at the stop plus charges fits max_loss_per_trade_inr
 (trader/config.json, default 500 rupees; --qty sets it). On a small trade the
-round trip's charges are a real slice of 1R.
+round trip's charges are a real slice of 1R. The same line takes off slippage:
+--slippage-ticks (1) ticks on the market entry, and on the exit when it is a
+stop or the flat-by sale (a target is a limit order and fills at its price),
+on the NSE tick the stock traded at that day, as the edge report does.
 
 The verdict line looks at the replays that hit one side (target or stop) and
 compares the target's share of them, target / (target + stop), with the share
@@ -137,6 +140,13 @@ def order_charges(side, value, rates=None):
 def round_trip(qty, buy_price, sell_price, rates=None):
     return round(order_charges("buy", qty * buy_price, rates)["total"]
                  + order_charges("sell", qty * sell_price, rates)["total"], 2)
+
+
+def _f(x):
+    try:
+        return float(x) if x not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def charges_in_r(plan, qty=None, max_loss=DEFAULT_MAX_LOSS, rates=None):
@@ -764,7 +774,7 @@ def verdict_notes(mc):
 
 
 def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=None, source="yahoo",
-                 qty=None, max_loss=DEFAULT_MAX_LOSS, rates=None, flat_by=DEFAULT_FLAT_BY):
+                 qty=None, max_loss=DEFAULT_MAX_LOSS, rates=None, flat_by=DEFAULT_FLAT_BY, slippage_ticks=1):
     """Chart JSON text + a normalized plan -> the timemachine.json document."""
     if not 1 <= replays <= 1000000:
         raise TMError("--replays must be between 1 and 1,000,000")
@@ -829,12 +839,24 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
         history = {"sessions": len(sessions), "triggered": 0, "rule": None, "trades": [],
                    "note": "skipped: the history replay knows the opening-range breakout (orb) only, "
                            "this plan's setup is %r" % plan["setup"]}
+    if not 0 <= slippage_ticks <= 20:
+        raise TMError("--slippage-ticks must be between 0 and 20")
+    tick = (_f(plan.get("tick")) or observed_tick([b[f] for b in entry_day.values() for f in ("o", "h", "l", "c")])
+            or tick_for(plan["entry"]))
+    slip_r = slippage_ticks * tick / plan["risk_per_share"]
+    # a tick worse on the market entry, and on the exit when it is a stop or the flat-by sale; a target is a
+    # limit order and fills at its price
+    mc["slippage"] = {"ticks": slippage_ticks, "tick": tick,
+                      "r": round(slip_r * (1 + mc["p_stop"] + mc["p_neither"]), 4)}
+    h_slip = (round(slip_r * (1 + (history["stop"] + history["close"]) / float(history["triggered"])), 4)
+              if history.get("triggered") else 0.0)
     cost = charges_in_r(plan, qty, max_loss, rates)
     if cost:
         mc["charges"] = {"qty": cost[0], "round_trip": cost[1], "r": round(cost[2], 4),
-                         "avg_R_net": round(mc["avg_R"] - cost[2], 4)}
+                         "avg_R_net": round(mc["avg_R"] - cost[2] - mc["slippage"]["r"], 4)}
         if history.get("triggered") and history.get("avg_R") is not None:
-            history["avg_R_net"] = round(history["avg_R"] - cost[2], 4)
+            history["slippage_r"] = h_slip
+            history["avg_R_net"] = round(history["avg_R"] - cost[2] - h_slip, 4)
     last_bar = bars[-1]
     return {
         "created_by": "trader-timemachine",
@@ -900,8 +922,12 @@ def report(doc):
     ]
     ch = m.get("charges")
     if ch:
-        lines.append("  After charges: %+.3f R. A round trip of %d shares costs about %s, %.3f R."
-                     % (ch["avg_R_net"], ch["qty"], rupees(ch["round_trip"]), ch["r"]))
+        sl = m.get("slippage") or {"ticks": 0, "tick": 0, "r": 0.0}
+        lines.append("  After charges%s: %+.3f R. A round trip of %d shares costs about %s, %.3f R%s."
+                     % (" and slippage" if sl["ticks"] else "", ch["avg_R_net"], ch["qty"], rupees(ch["round_trip"]),
+                        ch["r"], ("; %d tick%s of slippage (%.2f) on the entry and on a stop or flat-by exit, "
+                                  "%.3f R" % (sl["ticks"], "" if sl["ticks"] == 1 else "s", sl["tick"], sl["r"]))
+                        if sl["ticks"] else ""))
     lines.append("")
     if h.get("rule"):
         ru = h["rule"]
@@ -913,7 +939,9 @@ def report(doc):
                          "those %d real sessions fired %d times: %d target, %d stop, %d neither. Average R %+.3f%s."
                          % (ru["or_minutes"], stop_words, ru["target_r"], h["sessions"], h["triggered"],
                             h["target"], h["stop"], h["close"], h["avg_R"],
-                            (", %+.3f after charges" % h["avg_R_net"]) if h.get("avg_R_net") is not None else ""))
+                            (", %+.3f after charges%s" % (h["avg_R_net"], " and slippage" if (m.get("slippage") or {})
+                                                          .get("ticks") else ""))
+                            if h.get("avg_R_net") is not None else ""))
         else:
             lines.append("History: the same rule never fired in those %d sessions." % h["sessions"])
     else:
@@ -1005,7 +1033,8 @@ def compute(a):
             raise TMError("could not read %s: %s" % (a.config, e))
     max_loss = cfg.get("max_loss_per_trade_inr", cfg.get("max_loss_per_trade_usd")) or DEFAULT_MAX_LOSS
     return time_machine(text, plan, now, a.replays, a.seed, a.window, a.until, source,
-                        a.qty, float(max_loss), cfg.get("charges"), cfg.get("flat_by") or DEFAULT_FLAT_BY)
+                        a.qty, float(max_loss), cfg.get("charges"), cfg.get("flat_by") or DEFAULT_FLAT_BY,
+                        a.slippage_ticks)
 
 
 def cmd_run(a):
@@ -1061,6 +1090,8 @@ def main(argv=None):
         p.add_argument("--window", type=int, default=2, help="draw from the same time of day +- this many bars")
         p.add_argument("--until", help="end each replay at this time (default: the plan's flat_by, else 15:10)")
         p.add_argument("--qty", type=int, help="shares for the charges (default: what trader-budget would buy)")
+        p.add_argument("--slippage-ticks", type=int, default=1,
+                       help="ticks lost on the entry and on a stop or flat-by exit (default 1; 0 for none)")
         p.add_argument("--config", default="trader/config.json", help="max_loss_per_trade_inr and charges")
         p.add_argument("--offline", metavar="FILE", help="a saved Yahoo chart JSON (.json or .json.gz), no network")
         p.add_argument("--now", help='pretend it is this time ("2026-11-05 09:40" IST, or ISO with Z)')

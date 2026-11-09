@@ -1,18 +1,20 @@
 ---
 name: trader-analyst
 description: >-
-  The Results Analyst. Works through an Indian company's quarterly results
-  from its own filing on the NSE or BSE (the Regulation 33 results PDF and
-  the press release or investor presentation): revenue from operations,
-  EBITDA, PAT and diluted EPS, quarter by quarter in India's April to March
-  financial year (Q2 FY27 is July to September 2026), each against the same
-  quarter a year earlier and the quarter before, with margins and the last
-  four quarters. Flags exceptional items and other income inside PAT. The
-  figures come from the filing; results.py does the arithmetic exactly.
-  Reads an earnings call transcript when you paste one. Use when the user
-  says "how were Infosys's results", "analyze the results", "what changed
-  this quarter", "is revenue growing", "compare margins", "sum up the call",
-  "when are the results", or before trading a stock around its results.
+  The Results Analyst. Works through an Indian company's quarterly results from
+  its own filing on the NSE or BSE (the Regulation 33 results PDF and the press
+  release or investor presentation): revenue from operations, EBITDA, PAT and
+  diluted EPS, quarter by quarter in India's April to March financial year (Q2
+  FY27 is July to September 2026), each against the same quarter a year earlier
+  and the quarter before, with margins and the last four quarters. Flags
+  exceptional items and other income inside PAT. The figures come from the
+  filing; results.py does the arithmetic exactly. Reads an earnings call
+  transcript when you paste one. Records results dates (results.py event) in
+  trader/events.json, so trader-risk keeps you out of a stock on its results
+  day and the day after. Use when the user says "how were Infosys's results",
+  "analyze the results", "what changed this quarter", "is revenue growing",
+  "compare margins", "sum up the call", "when are the results", or before
+  trading a stock around its results.
 argument-hint: "[SYMBOL.NS]"
 ---
 
@@ -32,7 +34,15 @@ python3 "${CLAUDE_SKILL_DIR}/results.py" template INFY.NS > trader/results/INFY.
 python3 "${CLAUDE_SKILL_DIR}/results.py" show trader/results/INFY.json                # growth, margins, TTM
 python3 "${CLAUDE_SKILL_DIR}/results.py" show trader/results/INFY.json --metrics trader/metrics.json
 python3 "${CLAUDE_SKILL_DIR}/results.py" show trader/results/INFY.json --json
+python3 "${CLAUDE_SKILL_DIR}/results.py" event INFY.NS 2026-11-12 --what "Q2 FY27 results"   # trader/events.json
+python3 "${CLAUDE_SKILL_DIR}/results.py" events                                             # dates from today on
 ```
+
+`results.py event` records a results date (the board meeting date in the
+company's NSE or BSE notice, filed days ahead) in `trader/events.json`.
+trader-risk then blocks new entries in that stock on the date and the next
+trading day, since results often come out after the 15:30 close. The
+morning brief (trader-scanner's `morning.py`) lists the ones coming up.
 
 ## Why the figures come from the filing
 
@@ -101,6 +111,8 @@ presentation.
 4. If the next results date (an NSE announcement of the board meeting, or
    `/trader-news`) falls inside the planned trade, say it before
    `/trader-exit` sets the stop: a stop does not protect against a gap.
+   Record each date you find with `results.py event`, so the risk check
+   holds the line.
 
 ## Example
 

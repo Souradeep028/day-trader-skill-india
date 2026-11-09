@@ -154,9 +154,21 @@ class Reel(unittest.TestCase):
         ch = self.doc["mc"]["charges"]
         # trader-budget's 41 shares; a round trip at the entry price, 20.05 + 30.52
         self.assertEqual((ch["qty"], ch["round_trip"], ch["r"]), (41, 50.57, 0.1153))
-        self.assertEqual(ch["avg_R_net"], round(-0.316 - 0.1153, 4))
+        # one tick (0.10 on 5 November) of slippage on the entry, and on the 53.49 % stops and 41.65 % neithers:
+        # 0.10 / 10.70 x 1.9514 = 0.0182 R
+        self.assertEqual(self.doc["mc"]["slippage"], {"ticks": 1, "tick": 0.1, "r": 0.0182})
+        self.assertEqual(ch["avg_R_net"], round(-0.316 - 0.1153 - 0.0182, 4))
         self.assertEqual(tm.round_trip(41, 1160.5, 1160.5), 50.57)
-        self.assertEqual(self.doc["history"]["avg_R_net"], round(-0.349 - 0.1153, 4))
+        # the history: 19 of its 20 trades left by a stop or at the flat-by: 0.10 / 10.70 x 1.95 = 0.0182 R
+        self.assertEqual(self.doc["history"]["slippage_r"], 0.0182)
+        self.assertEqual(self.doc["history"]["avg_R_net"], round(-0.349 - 0.1153 - 0.0182, 4))
+        none = machine(replays=200, slippage_ticks=0)
+        self.assertEqual(none["mc"]["slippage"]["r"], 0.0)
+        self.assertEqual(none["mc"]["charges"]["avg_R_net"], round(none["mc"]["avg_R"] - 0.1153, 4))
+        two = machine(replays=200, slippage_ticks=2)["mc"]["slippage"]
+        self.assertEqual(two["ticks"], 2)
+        with self.assertRaises(tm.TMError):
+            machine(replays=200, slippage_ticks=-1)
         more = machine(replays=200, qty=100)["mc"]["charges"]
         self.assertEqual(more["qty"], 100)
         self.assertLess(more["r"], 0.1153)                             # brokerage is capped at 20 an order
@@ -218,8 +230,9 @@ class Reel(unittest.TestCase):
                      "target 1181.90", "10,000 replays", "66 five-minute bars", "seed 19", "57 full sessions",
                      "target first   4.9 %", "stop first     53.5 %", "neither        41.6 %   still open at 3:10 PM",
                      "green          31.2 %", "median 1155.92, 90 % of replays between 1135.79 and 1177.07",
-                     "Average R: -0.316", "After charges: -0.431 R. A round trip of 41 shares costs about ₹50.57",
-                     "fired 20 times: 1 target, 10 stop, 9 neither. Average R -0.349, -0.464 after charges",
+                     "Average R: -0.316", "After charges and slippage: -0.450 R. A round trip of 41 shares costs about ₹50.57, 0.115 R; 1 tick of "
+                     "slippage (0.10) on the entry and on a stop or flat-by exit, 0.018 R",
+                     "fired 20 times: 1 target, 10 stop, 9 neither. Average R -0.349, -0.482 after charges and slippage",
                      "Left out 1 session(s) with missing bars: 2026-10-15.", "not a prediction", "--seed 19"):
             self.assertIn(line, text)
         for word in ("profit", "P&L", "guarantee", "real time", "tick by tick", "$"):

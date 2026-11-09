@@ -118,5 +118,29 @@ class Cli(unittest.TestCase):
         self.assertEqual(results.num(Decimal("1234567.5")), "12,34,567.5")
 
 
+class Events(unittest.TestCase):
+    def test_record_and_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            ev = os.path.join(d, "trader", "events.json")
+            code, text, err = run(["event", "infy", "2026-11-12", "--what", "Q2 FY27 results", "--events", ev])
+            self.assertEqual(code, 0, err)
+            self.assertIn("INFY.NS: Q2 FY27 results on 2026-11-12", text)
+            run(["event", "TCS.NS", "2026-10-09", "--events", ev])
+            run(["event", "INFY.NS", "2026-11-12", "--what", "Q2 FY27 results (moved)", "--events", ev])
+            with open(ev) as fh:
+                doc = json.load(fh)
+            self.assertEqual(doc["events"], [{"symbol": "TCS.NS", "date": "2026-10-09", "what": "results"},
+                                             {"symbol": "INFY.NS", "date": "2026-11-12",
+                                              "what": "Q2 FY27 results (moved)"}])
+            code, text, _ = run(["events", "--events", ev, "--today", "2026-11-09"])
+            self.assertEqual(text, "2026-11-12  INFY.NS        Q2 FY27 results (moved)\n")
+            self.assertIn("TCS.NS", run(["events", "--events", ev, "--all"])[1])
+            check = load("trader-risk", "check")
+            self.assertEqual(check.load_events(doc)["INFY.NS"], [("2026-11-12", "Q2 FY27 results (moved)")])
+            code, _, err = run(["event", "INFY.NS", "12-11-2026", "--events", ev])
+            self.assertEqual(code, 1)
+            self.assertIn("YYYY-MM-DD", err)
+
+
 if __name__ == "__main__":
     unittest.main()

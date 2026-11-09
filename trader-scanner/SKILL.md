@@ -3,18 +3,21 @@ name: trader-scanner
 description: >-
   Chart Scanner. Scans hundreds of NSE charts for setups: opening-range
   breakouts, flags, oversold bounces. Builds the list of NSE stocks you can
-  trade intraday (the EQ series) from NSE's own equity list, with each
-  stock's price band (2, 5, 10 or 20 %, or none for F&O stocks) from NSE's
-  band list for the risk check, runs a pre-market scan of daily closes
-  (20-day closing-high breakout, bull flag, reclaimed the 20-day average,
-  oversold, oversold bounce) and an intraday opening-range breakout scan on
-  5-minute bars from the 9:15 open, then writes trader/watchlist.json for
-  trader-news and trader-entry. Ships the Nifty 50 and Nifty Bank lists.
-  Free Yahoo data, bar by bar. Use when the user says "scan the market",
-  "find me setups", "what is breaking out", "opening range breakouts",
-  "scan the Nifty 50", "scan for bull flags", "oversold stocks", "pre-market
-  scan", "build my watchlist", "what should I look at today", or at the
-  start of a trading day before /trader-news.
+  trade intraday (the EQ series) from NSE's own equity list, with each stock's
+  price band (2, 5, 10 or 20 %, or none for F&O stocks) from NSE's band list
+  for the risk check, runs a pre-market scan of daily closes (20-day
+  closing-high breakout, bull flag, reclaimed the 20-day average, oversold,
+  oversold bounce) and an intraday opening-range breakout scan on 5-minute bars
+  from the 9:15 open, then writes trader/watchlist.json for trader-news and
+  trader-entry. Ships the Nifty 50 and Nifty Bank lists. Runs the whole morning
+  in one command too (morning.py: the calendar and expiry, NSE's lists, the
+  scan, results dates and news, in one brief, trader/morning.md) and reads
+  NSE's ASM and GSM surveillance lists for trader-risk. Free Yahoo data, bar by
+  bar. Use when the user says "scan the market", "find me setups", "what is
+  breaking out", "opening range breakouts", "scan the Nifty 50", "scan for bull
+  flags", "oversold stocks", "pre-market scan", "build my watchlist", "what
+  should I look at today", "morning brief", "run my morning routine", or at the start of a trading day before
+  /trader-news.
 argument-hint: "[universe|daily|orb] [--watchlist FILE] [--at HH:MM]"
 ---
 
@@ -51,6 +54,8 @@ folder to scan them.
 | NSE's lists | `nsearchives.nseindia.com/content/equities/EQUITY_L.csv` and `sec_list.csv`, for `universe` |
 | `trader/universe.txt` | written by `universe`: one `SYMBOL.NS|Name` a line |
 | `trader/bands.json` | written by `universe`: each stock's price band, for trader-risk |
+| `trader/surveillance.json` | written by `surveillance` from NSE's ASM and GSM CSVs, for trader-risk |
+| `trader/morning.md` | written by `morning.py`: the morning brief |
 | `trader/nifty50.txt`, `trader/banknifty.txt` | the Nifty 50 (50) and Nifty Bank (14) stocks, from NSE's index files of 9 November 2026 |
 | `trader/config.json` | read by `orb`: `no_entries_after` (default 14:45) |
 | `trader/watchlist.json` | written by `daily` and `orb`: the hits, read by trader-news and trader-entry |
@@ -72,6 +77,46 @@ one folder, then `scan.py universe --offline <that folder>`.
 Scanning all 2,398 takes a while (120 spark requests, about a minute). The
 Nifty 50 list is the sensible daily default: the most liquid stocks, the
 tightest spreads.
+
+## Surveillance lists (ASM and GSM)
+
+NSE puts stocks with unusual moves on its Additional and Graded
+Surveillance Measure lists: extra margins, often no intraday leverage, and
+moves that can trap a day trader. trader-risk blocks new entries in them.
+NSE's report pages turn scripts away, so the user saves the CSVs from a
+browser (nseindia.com/reports/asm, its long-term and short-term tabs, and
+nseindia.com/reports/gsm, each with "Download (.csv)") and runs:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scan.py" surveillance asm-long.csv asm-short.csv gsm.csv
+```
+
+It finds the SYMBOL column, keeps the stage, and writes
+`trader/surveillance.json`. NSE changes the lists weekly: the risk check
+warns when the file is over 7 days old.
+
+## The morning routine
+
+`morning.py` in this folder runs the morning in one go and writes one
+brief, `trader/morning.md`:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/morning.py"                         # the Nifty 50
+python3 "${CLAUDE_SKILL_DIR}/morning.py" --watchlist trader/banknifty.txt --news 8
+```
+
+1. The calendar: closed days (weekends, NSE holidays) stop it with the next
+   session's date; Nifty's weekly expiry is flagged.
+2. `scan.py universe` (NSE's list and price bands), or the age of the
+   bands on disk when NSE turns the script away.
+3. The age of `trader/surveillance.json`.
+4. `scan.py daily` on the watchlist: the setups from the last close.
+5. Results dates today or next session from `trader/events.json`.
+6. trader-news on the top setups: new headlines in the last 24 hours, the
+   tagged ones first, and any stock already moving.
+7. The day's rules from `trader/config.json`.
+
+It places nothing. Read the brief, then `/trader-entry` from 9:30.
 
 ## The daily scan (before the open)
 
@@ -131,7 +176,9 @@ expired setup) it prints one plain line and writes nothing.
 
 ## Steps
 
-1. Each morning: `scan.py universe` (the price bands change).
+1. Each morning: `morning.py` (or `scan.py universe`, the price bands
+   change, then the daily scan below). Weekly: `scan.py surveillance` with
+   NSE's fresh ASM and GSM CSVs.
 2. Before the open: `scan.py daily --watchlist trader/nifty50.txt`. Tell the
    user the counts (fetched, liquid, scanned, hits) and the top few by setup.
 3. After 9:35 AM IST: `scan.py orb --watchlist trader/nifty50.txt`. Tell the

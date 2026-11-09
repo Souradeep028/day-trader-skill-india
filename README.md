@@ -144,7 +144,9 @@ All standard-library Python. The data tools read public endpoints and are
 polite about it.
 
 ```bash
+python3 trader-scanner/morning.py                                      # the morning: lists, scan, results, news
 python3 trader-scanner/scan.py universe                                # NSE's EQ series + price bands
+python3 trader-scanner/scan.py surveillance asm.csv gsm.csv            # NSE's ASM/GSM lists, saved by hand
 python3 trader-scanner/scan.py daily --watchlist trader/nifty50.txt    # pre-market setups
 python3 trader-scanner/scan.py orb --watchlist trader/nifty50.txt      # opening-range breakouts so far
 python3 trader-news/news.py --tickers INFY.NS --hours 12               # headlines, today's move
@@ -163,6 +165,7 @@ python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the yea
 python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by 15:10
 python3 trader-alerts/alerts.py check                                  # rings what hit, once
 python3 trader-analyst/results.py show trader/results/INFY.json        # quarters, growth, margins
+python3 trader-analyst/results.py event INFY.NS 2026-11-12             # a results date: no entries that day
 python3 trader-pelosi/ptr.py index --member pelosi                     # her PTRs this year (US)
 ```
 
@@ -180,22 +183,34 @@ counts written separately in the tests.
 
 ## Does it make money?
 
-Not on its own, as far as the data shows. The Time Machine's `edge.py`
-runs 16 opening-range rules, alone and with five filters (Nifty's
-direction, strength against Nifty, volume, the opening gap, India VIX),
-over every Nifty 50 stock and session, sized and charged the way this pack
-trades, with a tick of slippage, and checks the earlier and the later
-sessions separately. Over the 58 sessions to 6 November 2026, **no rule
-made money after charges in both halves.** The pack's default (15-minute
-range, midpoint stop, 2R target) took 1,607 trades and lost ₹1,15,780; ₹1,06,901
-of that was charges. Before charges it was close to break-even.
+Not yet, as far as the data shows. The Time Machine's `edge.py` tests 64
+intraday rules (15- and 30-minute range breaks, a break of the previous
+day's high or low, VWAP pullbacks; long and short; two stops; four targets)
+alone and with 13 filters, 896 combinations, over every Nifty 50 stock and
+session. Each trade is sized and charged the way this pack trades, with a
+tick of slippage. A rule passes only if it made money after charges in the
+earlier AND the later sessions, and by more than luck explains across 896
+tries (a session bootstrap, p under 0.05 / 896).
 
-So: charges are the first thing a small intraday account has to beat, and
-any setup needs proof before money. Run `edge.py` on fresh data, paper
-trade what looks promising, keep `ticket.py journal`, and go live only if
-the journal holds up. The risk check's cool-off (no new entries after two
-losing trades in a row) and sector cap (two entries an industry a day) are
-there for the days it does not.
+Over the 58 sessions to 6 November 2026:
+
+- **No rule passed.** 11 held up in both halves, none by more than luck.
+- **Charges are what loses.** The pack's default (long 15-minute range
+  break, midpoint stop, 2R) took 1,607 trades and lost ₹1,15,780, of which
+  ₹1,06,901 was charges: close to break-even before them. At the stop,
+  charges were a median 16.8 % of the risk. Dropping the trades where they
+  were over 15 % cut the loss of the average rule from -0.28 R to -0.09 R a
+  trade, so trader-budget and trader-risk now refuse those trades
+  (`max_charges_pct_of_risk`).
+- **The best lead** is a short (the 30-minute range break, with Nifty also
+  falling and charges under 15 %): +0.08 R a trade over 309 trades, positive
+  in both halves, but well within luck (p 0.21). This pack trades longs
+  only, so it is a lead to re-test, not a trade.
+
+So: run `edge.py` on fresh data, paper trade what looks promising, keep
+`ticket.py journal`, and go live only if the journal holds up. The risk
+check's cool-off, sector cap, charges limit, results-day and surveillance
+blocks are there for the days it does not.
 
 ## Fine print
 
@@ -268,7 +283,7 @@ here is tax advice: ask a chartered accountant.
 ## Files
 
 ```
-trader-scanner/     SKILL.md, scan.py
+trader-scanner/     SKILL.md, scan.py, morning.py
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py
 trader-exit/        SKILL.md, exit.py

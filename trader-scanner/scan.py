@@ -2,6 +2,7 @@
 """Chart Scanner for trader-scanner: scan thousands of charts for setups. Standard library only.
 
     python3 scan.py universe                          # NSE's lists -> trader/universe.txt + trader/bands.json
+    python3 scan.py surveillance asm.csv gsm.csv      # NSE's ASM/GSM lists -> trader/surveillance.json
     python3 scan.py daily                             # before the open: daily setups -> trader/watchlist.json
     python3 scan.py daily --watchlist trader/nifty50.txt   # or --symbols INFY.NS,TCS.NS, or --limit 200
     python3 scan.py orb                               # after 9:35 AM IST: opening-range breakouts so far
@@ -16,6 +17,14 @@ universe  Downloads NSE's equity list (EQUITY_L.csv) and price band list
           stock's price band (2, 5, 10 or 20 % from the previous close, or
           none for F&O stocks), which trader-risk uses to stop a buy right
           under the upper band. NSE revises bands often: run it each morning.
+
+surveillance  Reads NSE's ASM and GSM lists (Additional and Graded Surveillance
+          Measures: stocks NSE watches for unusual moves, with extra margins and
+          often no intraday leverage). NSE's report pages turn scripts away, so
+          save each CSV from a browser (nseindia.com/reports/asm, the long-term
+          and short-term tabs, and nseindia.com/reports/gsm) and pass the files:
+          scan.py surveillance asm-lt.csv asm-st.csv gsm.csv. Writes
+          trader/surveillance.json; trader-risk blocks new entries in those stocks.
 
 daily     Pre-market scan of daily CLOSES (Yahoo spark: 20 symbols a request,
           3 months of 1-day bars, closes only). Liquidity from the spark meta:
@@ -804,6 +813,63 @@ def money(x):
 
 # ---------------------------------------------------------------- commands
 
+def parse_surveillance(text, kind):
+    """One of NSE's ASM or GSM report CSVs (saved from nseindia.com/reports/asm or /gsm) -> {SYM.NS: label}.
+    Finds the SYMBOL column wherever the header row is, and a stage column if there is one."""
+    import csv
+    import io
+    rows = list(csv.reader(io.StringIO(text.replace("\r", "").lstrip("\ufeff"))))
+    head = next((i for i, r in enumerate(rows) if any(c.strip().upper() == "SYMBOL" for c in r)), None)
+    if head is None:
+        raise ScanError("no SYMBOL column in the %s file: save the CSV from NSE's %s report page" % (kind, kind))
+    hdr = [c.strip().upper() for c in rows[head]]
+    si = hdr.index("SYMBOL")
+    stage = next((i for i, h in enumerate(hdr) if "STAGE" in h), None)
+    sub = next((i for i, h in enumerate(hdr) if h in ("SURVEILLANCE", "SURV DESC", "ASM TYPE", "LIST")), None)
+    out = {}
+    for r in rows[head + 1:]:
+        if len(r) <= si or not r[si].strip():
+            continue
+        sym = r[si].strip().upper()
+        if not re.match(r"^[A-Z0-9&\-]{1,20}$", sym):
+            continue
+        label = kind
+        if sub is not None and len(r) > sub and r[sub].strip():
+            label += " " + r[sub].strip()
+        if stage is not None and len(r) > stage and r[stage].strip():
+            st = r[stage].strip()
+            label += " " + (st if st.lower().startswith("stage") else "Stage " + st)
+        out[sym + ".NS"] = label
+    return out
+
+
+def cmd_surveillance(a):
+    syms = {}
+    files = []
+    for path in a.files:
+        kind = a.kind or ("GSM" if "gsm" in os.path.basename(path).lower() else "ASM")
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            got = parse_surveillance(fh.read(), kind)
+        syms.update(got)
+        files.append({"file": os.path.basename(path), "list": kind, "stocks": len(got)})
+    now = to_ist(parse_now(a.now))
+    doc = {"created_by": "trader-scanner", "updated": now.date().isoformat(), "files": files,
+           "note": "Stocks on NSE's Additional or Graded Surveillance Measure lists. trader-risk blocks new "
+                   "entries in them. NSE changes the lists every week: save the CSVs from "
+                   "nseindia.com/reports/asm and nseindia.com/reports/gsm and run scan.py surveillance again.",
+           "symbols": dict(sorted(syms.items()))}
+    if not a.no_write:
+        write_json(a.out, doc)
+    if a.json:
+        print(json.dumps(doc, indent=2))
+    else:
+        for f in files:
+            print("%s: %d stock%s on the %s list." % (f["file"], f["stocks"], "" if f["stocks"] == 1 else "s",
+                                                       f["list"]))
+        print("%d stocks in all%s." % (len(syms), "" if a.no_write else ", written to %s" % a.out))
+    return 0
+
+
 def cmd_universe(a):
     t0 = time.time()
     texts = {}
@@ -1028,6 +1094,14 @@ def main(argv=None):
     p.add_argument("--pause", type=float, default=PAUSE)
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("surveillance", help="NSE's ASM and GSM CSVs, saved from a browser -> trader/surveillance.json")
+    p.add_argument("files", nargs="+", metavar="CSV", help="the CSVs from nseindia.com/reports/asm and /reports/gsm")
+    p.add_argument("--kind", choices=("ASM", "GSM"), help="the list (default: GSM if the file name says gsm, else ASM)")
+    p.add_argument("--out", default="trader/surveillance.json")
+    p.add_argument("--now", help="pretend it is this IST time")
+    p.add_argument("--no-write", action="store_true")
+    p.add_argument("--json", action="store_true")
+
     def common(p, min_price, min_volume):
         g = p.add_mutually_exclusive_group()
         g.add_argument("--symbols", help="comma-separated symbols (INFY.NS,TCS.NS) instead of the universe")
@@ -1060,7 +1134,8 @@ def main(argv=None):
         ap.print_help()
         return 1
     try:
-        return {"universe": cmd_universe, "daily": cmd_daily, "orb": cmd_orb}[a.cmd](a)
+        return {"universe": cmd_universe, "surveillance": cmd_surveillance, "daily": cmd_daily,
+                "orb": cmd_orb}[a.cmd](a)
     except ScanError as e:
         print("scan.py: %s" % e, file=sys.stderr)
         return 1

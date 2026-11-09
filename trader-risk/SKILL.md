@@ -1,23 +1,26 @@
 ---
 name: trader-risk
 description: >-
-  Risk Manager. Checks every trade against your limits and stops anything
-  over them, before it can reach the broker. For an NSE day trade: a stop is
+  Risk Manager. Checks every trade against your limits and stops anything over
+  them, before it can reach the broker. For an NSE day trade: a stop is
   required, the loss at the stop plus the round trip's charges must fit your
-  max loss per trade (measured from the higher of the plan's entry and a
-  fresh price), reward:risk after charges must meet your minimum, the day's
-  total risk must fit your daily loss limit, no more than your trades per
-  day, no new entries outside your entry window or when the NSE is closed,
-  and no buy right under the stock's upper price band (circuit limit). It
-  also keeps the basics: NSE symbols only, no futures and options, whole
-  shares, MIS or CNC, blocked symbols, order size, position cap, cash buffer,
-  intraday leverage only when you allow margin, short sales, malformed or bad
-  bracket orders, duplicates and a daily order limit. Getting out is never
-  blocked by a day limit. Prints PASS or BLOCK with the reason and records
-  the verdicts so trader-broker only shows an order that passed. Use when the
-  user says "check my order", "is this safe", "risk check", "does this break
-  my rules", "can I take this trade", "how much have I risked today", or
-  before /trader-broker, always.
+  max loss per trade (measured from the higher of the plan's entry and a fresh
+  price), reward:risk after charges must meet your minimum, the day's total
+  risk must fit your daily loss limit, no more than your trades per day, no new
+  entries outside your entry window or when the NSE is closed, and no buy right
+  under the stock's upper price band (circuit limit). It also blocks a trade
+  whose charges at the stop are over 15 % of the risk (a stop too close for the
+  charges), entries on the stock's results day and the day after
+  (trader/events.json), and stocks on NSE's ASM or GSM surveillance lists, and
+  flags Nifty's weekly expiry. It also keeps the basics: NSE symbols only, no
+  futures and options, whole shares, MIS or CNC, blocked symbols, order size,
+  position cap, cash buffer, intraday leverage only when you allow margin,
+  short sales, malformed or bad bracket orders, duplicates and a daily order
+  limit. Getting out is never blocked by a day limit. Prints PASS or BLOCK with
+  the reason and records the verdicts so trader-broker only shows an order that
+  passed. Use when the user says "check my order", "is this safe", "risk
+  check", "does this break my rules", "can I take this trade", "how much have I
+  risked today", or before /trader-broker, always.
 argument-hint: "[path to orders.json]"
 ---
 
@@ -49,6 +52,8 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-11-05 09:40"  # pin the clock
 | `trader/prices.json` | a fresh price raises the entry it measures risk from; its previous close feeds the band check |
 | `trader/bands.json` | each stock's NSE price band (trader-scanner: `scan.py universe`) |
 | `trader/sectors.json` | each Nifty 500 stock's NSE industry, for the sector cap (copy it from this pack's `trader/` folder) |
+| `trader/events.json` | results dates (trader-analyst: `results.py event INFY.NS 2026-11-12`) |
+| `trader/surveillance.json` | NSE's ASM and GSM lists (trader-scanner: `scan.py surveillance`); missing or over 7 days old is a warning |
 | `trader/state/broker.json` | what was placed today: duplicates, trades per day, daily loss |
 | `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
 
@@ -78,12 +83,16 @@ batch that is fine order by order but breaks a limit together is caught.
 | stop | (entries) no stop while `require_stop` is true (a bracket `stop_loss_stop_price`, or the order's plan stop); a stop on the wrong side of the entry |
 | loss | (entries) qty x (entry minus stop) plus the round trip's charges over `max_loss_per_trade_inr` |
 | reward:risk | (entries) the win at the target after charges / the loss at the stop with charges, under `min_reward_risk` |
+| charges | (entries) the round trip's charges at the stop over `max_charges_pct_of_risk` (15) % of the loss on price: the stop is too close for the charges, and it says how far it needs to be |
 | daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_inr` |
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) before `no_entries_before` (09:30) or after `no_entries_after` (14:45), or the NSE is closed |
 | band | (entries) the entry is within 1% of the upper price band: the previous close plus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |
 | cool-off | (entries) `max_losing_streak` (2) losing trades in a row today, after charges: no new entries for the rest of the day |
 | sector | (entries) `max_entries_per_sector` (2) entries in one NSE industry today, this batch included (`trader/sectors.json`) |
+| results | (entries, `skip_results_days` true) the stock's results date in `trader/events.json` is today, or was the last trading day (results out after the close move the next open) |
+| expiry | (entries, `skip_expiry_days`, off by default: a warning instead) Nifty's weekly F&O expiry, Tuesday or the Monday before a Tuesday holiday |
+| surveillance | (entries, `block_surveillance` true) the stock is on NSE's ASM or GSM list in `trader/surveillance.json` |
 | duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
 | daily limit | (entries) `max_orders_per_day` orders already placed today |
 
@@ -114,6 +123,11 @@ How the numbers work:
   in one industry move together (one IT selloff can stop out three IT
   trades at once), so the sector cap keeps the day's risk spread. A
   breakeven trade on price still lost its charges, so it counts as a loss.
+- **Results, expiry and surveillance**: a stop does not protect against a
+  gap on results, so the stock is off limits that day and the next.
+  Expiry days are only a warning by default: the edge report found skipping
+  them did not reliably help. Stocks under NSE's surveillance (ASM or GSM)
+  carry extra margins and often no intraday leverage, and move hard.
 - **Leverage**: MIS positions can borrow up to about five times your cash
   under SEBI's margin rules. Here `intraday_leverage` is 1 (no borrowing)
   unless the config also says `"allow_margin": true`, and never more than 5.

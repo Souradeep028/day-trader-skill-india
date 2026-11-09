@@ -11,6 +11,14 @@ does the arithmetic, exactly, so nothing is rounded twice or compared wrongly.
     python3 results.py show trader/results/INFY.json --json
     python3 results.py show trader/results/INFY.json --metrics trader/metrics.json
     python3 results.py template INFY.NS > trader/results/INFY.json   # an empty file to fill in
+    python3 results.py event INFY.NS 2026-10-16 --what "Q2 FY27 results"   # trader-risk skips that day
+    python3 results.py events                                # the results dates from today on
+
+The results dates (trader/events.json) come from the company's board meeting
+notice: the NSE (Corporate Filings, Board Meetings) or BSE announcement that
+says when the board meets to approve the results, filed days ahead. Results
+often come out after the 15:30 close, so trader-risk blocks new entries in
+the stock on that date AND the next trading day.
 
 The results file (one company, one basis, one unit):
 
@@ -293,6 +301,54 @@ def cmd_template(a):
     return 0
 
 
+def read_events(path):
+    if not os.path.exists(path):
+        return {"created_by": "trader-analyst", "events": []}
+    with open(path, encoding="utf-8") as fh:
+        try:
+            doc = json.load(fh)
+        except ValueError:
+            raise ResultsError("%s is not valid JSON" % path)
+    if not isinstance(doc, dict) or not isinstance(doc.get("events"), list):
+        raise ResultsError("%s has no \"events\" list" % path)
+    return doc
+
+
+def cmd_event(a):
+    sym = a.symbol.upper()
+    if not sym.endswith(".NS"):
+        sym += ".NS"
+    try:
+        datetime.date.fromisoformat(a.date)
+    except ValueError:
+        raise ResultsError("the date wants YYYY-MM-DD, not %r" % a.date)
+    doc = read_events(a.events)
+    doc["events"] = [e for e in doc["events"] if not (e.get("symbol") == sym and e.get("date") == a.date)]
+    doc["events"].append({"symbol": sym, "date": a.date, "what": a.what})
+    doc["events"].sort(key=lambda e: (e.get("date", ""), e.get("symbol", "")))
+    d = os.path.dirname(a.events)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(a.events, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    print("%s: %s on %s. trader-risk blocks new entries in it that day and the next trading day."
+          % (sym, a.what, a.date))
+    return 0
+
+
+def cmd_events(a):
+    doc = read_events(a.events)
+    today = a.today or datetime.date.today().isoformat()
+    rows = [e for e in doc["events"] if a.all or e.get("date", "") >= today]
+    if not rows:
+        print("No results dates%s in %s." % ("" if a.all else " from %s on" % today, a.events))
+        return 0
+    for e in rows:
+        print("%s  %-14s %s" % (e["date"], e["symbol"], e.get("what") or "results"))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Quarterly results calculator (trader-analyst).")
     sub = ap.add_subparsers(dest="cmd")
@@ -302,12 +358,21 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("template", help="print an empty results file")
     p.add_argument("symbol")
+    p = sub.add_parser("event", help="record a results date in trader/events.json (trader-risk skips that day)")
+    p.add_argument("symbol")
+    p.add_argument("date", help="the board meeting date, YYYY-MM-DD")
+    p.add_argument("--what", default="results", help='e.g. "Q2 FY27 results"')
+    p.add_argument("--events", default="trader/events.json")
+    p = sub.add_parser("events", help="list the results dates from today on")
+    p.add_argument("--events", default="trader/events.json")
+    p.add_argument("--today", help="YYYY-MM-DD")
+    p.add_argument("--all", action="store_true", help="past dates too")
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
         return 1
     try:
-        return {"show": cmd_show, "template": cmd_template}[a.cmd](a)
+        return {"show": cmd_show, "template": cmd_template, "event": cmd_event, "events": cmd_events}[a.cmd](a)
     except ResultsError as e:
         print("results.py: %s" % e, file=sys.stderr)
         return 1

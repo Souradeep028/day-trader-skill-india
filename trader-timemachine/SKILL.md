@@ -2,16 +2,20 @@
 name: trader-timemachine
 description: >-
   Time Machine. Replays every possible outcome of a trade before you risk a
-  rupee: 10,000 simulated sessions plus every past time the setup fired.
-  Takes the plan from trader-exit (entry, stop, target), rebuilds the rest of
-  the day 10,000 times from the stock's own 5-minute bars over the last 60
-  days, and re-runs the same rule on every past session. Prints the odds of
-  target first, stop first, or neither by your flat-by time, where the price
-  sits then, the average R before and after Zerodha's charges, the history,
-  and one honest verdict, then hands off to /trader-budget. Use when the user says "run the time machine",
-  "replay this trade", "what are the odds", "simulate this trade", "monte
-  carlo", "backtest this setup", "how often does this hit the target", "is
-  this a coin flip", or after /trader-exit writes a plan, before
+  rupee: 10,000 simulated sessions plus every past time the setup fired. Takes
+  the plan from trader-exit (entry, stop, target), rebuilds the rest of the day
+  10,000 times from the stock's own 5-minute bars over the last 60 days, and
+  re-runs the same rule on every past session. Prints the odds of target first,
+  stop first, or neither by your flat-by time, where the price sits then, the
+  average R before and after Zerodha's charges, the history, and one honest
+  verdict, then hands off to /trader-budget. Its edge report (edge.py) tests
+  896 intraday rules across a list of stocks (opening-range breaks,
+  previous-day breaks, VWAP pullbacks; long and short; with filters for Nifty,
+  volume, gaps, VIX, charges and expiry) after charges and slippage, in two
+  halves, with a bootstrap luck test. Use when the user says "run the time
+  machine", "replay this trade", "what are the odds", "simulate this trade",
+  "monte carlo", "backtest this setup", "how often does this hit the target",
+  "is this a coin flip", "does any setup make money", "run the edge report", or after /trader-exit writes a plan, before
   /trader-budget.
 argument-hint: "[path to plan.json, or SYMBOL.NS]"
 ---
@@ -40,7 +44,8 @@ python3 "${CLAUDE_SKILL_DIR}/timemachine.py" chart --from           # ASCII fan 
 ```
 
 Other flags: `--replays N`, `--seed N` (default 19), `--window N` (default 2
-bars), `--qty N` (the shares for the charges), `--config FILE`
+bars), `--qty N` (the shares for the charges), `--slippage-ticks N`
+(default 1, 0 for none), `--config FILE`
 (`max_loss_per_trade_inr`, `charges` and `flat_by`, default
 `trader/config.json`), `--offline FILE` (a saved Yahoo chart JSON, `.json`
 or `.json.gz`), `--now "2026-11-05 09:45"` (IST) to pin the clock.
@@ -76,8 +81,11 @@ or `.json.gz`), `--now "2026-11-05 09:45"` (IST) to pin the clock.
 4. **Charges.** The average R is shown again after charges: Zerodha's equity
    intraday rates for the shares trader-budget would buy (the most whose loss
    at the stop plus charges fits the max loss). On a small trade the round
-   trip's charges are a real slice of 1R. When they turn a small average gain
-   into a loss, it says so.
+   trip's charges are a real slice of 1R. The same line takes off slippage:
+   one tick (`--slippage-ticks`) on the market entry, and on the exit when it
+   is a stop or the flat-by sale (a target is a limit order and fills at its
+   price), on the tick the stock traded at that day. When charges turn a
+   small average gain into a loss, it says so.
 5. **The history.** The plan's own rule (the same opening range, stop rule
    and target R, stops and targets on the NSE tick) runs again on every one
    of those past sessions. That is what really happened, not a simulation.
@@ -135,9 +143,11 @@ INFY.NS, Thursday 5 November 2026. The 15-minute opening range is 1144.90 to
   green          31.2 %   target first, or above the entry at 3:10 PM
   Price at 3:10 PM: median 1155.92, 90 % of replays between 1135.79 and 1177.07.
   Average R: -0.316 (R = the 10.70 risk: +2R at the target, -1R at the stop).
-  After charges: -0.431 R. A round trip of 41 shares costs about ₹50.57, 0.115 R.
+  After charges and slippage: -0.450 R. A round trip of 41 shares costs about ₹50.57, 0.115 R;
+  1 tick of slippage (0.10) on the entry and on a stop or flat-by exit, 0.018 R.
 History: the same rule (15-min opening range, stop at the opening-range midpoint, 2R target) on each
-of those 57 real sessions fired 20 times: 1 target, 10 stop, 9 neither. Average R -0.349, -0.464 after charges.
+of those 57 real sessions fired 20 times: 1 target, 10 stop, 9 neither. Average R -0.349, -0.482 after
+charges and slippage.
 Strongly toward the stop: at 2R the target has to come first in 33 % of the replays that hit one side;
 it did in 8 % (target first 4.9 % vs stop first 53.5 %).
 41.6 % of the replays hit neither by 3:10 PM; the price at 3:10 PM decides those.
@@ -156,34 +166,64 @@ whole grid over a list of stocks and every session in the data:
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/edge.py" run --watchlist trader/nifty50.txt          # Yahoo, 60 days of 5-min bars
 python3 "${CLAUDE_SKILL_DIR}/edge.py" run --watchlist trader/nifty50.txt --write  # also trader/edge.json
-python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ticks 2 --max-loss 1000
+python3 "${CLAUDE_SKILL_DIR}/edge.py" run --watchlist trader/nifty50.txt --setups orb30 --sides short
+python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ticks 2 --max-cost-pct 10
 ```
 
-- **16 rules**: a 15- or 30-minute opening range, a midpoint or range-low
-  stop, a 1R, 1.5R, 2R or 3R target, longs only, entries 9:30 to 14:45, out
-  by 15:10. Each one alone and with each filter: `nifty_up` (Nifty 50 above
-  its 9:15 open at the entry), `stronger` (the stock up more than Nifty from
-  the open), `volume` (the entry bar at least the range bars' average),
-  `no_gap` (opened within 1 % of the last close), `calm_vix` (India VIX
-  opened under its 20-session median). 96 combinations.
+- **64 rules**: four setups, long and short, a tight or a wide stop, a 1R,
+  1.5R, 2R or 3R target, entries 9:30 to 14:45, out by 15:10.
+  - `orb15`, `orb30`: the first close beyond the 15- or 30-minute opening
+    range. Stops: the range midpoint, or the far side of the range.
+  - `pdb`: the first close beyond the previous session's high (low for a
+    short), having closed on the other side the bar before.
+  - `vwap`: a pullback to VWAP that closes back on the trend's side, with the
+    price above the day's open (below, for a short).
+  - For `pdb` and `vwap` the tight stop is the entry bar's low (high), the
+    wide stop the day's low (high) so far.
+- **14 filters**: none; `with_nifty` (Nifty has moved the trade's way since
+  9:15); `stronger` (the stock has moved its way more than Nifty);
+  `volume` (the entry bar beat the day's average bar so far); `no_gap`
+  (opened within 1 % of the last close); `calm_vix` (India VIX opened under
+  its 20-session median); `low_cost` (the charges at the stop are at most
+  15 % of the risk, `--max-cost-pct`, the same rule as trader-budget's
+  `max_charges_pct_of_risk`); `not_expiry` (not Nifty's weekly expiry);
+  and `low_cost` together with each of the others. 896 combinations.
 - **Each trade the way the pack would take it**: sized like trader-budget
   (the most shares whose loss at the stop plus charges fits the max loss),
-  Zerodha's charges, on the tick the stock really traded at that day, one
-  tick of slippage on the entry, the stop and the flat-by sale (a stop that
-  gaps fills at the bar's open). R is the result after charges over the
-  planned risk.
-- **Two halves**: the first two thirds of the sessions and the last third. A
-  rule "held up" only when it made money after charges in BOTH, with 30 or
-  more trades in each. With 96 combinations, some will look good by chance.
+  Zerodha's charges (a short pays STT on its sale and stamp duty on its buy),
+  on the tick the stock really traded at that day, one tick of slippage on
+  the entry, the stop and the flat-by exit (a stop that gaps fills at the
+  bar's open). R is the result after charges over the planned risk.
+- **Two halves and a luck test**: a rule "held up" when it made money after
+  charges in both the first two thirds of the sessions and the last third,
+  with 30 or more trades in each. With 896 combinations tested, some will
+  hold up by luck, so a rule only PASSES when a session bootstrap (whole
+  days resampled, since one day's trades move together) also gives it a
+  p-value under 0.05 / 896 = 0.000056.
 
-**What it found** on the Nifty 50 over the 58 sessions to 6 November 2026
-(2,000 to 4,000 trades a rule): no rule held up. The pack's default
-(15-minute range, midpoint stop, 2R) took 1,607 trades and lost ₹1,15,780,
-of which ₹1,06,901 was charges: close to break-even before charges
-(-0.05 R), -0.26 R after. Wider (range-low) stops with the Nifty filter lost
-least, and were positive only in the later sessions: the market's mood,
-not an edge yet. Say this plainly when the user asks whether a setup
-works, and run the report again on fresh data before trusting any rule.
+**What it found** on the Nifty 50 over the 58 sessions to 6 November 2026:
+
+- **Nothing passed.** 11 of 896 combinations held up in both halves, every
+  one with a p-value of 0.18 or more: well inside what luck produces.
+- **Charges are the problem.** At the stop they were a median 16.8 % of the
+  risk, so most trades started 0.15 to 0.2 R behind. The pack's default
+  (long 15-minute range break, midpoint stop, 2R) took 1,607 trades and lost
+  ₹1,15,780, ₹1,06,901 of it charges: -0.05 R before charges, -0.26 R after.
+  Keeping only the trades whose charges were under 15 % of the risk took the
+  default to -0.06 R (433 trades), and the average of all 64 rules from
+  -0.28 R to -0.09 R. That is why trader-budget and trader-risk now refuse
+  those trades.
+- **The best lead**: short the 30-minute range break, midpoint stop, 3R
+  target, low cost and Nifty also falling: 309 trades, +0.08 R a trade after
+  charges (+0.07 in the earlier sessions, +0.10 in the later), but a 95 %
+  interval of -0.15 to +0.26 R and a p-value of 0.21. Shorts lost less than
+  longs in this stretch (-0.24 R against -0.31 R unfiltered), which may be
+  the market of those weeks more than the rule. The pack trades longs only;
+  shorts would need the entry, exit and broker skills to support them.
+
+Say this plainly when the user asks whether a setup works. Run the report
+again on fresh data before trusting any rule, and paper trade a lead before
+any money goes in.
 
 ## Rules
 

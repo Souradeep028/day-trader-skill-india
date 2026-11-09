@@ -602,5 +602,124 @@ class Cli(unittest.TestCase):
         self.assertEqual(out["note"], "A scan is a list of charts that match a rule, not a list of stocks to buy.")
 
 
+class Surveillance(unittest.TestCase):
+    ASM = ('\ufeff"SYMBOL","NAME OF SECURITY","ISIN","Stage"\n"ABCLTD","Abc Ltd","INE000A01010","I"\n'
+           '"XYZ-RE","Xyz Ltd","INE000A01011","II"\n"","","",""\n')
+    GSM = "Report as on 06-Nov-2026\nSr No,Symbol,Company Name,GSM Stage\n1,PQR,Pqr Ltd,Stage 0\n"
+
+    def test_parse(self):
+        self.assertEqual(scan.parse_surveillance(self.ASM, "ASM"),
+                         {"ABCLTD.NS": "ASM Stage I", "XYZ-RE.NS": "ASM Stage II"})
+        self.assertEqual(scan.parse_surveillance(self.GSM, "GSM"), {"PQR.NS": "GSM Stage 0"})
+        with self.assertRaises(scan.ScanError):
+            scan.parse_surveillance("a,b\n1,2\n", "ASM")
+
+    def test_cli(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, g, out = os.path.join(d, "asm-lt.csv"), os.path.join(d, "gsm.csv"), os.path.join(d, "s.json")
+            with open(a, "w") as fh:
+                fh.write(self.ASM)
+            with open(g, "w") as fh:
+                fh.write(self.GSM)
+            code, text, err = run(["surveillance", a, g, "--out", out, "--now", "2026-11-09 08:30"])
+            self.assertEqual(code, 0, err)
+            self.assertIn("asm-lt.csv: 2 stocks on the ASM list.", text)
+            self.assertIn("gsm.csv: 1 stock on the GSM list.", text)
+            with open(out) as fh:
+                doc = json.load(fh)
+            self.assertEqual(doc["updated"], "2026-11-09")
+            self.assertEqual(sorted(doc["symbols"]), ["ABCLTD.NS", "PQR.NS", "XYZ-RE.NS"])
+            check = load("trader-risk", "check")
+            o = {"symbol": "PQR.NS", "exchange": "NSE", "product": "MIS", "side": "buy", "qty": "10", "type": "market",
+                 "time_in_force": "day"}
+            r = check.check([o], {"budget": 100000}, now=check.parse_now("2026-11-09 09:40"), surveillance=doc)
+            self.assertIn("surveillance: PQR.NS is on NSE's GSM Stage 0 list", " | ".join(r["results"][0]["reasons"]))
+
+
+class Morning(unittest.TestCase):
+    """trader-scanner/morning.py: the routine runs the real tools on the real fixtures."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+        os.makedirs("trader")
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        self.tmp.cleanup()
+
+    def morning(self, *extra):
+        import subprocess
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.dirname(here)
+        cmd = [sys.executable, os.path.join(root, "trader-scanner", "morning.py"),
+               "--watchlist", os.path.join(root, "trader", "nifty50.txt"),
+               "--scan-offline", DAILY, "--news-offline", os.path.join(FIX, "trader-news"),
+               "--universe-offline", os.path.join(FIX, "trader-scanner", "nse")] + list(extra)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        return p.returncode, p.stdout, p.stderr
+
+    def test_a_closed_day(self):
+        code, text, _ = self.morning("--now", "2026-11-10 08:30")
+        self.assertEqual(code, 0)
+        self.assertEqual(text, "No NSE session today, Tuesday 10 November 2026 (NSE holiday: Diwali "
+                               "Balipratipada). The next one is Wednesday 11 November 2026.\n")
+        self.assertFalse(os.path.exists("trader/morning.md"))
+
+    def test_the_brief(self):
+        with open("trader/events.json", "w") as fh:
+            json.dump({"events": [{"symbol": "ICICIBANK.NS", "date": "2026-11-11", "what": "a board meeting"},
+                                  {"symbol": "ICICIBANK.NS", "date": "2026-11-20", "what": "too late"}]}, fh)
+        with open("trader/surveillance.json", "w") as fh:
+            json.dump({"updated": "2026-10-20", "symbols": {}}, fh)
+        code, text, err = self.morning("--now", "2026-11-09 08:30")
+        self.assertEqual(code, 0, err)
+        for line in ("# Morning brief: Monday 9 November 2026",
+                     "Today is Nifty's weekly F&O expiry",           # Tuesday the 10th is a holiday
+                     "- Universe and price bands: refreshed from NSE (11 stocks).",
+                     "- ASM/GSM lists: 20 days old; NSE changes them weekly",
+                     "31 of 41 charts matched a setup (2026-11-06 close).",
+                     "| ICICIBANK.NS | breakout_20d | 1571.20 | 79.5 |",
+                     "- ICICIBANK.NS: a board meeting on 2026-11-11.",
+                     "- Max loss ₹500 a trade with charges, ₹1,500 a day, 3 trades, charges at most 15 % of the risk.",
+                     "Nothing has been placed."):
+            self.assertIn(line, text)
+        self.assertNotIn("too late", text)
+        with open("trader/morning.md") as fh:
+            self.assertEqual(fh.read(), text)
+        with open("trader/watchlist.json") as fh:
+            self.assertEqual(len(json.load(fh)["hits"]), 31)
+        self.assertTrue(os.path.exists("trader/bands.json"))
+
+    def test_a_universe_failure_and_no_lists(self):
+        code, text, _ = self.morning("--now", "2026-11-11 08:30", "--universe-offline", "/nowhere", "--no-news")
+        self.assertEqual(code, 0)
+        self.assertIn("NSE turned the script away (no EQUITY_L.csv in /nowhere)", text)
+        self.assertIn("There is no trader/bands.json", text)
+        self.assertIn("- ASM/GSM lists: no trader/surveillance.json.", text)
+        self.assertNotIn("weekly F&O expiry", text)
+        self.assertNotIn("## News", text)
+
+    def test_news_in_the_brief(self):
+        import importlib
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trader-scanner"))
+        morning = importlib.import_module("morning")
+        news = {"items": [{"ticker": "INFY.NS", "title": "Infosys wins a deal", "source": "Mint", "tags": ["deal"],
+                           "important": True}, {"ticker": "TCS.NS", "title": "Markets today", "source": "ET",
+                                                "tags": []}],
+                "moves": [{"ticker": "INFY.NS", "pct": 3.47, "moving": True}]}
+        text = "\n".join(morning.brief(datetime.date(2026, 11, 11), {"news": news, "scan": {"hits": []},
+                                                                     "universe": {"skipped": True}}, {}))
+        self.assertIn("Moving: INFY.NS +3.5 %.", text)
+        self.assertIn("2 new headlines, 1 tagged.", text)
+        self.assertIn("- [INFY.NS] Infosys wins a deal (Mint: deal)", text)
+        self.assertNotIn("Markets today", text)
+        self.assertEqual(morning.expiry_day(datetime.date(2026, 10, 19)), True)
+        self.assertEqual(morning.expiry_day(datetime.date(2026, 10, 20)), False)
+
+
 if __name__ == "__main__":
     unittest.main()
