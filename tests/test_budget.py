@@ -21,7 +21,7 @@ PRICES = {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53
 CONTRACT_CFG = {
     "budget": 100000, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 75000, "min_order_inr": 500,
     "max_loss_per_trade_inr": 500, "max_daily_loss_inr": 1500, "max_trades_per_day": 3, "max_orders_per_day": 10,
-    "min_reward_risk": 1.0, "require_stop": True,
+    "max_losing_streak": 2, "max_entries_per_sector": 2, "min_reward_risk": 1.0, "require_stop": True,
     "no_entries_before": "09:30", "no_entries_after": "14:45", "flat_by": "15:10",
     "fractional": False, "broker": "zerodha", "exchange": "NSE", "product": "MIS", "paper": True, "blocked": [],
     "allow_options": False, "allow_margin": False, "allow_short": False, "intraday_leverage": 1,

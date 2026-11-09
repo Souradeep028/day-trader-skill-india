@@ -66,7 +66,9 @@ If `trader/config.json` does not exist, copy `config.example.json` into
 - The day limits trader-risk enforces: **max_daily_loss_inr** (1,500),
   **max_trades_per_day** (3), **min_reward_risk** (1.0, after charges),
   **require_stop** (true), **no_entries_before** / **no_entries_after**
-  ("09:30" / "14:45") and **flat_by** ("15:10"), all IST. 15:10 is before
+  ("09:30" / "14:45") and **flat_by** ("15:10"), all IST, plus
+  **max_losing_streak** (2: no new entries after two losing trades in a row
+  today) and **max_entries_per_sector** (2 a day in one industry). 15:10 is before
   Zerodha squares off open intraday positions itself (about 3:20 PM, for a
   fee).
 - **charges**: Zerodha's equity intraday rates are the default (read from

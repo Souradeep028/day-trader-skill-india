@@ -46,6 +46,8 @@ python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 1 --status placed --broke
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol INFY.NS --side sell --qty 41 --price 1149.80
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol INFY.NS --qty 41
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" log                      # today's decisions and P&L after charges
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" journal --paper          # every closed trade: win rate, R, P&L
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" tax --fy FY27 --csv trader/tax-FY27.csv   # the year, as a worksheet
 ```
 
 `ticket.py` never talks to a broker. It renders tickets, checks that a reply
@@ -84,6 +86,25 @@ one: the same tickets, the same risk check and the same explicit yes, then
 
 Paper fills are only as good as the price you give them: use the live price
 at that moment, not a better one.
+
+## The journal and the tax worksheet
+
+- `ticket.py journal` pairs each day's fills into round trips (bought and
+  sold back to flat) and prints every trade with its charges, net P&L and R
+  (net over the planned risk, from the stop recorded with its yes), then the
+  win rate, net P&L, average R, best and worst trade and the longest run of
+  losses. `--paper` or `--live` keeps them apart, `--from` and `--to` pick
+  dates. Under 30 trades it says the sample is too small to judge.
+- Review it every week. Go live only if the paper journal holds up over a
+  month or two, and stop and look again whenever the losing runs get longer.
+- `ticket.py tax --fy FY27` covers India's financial year (April 2026 to
+  March 2027): live round trips only unless `--include-paper`, gross P&L,
+  charges by type (brokerage, STT, exchange, SEBI, stamp duty, GST), net,
+  and the turnover the tax-audit limits use for speculative trading (each
+  trade's profit or loss added up without signs). `--csv` writes one row per
+  trade. It is a worksheet, not tax advice: intraday equity is speculative
+  business income, filed on ITR-3, and its losses only set off against
+  speculative income. Check it against the broker's tax P&L and a CA.
 
 ## Live: Zerodha Kite, self-hosted MCP server
 

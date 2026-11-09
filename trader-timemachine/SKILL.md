@@ -148,6 +148,43 @@ it is what the user should hear before `/trader-budget` sizes 41 shares. On
 the day itself the trade hit neither side and closed at 15:10 for a small
 gain after charges: one day says little either way.
 
+## The edge report: does any setup make money after charges?
+
+One plan's replay says little about a setup. `edge.py` in this folder runs a
+whole grid over a list of stocks and every session in the data:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/edge.py" run --watchlist trader/nifty50.txt          # Yahoo, 60 days of 5-min bars
+python3 "${CLAUDE_SKILL_DIR}/edge.py" run --watchlist trader/nifty50.txt --write  # also trader/edge.json
+python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ticks 2 --max-loss 1000
+```
+
+- **16 rules**: a 15- or 30-minute opening range, a midpoint or range-low
+  stop, a 1R, 1.5R, 2R or 3R target, longs only, entries 9:30 to 14:45, out
+  by 15:10. Each one alone and with each filter: `nifty_up` (Nifty 50 above
+  its 9:15 open at the entry), `stronger` (the stock up more than Nifty from
+  the open), `volume` (the entry bar at least the range bars' average),
+  `no_gap` (opened within 1 % of the last close), `calm_vix` (India VIX
+  opened under its 20-session median). 96 combinations.
+- **Each trade the way the pack would take it**: sized like trader-budget
+  (the most shares whose loss at the stop plus charges fits the max loss),
+  Zerodha's charges, on the tick the stock really traded at that day, one
+  tick of slippage on the entry, the stop and the flat-by sale (a stop that
+  gaps fills at the bar's open). R is the result after charges over the
+  planned risk.
+- **Two halves**: the first two thirds of the sessions and the last third. A
+  rule "held up" only when it made money after charges in BOTH, with 30 or
+  more trades in each. With 96 combinations, some will look good by chance.
+
+**What it found** on the Nifty 50 over the 58 sessions to 6 November 2026
+(2,000 to 4,000 trades a rule): no rule held up. The pack's default
+(15-minute range, midpoint stop, 2R) took 1,607 trades and lost ₹1,15,780,
+of which ₹1,06,901 was charges: close to break-even before charges
+(-0.05 R), -0.26 R after. Wider (range-low) stops with the Nifty filter lost
+least, and were positive only in the later sessions: the market's mood,
+not an edge yet. Say this plainly when the user asks whether a setup
+works, and run the report again on fresh data before trusting any rule.
+
 ## Rules
 
 - Every number comes from the run. Never round a coin flip up into an edge.

@@ -48,6 +48,7 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-11-05 09:40"  # pin the clock
 | `trader/portfolio.json` | cash and holdings; if missing, a fresh account funded with the budget |
 | `trader/prices.json` | a fresh price raises the entry it measures risk from; its previous close feeds the band check |
 | `trader/bands.json` | each stock's NSE price band (trader-scanner: `scan.py universe`) |
+| `trader/sectors.json` | each Nifty 500 stock's NSE industry, for the sector cap (copy it from this pack's `trader/` folder) |
 | `trader/state/broker.json` | what was placed today: duplicates, trades per day, daily loss |
 | `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
 
@@ -81,6 +82,8 @@ batch that is fine order by order but breaks a limit together is caught.
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) before `no_entries_before` (09:30) or after `no_entries_after` (14:45), or the NSE is closed |
 | band | (entries) the entry is within 1% of the upper price band: the previous close plus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |
+| cool-off | (entries) `max_losing_streak` (2) losing trades in a row today, after charges: no new entries for the rest of the day |
+| sector | (entries) `max_entries_per_sector` (2) entries in one NSE industry today, this batch included (`trader/sectors.json`) |
 | duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
 | daily limit | (entries) `max_orders_per_day` orders already placed today |
 
@@ -106,6 +109,11 @@ How the numbers work:
   buyers below it). F&O stocks have no fixed band (null in bands.json) and
   are not checked; a stock missing from bands.json is a warning. A stop under
   the lower band is a warning: if it locks there, the stop cannot fill.
+- **Cool-off and sector cap**: two losses in a row is the moment people
+  trade to win it back; the cool-off stops new entries for the day. Stocks
+  in one industry move together (one IT selloff can stop out three IT
+  trades at once), so the sector cap keeps the day's risk spread. A
+  breakeven trade on price still lost its charges, so it counts as a loss.
 - **Leverage**: MIS positions can borrow up to about five times your cash
   under SEBI's margin rules. Here `intraday_leverage` is 1 (no borrowing)
   unless the config also says `"allow_margin": true`, and never more than 5.

@@ -59,8 +59,9 @@ cp -r day-trader-skill-india/trader-* ~/.claude/skills/
 ```
 
 Project-local instead of global: copy the same folders into your repo's
-`.claude/skills/`. Copy `trader/nifty50.txt` and `trader/banknifty.txt` into
-your project's `trader/` folder to scan those lists. No Claude Code at all?
+`.claude/skills/`. Copy `trader/nifty50.txt`, `trader/banknifty.txt` and
+`trader/sectors.json` into your project's `trader/` folder: the lists to scan,
+and the industries the risk check's sector cap reads. No Claude Code at all?
 Paste any single `SKILL.md` at the top of a chat and it runs as a mode. You
 lose the Python tools, but the method works.
 
@@ -151,11 +152,14 @@ python3 trader-entry/entry.py check INFY.NS --setup orb                # waiting
 python3 trader-entry/entry.py watch INFY.NS --every 30                 # bar by bar until it triggers
 python3 trader-exit/exit.py plan --stop or-mid --target 2R --write     # -> trader/plan.json
 python3 trader-timemachine/timemachine.py run --write                  # 10,000 replays + the history
+python3 trader-timemachine/edge.py run --watchlist trader/nifty50.txt  # which rules made money after charges
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
 python3 trader-broker/ticket.py paper --index 1 --price 1160.50        # paper: fill it
 python3 trader-broker/ticket.py paper-check                            # paper: stop or target hit?
+python3 trader-broker/ticket.py journal --paper                        # win rate, R, P&L after charges
+python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
 python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by 15:10
 python3 trader-alerts/alerts.py check                                  # rings what hit, once
 python3 trader-analyst/results.py show trader/results/INFY.json        # quarters, growth, margins
@@ -173,6 +177,25 @@ and real Google News India feeds. They reproduce every number in the example
 above. The charges, sizes and P&L are worked by hand in the test comments,
 and the scanner's and the Time Machine's results are checked against second
 counts written separately in the tests.
+
+## Does it make money?
+
+Not on its own, as far as the data shows. The Time Machine's `edge.py`
+runs 16 opening-range rules, alone and with five filters (Nifty's
+direction, strength against Nifty, volume, the opening gap, India VIX),
+over every Nifty 50 stock and session, sized and charged the way this pack
+trades, with a tick of slippage, and checks the earlier and the later
+sessions separately. Over the 58 sessions to 6 November 2026, **no rule
+made money after charges in both halves.** The pack's default (15-minute
+range, midpoint stop, 2R target) took 1,607 trades and lost ₹1,15,780; ₹1,06,901
+of that was charges. Before charges it was close to break-even.
+
+So: charges are the first thing a small intraday account has to beat, and
+any setup needs proof before money. Run `edge.py` on fresh data, paper
+trade what looks promising, keep `ticket.py journal`, and go live only if
+the journal holds up. The risk check's cool-off (no new entries after two
+losing trades in a row) and sector cap (two entries an industry a day) are
+there for the days it does not.
 
 ## Fine print
 
@@ -249,14 +272,14 @@ trader-scanner/     SKILL.md, scan.py
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py
 trader-exit/        SKILL.md, exit.py
-trader-timemachine/ SKILL.md, timemachine.py
+trader-timemachine/ SKILL.md, timemachine.py, edge.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py
 trader-pelosi/      SKILL.md, ptr.py
-trader/             nifty50.txt, banknifty.txt (NSE's index lists)
+trader/             nifty50.txt, banknifty.txt, sectors.json (NSE's index lists and industries)
 tests/              unittest suite + offline fixtures
 ```
 
