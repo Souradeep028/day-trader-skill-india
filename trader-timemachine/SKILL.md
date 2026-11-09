@@ -218,8 +218,8 @@ python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ti
   charges (+0.07 in the earlier sessions, +0.10 in the later), but a 95 %
   interval of -0.15 to +0.26 R and a p-value of 0.21. Shorts lost less than
   longs in this stretch (-0.24 R against -0.31 R unfiltered), which may be
-  the market of those weeks more than the rule. The pack trades longs only;
-  shorts would need the entry, exit and broker skills to support them.
+  the market of those weeks more than the rule. Shorts are off by default
+  (`allow_short` in the config); turn them on to paper trade the lead.
 
 Say this plainly when the user asks whether a setup works. Run the report
 again on fresh data before trusting any rule, and paper trade a lead before

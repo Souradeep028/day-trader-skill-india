@@ -157,7 +157,8 @@ def charges_in_r(plan, qty=None, max_loss=DEFAULT_MAX_LOSS, rates=None):
         return None
     if qty is None:
         qty = int(math.floor(max_loss / risk + 1e-9))
-        while qty > 0 and qty * risk + round_trip(qty, e, plan["stop"], rates) > max_loss + 0.005:
+        buy, sell = (e, plan["stop"]) if plan["stop"] < e else (plan["stop"], e)     # a short buys back at the stop
+        while qty > 0 and qty * risk + round_trip(qty, buy, sell, rates) > max_loss + 0.005:
             qty -= 1
     if qty <= 0:
         return None

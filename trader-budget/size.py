@@ -370,11 +370,24 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     if not sym:
         raise SizeError("the plan has no symbol (run trader-exit)")
     side = str(plan.get("side") or "buy").strip().lower()
-    if side != "buy":
-        raise SizeError("this pack sizes long (buy) day trades only; the plan says %r" % side)
+    if side in ("long",):
+        side = "buy"
+    if side in ("short",):
+        side = "sell"
+    if side not in ("buy", "sell"):
+        raise SizeError("the plan's side is %r: buy or sell" % side)
+    long = side == "buy"
+    if not long:
+        if not c.get("allow_short"):
+            raise SizeError("this plan is a short sale and short selling is off: set \"allow_short\": true in "
+                            "trader/config.json to size intraday (MIS) shorts")
+        if str(c.get("product") or "MIS").upper() != "MIS":
+            raise SizeError("a short sale on the NSE cash market must be intraday (MIS): a delivery (CNC) short "
+                            "cannot be held overnight. Set \"product\": \"MIS\"")
     if today and plan.get("date") and str(plan["date"]) != today:
         raise SizeError("the plan is for %s and today is %s in India: make a new plan with trader-exit"
                         % (plan["date"], today))
+    rates = c.get("charges") or {}
     entry_plan, stop, target = _f(plan.get("entry")), _f(plan.get("stop")), _f(plan.get("target"))
     for name, v in (("entry", entry_plan), ("stop", stop), ("target", target)):
         if v is None or v <= 0:
@@ -393,19 +406,28 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
 
     if limit is not None:
         ref, ref_from = round_cent(limit), "limit"
-    elif price is not None and round_cent(price) > round_cent(entry_plan):
+    elif price is not None and ((round_cent(price) > round_cent(entry_plan)) if long
+                                else (round_cent(price) < round_cent(entry_plan))):
         ref, ref_from = round_cent(price), "price"
     else:
         ref, ref_from = round_cent(entry_plan), "plan"
     stop, target = round_cent(stop), round_cent(target)
-    if stop >= ref:
+    if long and stop >= ref:
         raise SizeError("the stop %s is not below the entry %s; a long trade needs its stop underneath"
                         % (_price(stop), _price(ref)))
-    if target <= ref:
-        raise SizeError("the target %s is not above the entry %s: the move has already happened. "
-                        "Skip it or make a new plan with trader-exit" % (_price(target), _price(ref)))
-    risk_c = int(round((ref - stop) * 100))
-    reward_c = int(round((target - ref) * 100))
+    if not long and stop <= ref:
+        raise SizeError("the stop %s is not above the entry %s; a short needs its stop overhead"
+                        % (_price(stop), _price(ref)))
+    if (target <= ref) if long else (target >= ref):
+        raise SizeError("the target %s is not %s the entry %s: the move has already happened. "
+                        "Skip it or make a new plan with trader-exit"
+                        % (_price(target), "above" if long else "below", _price(ref)))
+    risk_c = int(round(abs(ref - stop) * 100))
+    reward_c = int(round(abs(target - ref) * 100))
+
+    def rt(q, out):
+        """The round trip's charges: a buy at the entry and a sale at out, or the reverse for a short."""
+        return round_trip(q, ref, out, rates) if long else round_trip(q, out, ref, rates)
     risk = risk_c / 100.0
 
     cash_buffer = round(budget * buf_pct / 100.0, 2)
@@ -416,7 +438,6 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         cash_note = "cash %s in trader/portfolio.json minus the %s buffer" % (money(cash), money(cash_buffer))
     available = max(round(available, 2), 0.0)
 
-    rates = c.get("charges") or {}
     lev = _f(c.get("intraday_leverage")) or 1.0
     if lev < 1:
         raise SizeError("intraday_leverage must be 1 or more (1 = no borrowing)")
@@ -431,7 +452,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     max_loss = _f(c.get("max_loss_per_trade_inr"))
     if max_loss:
         n = shares_for(max_loss, risk)
-        while n > 0 and n * risk_c / 100.0 + round_trip(n, ref, stop, rates) > max_loss + 0.005:
+        while n > 0 and n * risk_c / 100.0 + rt(n, stop) > max_loss + 0.005:
             n -= 1
         limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": n,
                        "how": "%s max loss / (%s risk a share + charges)" % (money(max_loss), _price(risk))})
@@ -455,8 +476,8 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         l["binds"] = l["name"] == bound[0]
     cost = round(qty * ref, 2)
     loss_price = round(qty * risk_c / 100.0, 2)
-    charges_stop = round_trip(qty, ref, stop, rates) if qty else 0.0
-    charges_target = round_trip(qty, ref, target, rates) if qty else 0.0
+    charges_stop = rt(qty, stop) if qty else 0.0
+    charges_target = rt(qty, target) if qty else 0.0
     loss = round(loss_price + charges_stop, 2)
     gain = round(qty * reward_c / 100.0 - charges_target, 2)
     net_rr = round(gain / loss, 2) if loss > 0 else 0.0
@@ -465,9 +486,10 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     refusal = None
     if qty == 0:
         if bound[0] == "max loss":
-            refusal = ("one share risks %s (entry %s minus stop %s), more than your %s max loss per trade. "
+            refusal = ("one share risks %s (%s), more than your %s max loss per trade. "
                        "No order. Skip this trade, or plan a closer stop with trader-exit."
-                       % (money(risk), _price(ref), _price(stop), money(max_loss)))
+                       % (money(risk), ("entry %s minus stop %s" % (_price(ref), _price(stop))) if long else
+                          ("stop %s minus entry %s" % (_price(stop), _price(ref))), money(max_loss)))
         else:
             refusal = ("one share of %s costs %s, more than your %s limit (%s). No order."
                        % (sym, money(ref), bound[0], limits[[l["name"] for l in limits].index(bound[0])]["how"]))
@@ -486,7 +508,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         refusal = ("%d share%s of %s is %s, under your %s minimum order. No order."
                    % (qty, "" if qty == 1 else "s", sym, money(cost), money(c["min_order_inr"])))
     return {
-        "symbol": sym, "side": "buy", "setup": plan.get("setup", ""), "date": plan.get("date"),
+        "symbol": sym, "side": side, "setup": plan.get("setup", ""), "date": plan.get("date"),
         "entry_time": plan.get("entry_time", ""), "entry_plan": round_cent(entry_plan),
         "entry": ref, "entry_from": ref_from, "stop": stop, "target": target,
         "risk_per_share": risk, "reward_risk": round(reward_c / float(risk_c), 2),
@@ -502,15 +524,21 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     }
 
 
+def setup_words(s):
+    if s.get("side") == "sell" and s.get("setup") == "orb":
+        return "opening-range breakdown"
+    return SETUP_WORDS.get(s.get("setup"), s.get("setup") or "day trade")
+
+
 def bracket_order(s):
     """The one proposed order (trader-broker turns it into Kite place_order calls) plus why and plan."""
     if s["refusal"] or s["qty"] <= 0:
         return None
-    o = {"symbol": s["symbol"], "exchange": s["exchange"], "product": s["product"], "side": "buy",
+    o = {"symbol": s["symbol"], "exchange": s["exchange"], "product": s["product"], "side": s.get("side", "buy"),
          "qty": str(int(s["qty"])), "type": s["order_type"], "time_in_force": "day"}
     if s["order_type"] == "limit":
         o["limit_price"] = _price(s["entry"])
-    setup = SETUP_WORDS.get(s["setup"], s["setup"] or "day trade")
+    setup = setup_words(s)
     why = ("%s on %s: %d shares, bound by your %s (%d x %s = %s at the stop + %s charges = %s)"
            % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_inr"] or 0),
                                              "position cap": "position cap", "max order": "max order",
@@ -533,19 +561,22 @@ def bracket_order(s):
 
 def plan_report(s, order, notes=()):
     lines = []
-    setup = SETUP_WORDS.get(s["setup"], s["setup"] or "setup")
-    lines.append("%s buy, %s, entry %s%s" % (s["symbol"], setup, _price(s["entry_plan"]),
+    setup = setup_words(s)
+    short_ = s.get("side") == "sell"
+    lines.append("%s %s, %s, entry %s%s" % (s["symbol"], "SHORT (sell first, buy back by the flat-by)" if short_
+                                            else "buy", setup, _price(s["entry_plan"]),
                                             (" at " + s["entry_time"]) if s["entry_time"] else ""))
     lines.append("Stop %s%s. Target %s%s." % (_price(s["stop"]), (": " + s["stop_label"]) if s["stop_label"] else "",
                                              _price(s["target"]),
                                              (": " + s["target_label"]) if s["target_label"] else ""))
     for n in notes:
         lines.append(n)
-    src = {"plan": "the plan's entry", "price": "the latest price, above the plan's entry",
+    src = {"plan": "the plan's entry", "price": "the latest price, %s the plan's entry" % ("below" if short_ else "above"),
            "limit": "your limit price"}[s["entry_from"]]
-    lines.append("Sized at %s (%s). Risk %s a share (entry %s minus stop %s). Reward:risk %.2f on price."
-                 % (_price(s["entry"]), src, _price(s["risk_per_share"]), _price(s["entry"]), _price(s["stop"]),
-                    s["reward_risk"]))
+    lines.append("Sized at %s (%s). Risk %s a share (%s). Reward:risk %.2f on price."
+                 % (_price(s["entry"]), src, _price(s["risk_per_share"]),
+                    ("stop %s minus entry %s" % (_price(s["stop"]), _price(s["entry"]))) if short_ else
+                    ("entry %s minus stop %s" % (_price(s["entry"]), _price(s["stop"]))), s["reward_risk"]))
     lines.append("")
     lines.append("Limits (whole shares; the smallest one wins):")
     for l in s["limits"]:
@@ -566,12 +597,14 @@ def plan_report(s, order, notes=()):
                     money(s["max_loss"]), s["charges_pct_of_risk"]))
     lines.append("At the target: win %s after %s charges. Reward:risk after charges %.2f."
                  % (money(s["gain_at_target"]), money(s["charges_at_target"]), s["reward_risk_net"]))
-    lines.append("A stop is an order, not a promise: in a fast market it can fill below %s." % _price(s["stop"]))
+    lines.append("A stop is an order, not a promise: in a fast market it can fill %s %s."
+                 % ("above" if short_ else "below", _price(s["stop"])))
     lines.append("")
     lines.append("Proposed bracket (nothing has been placed):")
     how = "limit %s" % order["limit_price"] if order["type"] == "limit" else "market"
-    lines.append("  buy %s %s on the %s, %s, %s (intraday), stop-loss %s, target %s"
-                 % (order["qty"], order["symbol"], order["exchange"], how, order["product"],
+    lines.append("  %s %s %s on the %s, %s, %s (intraday), stop-loss %s, target %s"
+                 % ("sell short" if short_ else "buy", order["qty"], order["symbol"], order["exchange"], how,
+                    order["product"],
                     order["stop_loss_stop_price"], order["take_profit_limit_price"]))
     if s["flat_by"]:
         lines.append("Flat by %s IST: anything still open then gets closed (trader-alerts rings, "
@@ -890,9 +923,12 @@ def run_plan(a, cfg):
         p, t, fresh = fresh_price(pdoc, sym, now)
         if p is not None and fresh:
             price = p
-            if round_cent(p) > round_cent(_f(plan.get("entry")) or 0):
-                notes.append("%s last %s (as of %s IST) is above the plan's entry %s, so the risk "
+            shorting = str(plan.get("side") or "buy").lower() in ("sell", "short")
+            e0 = round_cent(_f(plan.get("entry")) or 0)
+            if (round_cent(p) < e0) if shorting else (round_cent(p) > e0):
+                notes.append("%s last %s (as of %s IST) is %s the plan's entry %s, so the risk "
                              "is bigger: sized at %s." % (sym, _price(p), to_ist(t).strftime("%H:%M"),
+                                                          "below" if shorting else "above",
                                                           _price(plan.get("entry")), _price(p)))
         elif p is not None:
             notes.append("%s in %s is %s: not used (older than %d minutes). Sized at the plan's entry."

@@ -8,8 +8,7 @@ description: >-
   high, or above a level you give it (like a 20-day high from the scanner),
   with an optional volume check. Says waiting and how far, triggered with the
   time and the price, expired, or not open yet, in IST, and writes
-  trader/entry.json for /trader-exit. Long side only. It never places an
-  order. Use when the user says "tell me when to get in", "watch INFY", "has
+  trader/entry.json for /trader-exit. A buy by default; --side sell watches for a close below the range low for an intraday short (allow_short in the config). It never places an order. Use when the user says "tell me when to get in", "watch INFY", "has
   it broken out", "did it break the opening range", "entry signal", "time my
   entry", "check my watchlist", or after /trader-scanner and /trader-news,
   before /trader-exit.
@@ -126,7 +125,9 @@ with `--min-volume-x 1.2` it never triggers that day.
   broker's price over Yahoo's.
 - A signal is information, not an order, and not a promise. Nothing here
   promises winning trades or money.
-- Long side only. v2 plans longs only. If the user wants a short, say that.
+- A buy by default. `--side sell` watches for a short: the first close BELOW
+  the range low (or the level). Shorts are off in trader-risk until the config
+  says `"allow_short": true`; say so if the user asks for one.
 - One trigger per setup per day: the first close above. Later closes do not reset it.
 - Never call an entry early because a bar looks like it will close above.
 

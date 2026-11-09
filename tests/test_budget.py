@@ -214,6 +214,41 @@ class PlanRules(unittest.TestCase):
         # the reel's trade: 50.30 of charges on 438.70 at risk, 11.5%, inside the limit
         self.assertEqual(size.size_trade(plan(), cfg(), today=TODAY)["charges_pct_of_risk"], 11.5)
 
+    def test_a_short_mirrors_the_reel(self):
+        # the reel turned upside down: sell 1139.50, stop 1150.20 overhead, target 1118.10. The sale at the
+        # entry pays STT (46,719.50: 14.02 + 11.68 STT + 1.43 + 0.05 + 2.79 GST = 29.97), the buy back at the
+        # stop pays stamp duty (47,158.20: 14.15 + 1.45 + 0.05 + 1.41 stamp + 2.82 GST = 19.88): 49.85
+        short = plan(side="sell", entry=1139.5, stop=1150.2, target=1118.1)
+        s = size.size_trade(short, cfg(allow_short=True), today=TODAY)
+        self.assertEqual((s["side"], s["qty"], s["charges_at_stop"], s["max_loss"]), ("sell", 41, 49.85, 488.55))
+        self.assertEqual(size.round_trip(41, 1150.2, 1139.5), 49.85)
+        self.assertEqual((s["gain_at_target"], s["reward_risk_net"]), (828.1, 1.7))
+        o = size.bracket_order(s)
+        self.assertEqual((o["side"], o["product"], o["stop_loss_stop_price"], o["take_profit_limit_price"]),
+                         ("sell", "MIS", "1150.20", "1118.10"))
+        text = size.plan_report(s, o)
+        self.assertIn("SHORT (sell first, buy back by the flat-by), opening-range breakdown", text)
+        self.assertIn("Risk 10.70 a share (stop 1150.20 minus entry 1139.50)", text)
+        self.assertIn("sell short 41 INFY.NS on the NSE, market, MIS", text)
+        self.assertIn("can fill above 1150.20", text)
+
+    def test_short_rules(self):
+        short = plan(side="sell", entry=1139.5, stop=1150.2, target=1118.1)
+        with self.assertRaises(size.SizeError) as e:
+            size.size_trade(short, cfg(allow_short=True, product="CNC"), today=TODAY)
+        self.assertIn("must be intraday (MIS)", str(e.exception))
+        with self.assertRaises(size.SizeError) as e:
+            size.size_trade(dict(short, stop=1130.0), cfg(allow_short=True), today=TODAY)
+        self.assertIn("a short needs its stop overhead", str(e.exception))
+        with self.assertRaises(size.SizeError) as e:
+            size.size_trade(dict(short, target=1145.0), cfg(allow_short=True), today=TODAY)
+        self.assertIn("not below the entry", str(e.exception))
+        # a fresh LOWER price is a bigger risk for a short: sized at it
+        s = size.size_trade(short, cfg(allow_short=True), price=1135.0, today=TODAY)
+        self.assertEqual((s["entry"], s["entry_from"], s["risk_per_share"]), (1135.0, "price", 15.2))
+        s = size.size_trade(short, cfg(allow_short=True), price=1142.0, today=TODAY)
+        self.assertEqual(s["entry_from"], "plan")
+
     def test_each_limit_can_bind(self):
         self.assertEqual(size.size_trade(plan(), cfg(max_order_inr=30000), today=TODAY)["bound_by"], "max order")
         s = size.size_trade(plan(), cfg(max_position_pct=20), today=TODAY)
@@ -269,7 +304,8 @@ class PlanRules(unittest.TestCase):
         for p, word in ((plan(stop=1165.0), "not below the entry"),
                         (plan(target=1150.0), "already happened"),
                         (plan(target=None), "positive target"),
-                        (plan(side="sell"), "long (buy) day trades only"),
+                        (plan(side="sell"), "short selling is off"),
+                        (plan(side="sideways"), "buy or sell"),
                         (plan(symbol=""), "no symbol")):
             with self.assertRaises(size.SizeError) as e:
                 size.size_trade(p, cfg(), today=TODAY)

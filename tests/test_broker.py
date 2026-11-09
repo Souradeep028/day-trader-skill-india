@@ -129,7 +129,7 @@ class DesktopConfig(unittest.TestCase):
         self.assertNotIn("place_order", server["env"]["EXCLUDED_TOOLS"])
 
 
-class Flow(unittest.TestCase):
+class FlowBase(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.orders = os.path.join(self.d, "orders.json")
@@ -181,6 +181,7 @@ class Flow(unittest.TestCase):
         return run(["paper-check", "--price", "INFY.NS=%s" % price, "--prices", self.none, "--portfolio", self.pf,
                     "--config", self.cfg, "--state", self.state, "--now", now])
 
+class Flow(FlowBase):
     def test_nothing_is_ready_before_the_risk_check(self):
         code, text, _ = run(self.args("show"))
         self.assertEqual(code, 1)
@@ -397,6 +398,97 @@ class Flow(unittest.TestCase):
                             "--portfolio", self.pf, "--config", self.cfg, "--state", self.state])
         self.assertEqual(code, 1)
         self.assertNotIn("Traceback", err)
+
+
+class ShortFlow(FlowBase):
+    """trader-budget's mirrored-reel short on paper: sell 41 INFY.NS at 1139.50, stop 1150.20, target 1118.10."""
+
+    def setUp(self):
+        super().setUp()
+        with open(self.cfg) as fh:
+            c = json.load(fh)
+        c["allow_short"] = True
+        with open(self.cfg, "w") as fh:
+            json.dump(c, fh)
+        order = {"symbol": "INFY.NS", "exchange": "NSE", "product": "MIS", "side": "sell", "qty": "41",
+                 "type": "market", "time_in_force": "day", "order_class": "bracket",
+                 "take_profit_limit_price": "1118.10", "stop_loss_stop_price": "1150.20",
+                 "plan": {"entry": 1139.5, "stop": 1150.2, "target": 1118.1, "max_loss": 488.55, "flat_by": "15:10"}}
+        with open(self.orders, "w") as fh:
+            json.dump({"orders": [order]}, fh)
+
+    def paper_short(self):
+        self.assertEqual(self.run_risk(), 0)
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertIn("SELL SHORT 41 INFY.NS, market", text)
+        self.assertIn('"transaction_type": "BUY", "quantity": 41, "product": "MIS", "order_type": "SL-M"', text)
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes"))[0], 0)
+        code, text, err = run(self.args("paper", "--index", "1", "--price", "1139.50", "--portfolio", self.pf,
+                                        "--prices", self.none, now="2026-11-05 09:41"))
+        self.assertEqual(code, 0, err)
+        return text
+
+    def test_the_kite_calls_reverse(self):
+        with open(self.orders) as fh:
+            order = json.load(fh)["orders"][0]
+        calls = ticket.tool_input(order)
+        self.assertEqual([(c["step"], c["input"]["transaction_type"], c["input"]["order_type"]) for c in calls],
+                         [("entry", "SELL", "MARKET"), ("stop-loss", "BUY", "SL-M"), ("target", "BUY", "LIMIT")])
+        self.assertEqual(ticket.max_loss(order), (488.55, 1150.2))
+
+    def test_a_paper_short_to_its_target(self):
+        text = self.paper_short()
+        # the sale pays STT: 14.02 + 11.68 + 1.43 + 0.05 + 2.79 = 29.97; the cash comes in
+        self.assertIn("PAPER SELL SHORT 41 INFY.NS at 1139.50 (₹29.97 charges)", text)
+        self.assertIn("Open paper orders: buy-back stop-loss 1150.20 and target 1118.10", text)
+        pf = self.portfolio()
+        self.assertEqual((pf["cash"], pf["positions"][0]["shares"]), (146689.53, -41))   # 1,00,000 + 46,719.50 - 29.97
+        code, text, _ = self.check_paper("1125.00", "2026-11-05 10:30")
+        self.assertIn("between the stop 1150.20 and the target 1118.10, still open", text)
+        code, text, _ = self.check_paper("1118.00", "2026-11-05 11:00")
+        self.assertIn("PAPER target filled: BUY 41 INFY.NS at 1118.10", text)
+        # 41 x 21.40 = 877.40 less 49.30 charges: trader-budget's gain at the target
+        self.assertIn("P&L after ₹49.30 charges +₹828.10", text)
+        pf = self.portfolio()
+        self.assertEqual((pf["cash"], pf["positions"]), (100828.1, []))
+        code, text, _ = run(["journal", "--state", self.state, "--paper", "--config", self.cfg, "--json"])
+        t = json.loads(text)["trades"][0]
+        self.assertEqual((t["side"], t["net"], t["risk"], t["R"]), ("short", 828.1, 438.7, 1.888))
+
+    def test_a_paper_short_stopped_out_above_the_stop(self):
+        self.paper_short()
+        code, text, _ = self.check_paper("1150.60", "2026-11-05 10:40")
+        self.assertIn("PAPER stop-loss filled: BUY 41 INFY.NS at 1150.60", text)
+        self.assertIn("over the stop 1150.20: an SL-M fills at the market", text)
+        self.assertIn("INFY.NS: closed, P&L after ₹49.86 charges -₹504.96", text)   # -455.10 - 49.86
+
+    def test_flattening_a_short_buys_it_back(self):
+        self.paper_short()
+        late = "2026-11-05 15:10"
+        code, text, _ = run(["flatten", "--symbol", "INFY.NS", "--orders", self.orders, "--portfolio", self.pf,
+                             "--plan", self.none, "--config", self.cfg, "--now", late])
+        self.assertEqual(code, 0)
+        self.assertIn("BUY 41 shares of INFY.NS, market order", text)
+        self.assertIn("buys back", text)
+        self.assertEqual(self.run_risk(now=late), 0)            # buying back a short is an exit
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes", now=late))[0], 0)
+        code, text, err = run(self.args("paper", "--index", "1", "--price", "1135.00", "--portfolio", self.pf,
+                                        "--prices", self.none, now=late))
+        self.assertEqual(code, 0, err)
+        self.assertIn("PAPER BUY 41 INFY.NS at 1135.00", text)
+        self.assertEqual(self.portfolio()["positions"], [])
+        self.assertEqual(self.state_doc()["paper_legs"][0]["status"], "canceled")
+        code, text, _ = run(["flatten", "--symbol", "INFY.NS", "--qty", "41", "--short", "--orders", self.orders,
+                             "--portfolio", self.pf, "--config", self.cfg, "--now", late])
+        self.assertIn("BUY 41 shares of INFY.NS", text)
+
+    def test_shorts_off_in_the_config(self):
+        with open(self.cfg) as fh:
+            c = json.load(fh)
+        c["allow_short"] = False
+        with open(self.cfg, "w") as fh:
+            json.dump(c, fh)
+        self.assertEqual(self.run_risk(), 1)                     # trader-risk blocks it
 
 
 class JournalAndTax(unittest.TestCase):

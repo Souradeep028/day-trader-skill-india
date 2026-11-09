@@ -204,8 +204,8 @@ Over the 58 sessions to 6 November 2026:
   (`max_charges_pct_of_risk`).
 - **The best lead** is a short (the 30-minute range break, with Nifty also
   falling and charges under 15 %): +0.08 R a trade over 309 trades, positive
-  in both halves, but well within luck (p 0.21). This pack trades longs
-  only, so it is a lead to re-test, not a trade.
+  in both halves, but well within luck (p 0.21). Shorts are off by default:
+  set `"allow_short": true` to paper trade it, and keep the journal.
 
 So: run `edge.py` on fresh data, paper trade what looks promising, keep
 `ticket.py journal`, and go live only if the journal holds up. The risk

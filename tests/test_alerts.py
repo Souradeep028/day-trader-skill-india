@@ -210,6 +210,22 @@ class Rules(unittest.TestCase):
         rings, st = alerts.evaluate(rules, self.q, self.open, st, self.now)
         self.assertEqual(rings, [])
 
+    def test_a_shorts_plan_alerts_point_the_other_way(self):
+        plan = {"symbol": "INFY.NS", "side": "sell", "date": "2026-11-06", "stop": 1150.2, "target": 1118.1,
+                "flat_by": "15:10"}
+        rules = alerts.rules_from_plan(plan)
+        self.assertEqual([r.get("side") for r in rules[:2]], ["short", "short"])
+        q = {"INFY.NS": {"price": 1151.0, "prev_close": 1140.0}}
+        rings, st = alerts.evaluate(rules, q, self.open, {}, self.now)
+        self.assertEqual(len(rings), 1)
+        self.assertIn("INFY.NS is ₹1151.00: at or above your stop ₹1150.2", rings[0]["message"])
+        rings, _ = alerts.evaluate(rules, {"INFY.NS": {"price": 1118.0}}, self.open, {}, self.now)
+        self.assertIn("at or below your target ₹1118.1", rings[0]["message"])
+        rings, _ = alerts.evaluate(rules, {"INFY.NS": {"price": 1130.0}}, self.open, {}, self.now)
+        self.assertEqual(rings, [])
+        # a long plan's rules carry no side and keep the stop underneath
+        self.assertNotIn("side", plan_rules()[0])
+
     def test_stop_and_rearm(self):
         rules = [{"id": "hdfc-stop", "symbol": "HDFCBANK.NS", "type": "stop", "price": 790, "rearm": True}]
         rings, st = alerts.evaluate(rules, self.q, self.open, {}, self.now)

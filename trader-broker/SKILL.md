@@ -87,6 +87,27 @@ one: the same tickets, the same risk check and the same explicit yes, then
 Paper fills are only as good as the price you give them: use the live price
 at that moment, not a better one.
 
+## Shorts (off by default)
+
+An intraday (MIS) short sells first and buys back by the flat-by. It is off
+until `trader/config.json` says `"allow_short": true`; the edge report's
+best lead so far is a short, which is why it exists. With it on:
+`entry.py --side sell` watches for a close below the range low,
+`exit.py` puts the stop above the entry and the target below,
+`size.py` sizes it (STT on the sale, stamp duty on the buy back),
+`check.py` blocks a CNC short and a sale near the lower price band,
+`ticket.py` sends SELL then a BUY SL-M stop and a BUY LIMIT target (or
+fills them on paper), and `alerts.py` rings when the price rises to the
+stop. A short's loss has no ceiling if the stock gaps up through the stop,
+and a stock locked at its upper band cannot be bought back until it
+reopens: paper trade shorts first.
+
+On paper: `ticket.py paper` sells short and opens a buy-back stop and target;
+`paper-check` buys back when the price rises to the stop or falls to the
+target; `flatten` writes a BUY ticket for a short (`--qty N --short` when
+the qty comes from the broker); the journal marks the trade short and
+measures R from the stop overhead.
+
 ## The journal and the tax worksheet
 
 - `ticket.py journal` pairs each day's fills into round trips (bought and

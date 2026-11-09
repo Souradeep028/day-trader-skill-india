@@ -397,7 +397,9 @@ def evaluate(rules, quotes, status, state, now_utc):
         rid = r.get("id") or "%s-%s" % (r.get("symbol", "market"), r["type"])
         if not active(r, today):
             continue
-        typ = {"stop": "below", "target": "above"}.get(r["type"], r["type"])
+        short = r.get("side") == "short"
+        typ = ({"stop": "above", "target": "below"} if short else
+               {"stop": "below", "target": "above"}).get(r["type"], r["type"])
         if typ == "opening_bell":
             if status["open"] and not _rang_today(rung.get(rid), today):
                 rings.append({"id": rid, "symbol": "", "message": "Opening bell: the NSE is open (%s IST)%s."
@@ -415,8 +417,8 @@ def evaluate(rules, quotes, status, state, now_utc):
                     ", the market has closed."
                 sym = str(r.get("symbol") or "").upper()
                 if sym:
-                    msg += (" If %s is still open, close it: trader-broker flatten --symbol %s builds the sell "
-                            "ticket, then trader-risk and your yes." % (sym, sym))
+                    msg += (" If %s is still open, close it: trader-broker flatten --symbol %s builds the closing "
+                            "ticket (a sale, or a buy back for a short), then trader-risk and your yes." % (sym, sym))
                 rings.append({"id": rid, "symbol": sym, "message": msg})
                 rung[rid] = stamp
             continue
@@ -467,8 +469,11 @@ def rules_from_plan(plan, cfg_flat_by=None):
         if not isinstance(v, (int, float)) or v <= 0:
             raise AlertError("the plan has no %s (run trader-exit)" % key)
         label = plan.get("%s_label" % key)
-        out.append({"id": "%s-plan-%s" % (sym.lower(), key), "symbol": sym, "type": typ, "price": float(v),
-                    "note": word + (": " + label if label else "")})
+        rule = {"id": "%s-plan-%s" % (sym.lower(), key), "symbol": sym, "type": typ, "price": float(v),
+                "note": word + (": " + label if label else "")}
+        if str(plan.get("side") or "buy").lower() in ("sell", "short"):
+            rule["side"] = "short"           # a short's stop is overhead and its target underneath
+        out.append(rule)
     flat = plan.get("flat_by") or cfg_flat_by or "15:10"
     if _hhmm(flat) is None:
         raise AlertError("the plan's flat_by %r is not a time like 15:10" % flat)

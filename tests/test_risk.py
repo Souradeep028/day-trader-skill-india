@@ -679,5 +679,65 @@ class SkipDays(unittest.TestCase):
             self.assertIn("results: INFY.NS has results today", out.getvalue())
 
 
+class Shorts(unittest.TestCase):
+    """trader-budget's mirrored-reel short: sell 41 INFY.NS at 1139.50, stop 1150.20 overhead, target 1118.10."""
+
+    def order(self, **over):
+        o = {"symbol": "INFY.NS", "exchange": "NSE", "product": "MIS", "side": "sell", "qty": "41", "type": "market",
+             "time_in_force": "day", "order_class": "bracket", "take_profit_limit_price": "1118.10",
+             "stop_loss_stop_price": "1150.20", "plan": {"entry": 1139.5, "stop": 1150.2, "target": 1118.1}}
+        o.update(over)
+        return o
+
+    def one(self, o=None, **over):
+        return check.check([o or self.order()], cfg(**over), now=at(NOW), surveillance={"symbols": {}})
+
+    def test_off_by_default(self):
+        self.assertIn("short: selling more INFY.NS than you hold (0 shares); short selling is off", reasons(self.one()))
+
+    def test_the_short_passes_with_allow_short(self):
+        res = self.one(allow_short=True)
+        r = res["results"][0]
+        self.assertEqual((r["verdict"], r["kind"]), ("PASS", "entry"))
+        # 41 x 10.70 = 438.70 + 49.85 charges (STT on the sale at 1139.50, stamp on the buy back at 1150.20)
+        self.assertEqual((r["risk_per_share"], r["max_loss"], r["charges"], r["reward_risk"]), (10.7, 488.55, 49.85, 1.7))
+
+    def test_a_short_must_be_intraday(self):
+        self.assertIn("must be intraday (MIS)", reasons(self.one(self.order(product="CNC"), allow_short=True)))
+
+    def test_the_stop_goes_overhead(self):
+        o = self.order(stop_loss_stop_price="1130.00")
+        o["plan"] = dict(o["plan"], stop=1130.0)
+        self.assertIn("stop: the stop 1130.00 must be above the entry 1139.50 for a sell", reasons(self.one(o, allow_short=True)))
+
+    def test_a_lower_fresh_price_is_the_entry(self):
+        res = check.check([self.order()], cfg(allow_short=True), prices={"INFY.NS": 1135.0}, now=at("2026-11-05 09:50"),
+                          price_times={"INFY.NS": QUOTE_TIME}, surveillance={"symbols": {}})
+        r = res["results"][0]
+        self.assertEqual((r["entry_ref"], r["entry_ref_from"], r["risk_per_share"]), (1135.0, "price", 15.2))
+        self.assertIn("loss: 41 shares x 15.20 risk a share", reasons(res))
+
+    def test_the_lower_band(self):
+        # previous close 1150, a 5 % band: lower band 1092.50; a short at 1100 is within 1 % of it
+        o = self.order(stop_loss_stop_price="1110.00", take_profit_limit_price="1080.00")
+        o["plan"] = {"entry": 1100.0, "stop": 1110.0, "target": 1080.0}
+        res = check.check([o], cfg(allow_short=True, max_charges_pct_of_risk=0), now=at(NOW), bands={"INFY.NS": 5},
+                          prev_close={"INFY.NS": 1150.0}, surveillance={"symbols": {}})
+        self.assertIn("band: INFY.NS at 1100.00 is within 1% of its lower price band 1092.50", reasons(res))
+        o = self.order(stop_loss_stop_price="1210.00", take_profit_limit_price="1100.00")
+        o["plan"] = {"entry": 1180.0, "stop": 1210.0, "target": 1100.0}
+        res = check.check([o], cfg(allow_short=True, max_loss_per_trade_inr=2000), now=at(NOW),
+                          bands={"INFY.NS": 5}, prev_close={"INFY.NS": 1150.0}, surveillance={"symbols": {}})
+        self.assertIn("the stop 1210.00 is over the upper price band 1207.50", warnings(res))
+
+    def test_buying_back_a_short_is_an_exit(self):
+        pf = {"cash": 100000, "positions": [{"symbol": "INFY.NS", "qty": -41, "avg_price": 1139.5}]}
+        o = {"symbol": "INFY.NS", "exchange": "NSE", "product": "MIS", "side": "buy", "qty": "41", "type": "market",
+             "time_in_force": "day"}
+        res = check.check([o], cfg(allow_short=True), portfolio=pf, prices={"INFY.NS": 1130.0}, now=at("2026-11-05 15:10"),
+                          surveillance={"symbols": {}})
+        self.assertEqual((res["results"][0]["kind"], res["results"][0]["verdict"]), ("exit", "PASS"))
+
+
 if __name__ == "__main__":
     unittest.main()

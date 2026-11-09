@@ -77,11 +77,48 @@ def no_breakout(d=None):
     return d
 
 
+def mirror(d=None, pivot=1150.0):
+    """The real day turned upside down around 1150: every price p becomes 2 x 1150 - p, so highs become
+    lows. INFY's 9:40 breakout above 1154.70 becomes a breakdown below 1145.30 at 1139.50."""
+    d = copy.deepcopy(d if d is not None else doc())
+    q = d["chart"]["result"][0]["indicators"]["quote"][0]
+    flip = lambda x: None if x is None else round(2 * pivot - x, 2)
+    hi, lo = q["high"], q["low"]
+    q["open"], q["close"] = [flip(x) for x in q["open"]], [flip(x) for x in q["close"]]
+    q["high"], q["low"] = [flip(x) for x in lo], [flip(x) for x in hi]
+    return d
+
+
 def run(argv):
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
         code = entry.main(argv)
     return code, out.getvalue(), err.getvalue()
+
+
+class Shorts(unittest.TestCase):
+    def test_a_mirrored_day_triggers_the_short_on_the_same_bar(self):
+        up = at("2026-11-05 09:40")
+        down = at("2026-11-05 09:40", d=mirror(), side="sell")
+        self.assertEqual((down["status"], down["side"]), ("triggered", "sell"))
+        self.assertEqual(down["opening_range"], dict(up["opening_range"], high=1155.10, low=1145.30))
+        self.assertEqual(down["level"], 1145.30)                    # the range LOW for a short
+        self.assertEqual(down["trigger"]["bar_index"], up["trigger"]["bar_index"])
+        self.assertEqual(down["trigger"]["price"], 1139.50)         # 2 x 1150 - 1160.50
+        self.assertIn("closed below the range low", down["reason"])
+        doc_ = entry.entry_doc(down, ist("2026-11-05 09:40"))
+        self.assertEqual((doc_["side"], doc_["price"]), ("sell", 1139.5))
+
+    def test_the_real_day_never_breaks_down(self):
+        r = at("2026-11-05 10:30", side="sell")
+        self.assertEqual(r["status"], "waiting")
+        self.assertIn("over the range low ₹1144.90", r["reason"])
+        self.assertEqual(at("2026-11-05 15:31", side="sell")["status"], "expired")
+
+    def test_a_short_level(self):
+        r = at("2026-11-05 15:31", setup="level", level=1150.0, side="sell")
+        self.assertEqual(r["status"], "expired")
+        self.assertIn("no close below ₹1150.00", r["reason"])
 
 
 class TheReel(unittest.TestCase):
@@ -481,6 +518,9 @@ class Cli(unittest.TestCase):
         os.chdir(self.cwd)
         shutil.rmtree(self.d)
 
+    def mirror_path(self):
+        return os.path.join(self.d, "INFY.NS-mirror.json")
+
     def test_check_write_is_the_contract_shape(self):
         code, text, _ = run(["check", "INFY.NS", "--offline", INFY, "--now", "2026-11-05 09:40", "--write"])
         self.assertEqual(code, 0)
@@ -517,10 +557,19 @@ class Cli(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("holds INFY.NS, not TCS.NS", err)
 
-    def test_longs_only_and_flag_errors(self):
-        code, _, err = run(["check", "INFY.NS", "--offline", INFY, "--side", "short"])
+    def test_shorts_and_flag_errors(self):
+        code, text, err = run(["check", "INFY.NS", "--offline", INFY, "--side", "short", "--now", "2026-11-05 15:31"])
         self.assertEqual(code, 1)
-        self.assertIn("v2 plans longs only", err)
+        self.assertIn("EXPIRED  no close below the range low ₹1144.90 by 14:45", text)
+        with open(self.mirror_path(), "w") as fh:
+            json.dump(mirror(), fh)
+        code, text, err = run(["check", "INFY.NS", "--offline", self.mirror_path(), "--side", "short",
+                               "--now", "2026-11-05 09:40", "--write"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("closed below the range low ₹1145.30", text)
+        self.assertIn("BEFORE you sell short", text)
+        with open(os.path.join("trader", "entry.json")) as fh:
+            self.assertEqual(json.load(fh)["side"], "sell")
         code, _, err = run(["check", "INFY.NS", "--offline", INFY, "--level", "1100"])
         self.assertIn("--level is for --setup level", err)
         code, _, err = run(["check", "INFY.NS", "--offline", INFY, "--setup", "level"])
@@ -585,7 +634,7 @@ class SkillDoc(unittest.TestCase):
         self.assertGreater(len(text.splitlines()), 60)
         self.assertEqual(text[text.index("## Safety"):], risk[risk.index("## Safety"):])
         low = " ".join(text.lower().split())
-        for must in ("bar by bar", "can lag", "day trading loses most people money", "/trader-exit", "longs only",
+        for must in ("bar by bar", "can lag", "day trading loses most people money", "/trader-exit", "--side sell", "allow_short",
                      "in the background", "/loop", "nothing was placed", "9:40 am", "1,160.50", "bar 4", "ist"):
             self.assertIn(must, low)
         for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit", "tsla", "new york"):

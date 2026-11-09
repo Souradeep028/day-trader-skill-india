@@ -71,6 +71,9 @@ carry the plan's date, so yesterday's stop never rings today. A `time` rule
 with `"before_close": true` would move up on an early close, but the NSE has
 none, so "flat by close" at 15:10 always rings at 15:10.
 
+A plan for a short (side sell) makes its stop alert ring at or ABOVE the
+stop and its target alert at or below the target.
+
 ## Quotes
 
 - Yahoo: `query2.finance.yahoo.com/v8/finance/chart/<SYMBOL>` (like

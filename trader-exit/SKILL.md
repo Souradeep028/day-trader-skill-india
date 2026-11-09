@@ -8,7 +8,7 @@ description: >-
   NSE tick, and sets the target at 2R (or 1R, or your price) on the tick. Refuses a stop at or
   above the entry, a target at or below it, or a stop too tight to survive the
   spread, and says why. Writes trader/plan.json for the Time Machine, the
-  Budget Manager and Price Alerts. Long side only. Use when the user says
+  Budget Manager and Price Alerts. For a short (an entry.json with side sell, or --side sell) the stop goes above the entry, rounded up, and the target below. Use when the user says
   "where's my stop", "set my stop and target", "plan the exit", "when do I get
   out", "stop loss", "what's my R", "risk reward", or right after
   /trader-entry triggers, before /trader-timemachine.
@@ -54,6 +54,7 @@ it differently from its price band), `--json`, `--now "2026-11-05 09:40"`
 | --- | --- |
 | `or-mid` | the opening-range midpoint (the default for an opening-range breakout) |
 | `or-low` | the opening-range low: wider, so fewer shares for the same max loss |
+| `or-high` | the opening-range high: a short's wide stop |
 | `price:X` | your price |
 | `pct:X` | X percent under the entry |
 | `atr:K` | K times the 14-bar ATR under the entry, on the session's bars up to the entry bar. With fewer than 14 bars by then it averages all of them and says so |
@@ -72,7 +73,8 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 - **Refused, with the reason.** A stop at or above the entry. A target at or
   below it. A risk under 0.05% of the price: too tight to survive the
   spread, normal wiggle would stop you out. An entry.json that has not
-  triggered (unless you give `--entry`). A short: v2 plans longs only.
+  triggered (unless you give `--entry`). For a short, the same with the sides
+  swapped: the stop rounds UP, risk = stop minus entry, target = entry - R x risk.
 - **Flat by.** 15:10 by default (or `flat_by` in the config). Out by then,
   win or lose, no overnight hold, and before Zerodha squares off open
   intraday (MIS) positions at about 3:20 PM for a fee. A flat-by at or after
@@ -120,7 +122,8 @@ trader-budget then sizes it: a 500 max loss with charges buys 41 shares.
   never prints a P&L or a return.
 - Nothing here promises winning trades or money. A 2R target is not a
   prediction that the price gets there.
-- Long side only. v2 plans longs only.
+- A long by default; a short only when the entry is a sell (trader-entry
+  `--side sell`) or `--side sell` is given.
 
 ## What it never does
 

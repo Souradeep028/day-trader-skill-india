@@ -153,6 +153,49 @@ class Math(unittest.TestCase):
         self.assertEqual(exitp.atr_of(all_bars)[1], 14)
 
 
+def cs(entry_px, stop, target="2R", oh=1155.10, ol=1145.30, atr=None, n=None, tick=None):
+    sr, sp = exitp.parse_stop(stop)
+    tr, tp = exitp.parse_target(target)
+    return exitp.compute(entry_px, sr, sp, tr, tp, oh, ol, atr, n, tick, side="sell")
+
+
+class Shorts(unittest.TestCase):
+    """The reel turned upside down around 1150 (trader-entry's mirrored day): a short at 1139.50 under a
+    1155.10 to 1145.30 range is the reel's trade reflected, so every distance matches it."""
+
+    def test_the_mirrored_reel(self):
+        p = cs(1139.50, "or-mid")
+        self.assertEqual(p["stop"], Decimal("1150.20"))           # (1155.10 + 1145.30) / 2, on the tick
+        self.assertEqual(p["risk"], Decimal("10.70"))             # the reel's risk
+        self.assertEqual(p["target"], Decimal("1118.10"))         # 1139.50 - 2 x 10.70
+        self.assertEqual(p["reward_risk"], Decimal("2.00"))
+
+    def test_stops_round_up_away_from_the_entry(self):
+        p = cs(1139.50, "or-high", "1R")
+        self.assertEqual((p["stop"], p["target"], p["stop_label"]), (Decimal("1155.10"), Decimal("1123.90"),
+                                                                     "opening-range high"))
+        p = cs(1139.50, "pct:1")                                  # 1139.50 x 1.01 = 1150.895 -> up to 1150.90
+        self.assertEqual(p["stop"], Decimal("1150.90"))
+        self.assertIn("rounded up to the 0.1 tick", p["stop_detail"])
+        self.assertEqual(p["stop_label"], "1% over the entry")
+        p = cs(1139.50, "atr:2", atr=3.0, n=14)
+        self.assertEqual(p["stop"], Decimal("1145.50"))
+        self.assertEqual(p["stop_label"], "2 x ATR(14) over the entry")
+
+    def test_refusals(self):
+        # after a breakdown the range low is above the entry: a tight short stop, like a long's range high
+        self.assertEqual(cs(1139.50, "or-low")["stop"], Decimal("1145.30"))
+        with self.assertRaises(exitp.PlanError) as e:
+            cs(1146.00, "or-low")                                 # an entry still above the range low
+        self.assertIn("use or-high or or-mid", str(e.exception))
+        with self.assertRaises(exitp.PlanError) as e:
+            cs(1139.50, "or-mid", "price:1145")
+        self.assertIn("a short's target goes below it", str(e.exception))
+        with self.assertRaises(exitp.PlanError) as e:
+            cs(1139.50, "price:1139.80")
+        self.assertIn("too tight", str(e.exception))
+
+
 class Cli(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -240,12 +283,12 @@ class Cli(unittest.TestCase):
         self.assertEqual(self.plan("--stop", "pct:1")[0], 0)
 
         code, _, err = self.plan("--side", "sell")
-        self.assertIn("v2 plans longs only", err)
+        self.assertIn("entry.json is a buy but you asked for --side sell", err)
         self.write(os.path.join("trader", "entry.json"), dict(REEL_ENTRY, side="sell"))
-        code, _, err = self.plan()
-        self.assertIn("longs only", err)
+        code, _, err = self.plan()                      # the reel's range under a 1160.50 "short"
+        self.assertIn("a short's stop goes above the entry", err)
         code, _, err = self.plan("--stop", "price:1160.10")
-        self.assertIn("longs only", err)
+        self.assertIn("at or below the entry", err)
         os.remove(os.path.join("trader", "entry.json"))
         code, _, err = self.plan()
         self.assertIn("no entry", err)
@@ -256,6 +299,17 @@ class Cli(unittest.TestCase):
         code, _, err = self.plan("--symbol", "INFY.NS", "--entry", "1160.50", "--or-high", "1154.70")
         self.assertIn("both --or-high and --or-low", err)
         self.assertNotIn("Traceback", err)
+
+    def test_a_short_from_entry_json(self):
+        self.write(os.path.join("trader", "entry.json"),
+                   dict(REEL_ENTRY, side="sell", price=1139.5, opening_range={"high": 1155.1, "low": 1145.3, "minutes": 15}))
+        code, text, err = self.plan("--write", os.path.join("trader", "plan.json"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Exit plan: INFY.NS short", text)
+        self.assertIn("opening-range breakdown", text)
+        p = self.read_plan()
+        self.assertEqual((p["side"], p["entry"], p["stop"], p["target"], p["risk_per_share"]),
+                         ("sell", 1139.5, 1150.2, 1118.1, 10.7))
 
     def test_flat_by_config_and_late_entries(self):
         self.write(os.path.join("trader", "entry.json"), REEL_ENTRY)
@@ -292,7 +346,7 @@ class SkillDoc(unittest.TestCase):
         self.assertGreater(len(text.splitlines()), 60)
         self.assertEqual(text[text.index("## Safety"):], risk[risk.index("## Safety"):])
         low = " ".join(text.lower().split())
-        for must in ("before the entry", "a stop is a plan, not a guarantee", "day trading loses most people money", "/trader-timemachine", "/trader-budget", "longs only", "₹1,149.80", "₹1,181.90", "₹10.70", "tick", "too tight to survive the spread"):
+        for must in ("before the entry", "a stop is a plan, not a guarantee", "day trading loses most people money", "/trader-timemachine", "/trader-budget", "for a short", "rounds up", "₹1,149.80", "₹1,181.90", "₹10.70", "tick", "too tight to survive the spread"):
             self.assertIn(must, low)
         for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit", "tsla"):
             self.assertNotIn(never, low)

@@ -221,7 +221,8 @@ def tool_input(order):
     first = kite_call(order, side, typ, qty,
                       order.get("limit_price") if typ in ("limit", "stop_limit") else None,
                       order.get("stop_price") if typ in ("stop", "stop_limit") else None)
-    calls = [{"step": "entry" if side == "buy" else "order", "when": "now", "tool": "place_order", "input": first}]
+    calls = [{"step": "entry" if side == "buy" or is_bracket(order) else "order", "when": "now", "tool": "place_order",
+              "input": first}]
     if is_bracket(order):
         out = "sell" if side == "buy" else "buy"
         if order.get("stop_loss_stop_price") is not None:
@@ -283,7 +284,8 @@ def max_loss(order):
     if not entry:
         return None, stop
     risk = abs(entry - stop)
-    ch = order_charges("buy", q * entry)["total"] + order_charges("sell", q * stop)["total"]
+    buy, sell = (entry, stop) if stop < entry else (stop, entry)       # a stop overhead is a short's buy back
+    ch = order_charges("buy", q * buy)["total"] + order_charges("sell", q * sell)["total"]
     return round(q * int(round(risk * 100)) / 100.0 + ch, 2), stop
 
 
@@ -297,7 +299,8 @@ def plain_parts(order):
     tif = "%s, %s" % (PRODUCT_WORDS.get(prod, prod), tif)
     if is_bracket(order):
         how = "limit %s" % _p(order["limit_price"]) if typ == "limit" and order.get("limit_price") else typ
-        parts = ["%s %s %s, %s, %s" % (side, _str_num(order.get("qty")), sym, how, tif)]
+        parts = ["%s %s %s, %s, %s" % ("SELL SHORT" if side == "SELL" else side, _str_num(order.get("qty")), sym,
+                                       how, tif)]
         if order.get("stop_loss_stop_price") is not None:
             leg = "stop-loss %s" % _p(order["stop_loss_stop_price"])
             if order.get("stop_loss_limit_price") is not None:
@@ -478,10 +481,11 @@ def ticket_json(order, idx, cfg, risk, state, today):
 
 # ---------------------------------------------------------------- fills -> portfolio
 
-def apply_fill(portfolio_path, cfg, symbol, side, qty, price, date):
+def apply_fill(portfolio_path, cfg, symbol, side, qty, price, date, short=False):
     """Record a filled order in trader/portfolio.json: cash and shares, with a
     cost-basis lot per buy (oldest lots are relieved first on a sell). The
-    order's charges come out of cash too."""
+    order's charges come out of cash too. short=True lets a sale open a short
+    (negative shares, a lot of what it sold for); a buy covers a short first."""
     pf = read_json(portfolio_path, "portfolio", required=False)
     if pf is None:
         budget = cfg.get("budget")
@@ -498,7 +502,34 @@ def apply_fill(portfolio_path, cfg, symbol, side, qty, price, date):
     for p in pf.setdefault("positions", []):
         if str(p.get("ticker", "")).upper() == symbol:
             pos = p
-    if side == "buy":
+    held = float(pos.get("shares", 0)) if pos else 0.0
+    if side == "buy" and held < -1e-9:
+        if qty > -held + 1e-9:
+            raise TicketError("cannot record buying %s %s: that covers a %s-share short and more; buy back the "
+                              "short first, then buy" % (_str_num(qty), symbol, _str_num(-held)))
+        left = qty
+        for lot in sorted(pos.get("short_lots", []), key=lambda l: l.get("date", "")):
+            if left <= 1e-9:
+                break
+            take = min(left, float(lot["shares"]))
+            per = float(lot["proceeds"]) / float(lot["shares"]) if float(lot["shares"]) else 0
+            lot["proceeds"] = round(float(lot["proceeds"]) - per * take, 2)
+            lot["shares"] = round(float(lot["shares"]) - take, 6)
+            left -= take
+        pos["short_lots"] = [l for l in pos.get("short_lots", []) if float(l["shares"]) > 1e-9]
+        pos["shares"] = round(held + qty, 6)
+        if abs(pos["shares"]) <= 1e-9:
+            pf["positions"].remove(pos)
+        pf["cash"] = round(float(pf.get("cash", 0)) - cost - charges, 2)
+    elif side == "sell" and held <= 1e-9 and short:
+        if pos is None:
+            pos = {"ticker": symbol, "shares": 0.0, "lots": []}
+            pf["positions"].append(pos)
+        lots = pos.setdefault("short_lots", [])
+        lots.append({"id": "%s-S%d" % (symbol, len(lots) + 1), "date": date, "shares": qty, "proceeds": cost})
+        pos["shares"] = round(held - qty, 6)
+        pf["cash"] = round(float(pf.get("cash", 0)) + cost - charges, 2)
+    elif side == "buy":
         if pos is None:
             pos = {"ticker": symbol, "shares": 0.0, "lots": []}
             pf["positions"].append(pos)
@@ -589,7 +620,7 @@ def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
         d = rec_day(r)
         if (date_from and d < date_from) or (date_to and d > date_to):
             continue
-        if r.get("status") in ("approved", "placed") and str(r.get("side")) == "buy" and _f(r.get("stop")):
+        if r.get("status") in ("approved", "placed") and r.get("kind", "entry") == "entry" and _f(r.get("stop")):
             stops[(d, str(r.get("symbol", "")).upper())] = _f(r["stop"])
         if r.get("status") != "filled":
             continue
@@ -604,7 +635,8 @@ def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
             if cur is None:
                 cur = {"date": d, "symbol": sym, "bought": 0.0, "sold": 0.0, "buy_value": 0.0, "sell_value": 0.0,
                        "charges": {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0,
-                                   "gst": 0.0, "total": 0.0}, "paper": bool(r.get("paper"))}
+                                   "gst": 0.0, "total": 0.0}, "paper": bool(r.get("paper")),
+                       "side": "long" if side == "buy" else "short"}
             ch = order_charges(side, q * px, rates)
             for k in cur["charges"]:
                 cur["charges"][k] = round(cur["charges"][k] + ch[k], 2)
@@ -622,7 +654,11 @@ def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
                 cur["net"] = round(cur["gross"] - cur["charges"]["total"], 2)
                 stop = stops.get((d, sym))
                 avg_buy = cur["buy_value"] / cur["bought"] if cur["bought"] else 0
-                cur["risk"] = round(cur["qty"] * (avg_buy - stop), 2) if stop and avg_buy > stop else None
+                avg_sell = cur["sell_value"] / cur["sold"] if cur["sold"] else 0
+                if cur["side"] == "long":
+                    cur["risk"] = round(cur["qty"] * (avg_buy - stop), 2) if stop and avg_buy > stop else None
+                else:
+                    cur["risk"] = round(cur["qty"] * (stop - avg_sell), 2) if stop and stop > avg_sell else None
                 cur["R"] = round(cur["net"] / cur["risk"], 3) if cur["risk"] else None
                 cur["buy_value"], cur["sell_value"] = round(cur["buy_value"], 2), round(cur["sell_value"], 2)
                 trades.append(cur)
@@ -925,12 +961,15 @@ def cmd_paper(a):
     elif typ in ("stop", "stop_limit"):
         raise TicketError("paper trading fills market and limit orders; a stop order waits for its trigger")
     qty = float(order.get("qty"))
-    if side == "sell":
-        pf = read_json(a.portfolio, "portfolio", required=False) or {}
-        held = sum(_f(p.get("shares")) or 0 for p in pf.get("positions", [])
-                   if str(p.get("ticker", "")).upper() == sym)
-        if held + 1e-9 < qty:
-            raise TicketError("the paper account holds %s %s, not %s" % (_str_num(held), sym, _str_num(qty)))
+    pf = read_json(a.portfolio, "portfolio", required=False) or {}
+    held = sum(_f(p.get("shares")) or 0 for p in pf.get("positions", [])
+               if str(p.get("ticker", "")).upper() == sym)
+    opening_short = side == "sell" and held <= 1e-9 and rec.get("kind") == "entry"
+    if opening_short and not cfg.get("allow_short"):
+        raise TicketError("this sale would open a short and \"allow_short\" is off in the config")
+    if side == "sell" and not opening_short and held + 1e-9 < qty:
+        raise TicketError("the paper account holds %s %s, not %s" % (_str_num(held), sym, _str_num(qty)))
+    closing = (side == "sell" and held > 1e-9) or (side == "buy" and held < -1e-9)
     paper_id = "PAPER-%s-%d" % (fp[:8], len(state.get("orders", [])) + 1)
     new = {"at": ist_iso(now), "date": today, "index": a.index, "fingerprint": fp, "symbol": rec["symbol"],
            "side": rec["side"], "plain": rec["plain"], "status": "placed", "paper": True,
@@ -939,25 +978,28 @@ def cmd_paper(a):
         if rec.get(k) is not None:
             new[k] = rec[k]
     state["orders"].append(new)
-    if side == "sell":
+    if closing:
         for leg in state.get("paper_legs", []):
             if leg.get("status") == "open" and leg.get("symbol") == sym:
                 leg["status"] = "canceled"
                 leg["closed_at"] = ist_iso(now)
-    if is_bracket(order) and side == "buy":
+    if is_bracket(order) and not closing:
         state.setdefault("paper_legs", []).append({
-            "symbol": sym, "qty": _str_num(qty), "entry": price, "stop": _f(order.get("stop_loss_stop_price")),
+            "symbol": sym, "side": "short" if side == "sell" else "long",
+            "qty": _str_num(qty), "entry": price, "stop": _f(order.get("stop_loss_stop_price")),
             "target": _f(order.get("take_profit_limit_price")), "date": today, "opened_at": ist_iso(now),
             "fingerprint": fp, "status": "open",
             "flat_by": (order.get("plan") or {}).get("flat_by") or cfg.get("flat_by") or "15:10"})
     write_json(a.state, state)
-    apply_fill(a.portfolio, cfg, sym, side, qty, price, today)
+    apply_fill(a.portfolio, cfg, sym, side, qty, price, today, short=opening_short)
     filled = log_fill(a.state, now, today, sym, side, qty, price, cfg, paper=True, note=paper_id)
-    print("PAPER %s %s %s at %s (%s charges). Order id %s." % (side.upper(), _str_num(qty), sym, _p(price),
+    print("PAPER %s %s %s at %s (%s charges). Order id %s." % ("SELL SHORT" if opening_short else side.upper(),
+                                                              _str_num(qty), sym, _p(price),
                                                               _money(filled["charges"]), paper_id))
-    if is_bracket(order) and side == "buy":
-        print("Open paper orders: stop-loss %s and target %s. ticket.py paper-check fills whichever the price "
-              "reaches first." % (_p(order["stop_loss_stop_price"]), _p(order["take_profit_limit_price"])))
+    if is_bracket(order) and not closing:
+        print("Open paper orders: %sstop-loss %s and target %s. ticket.py paper-check fills whichever the price "
+              "reaches first." % ("buy-back " if opening_short else "", _p(order["stop_loss_stop_price"]),
+                                  _p(order["take_profit_limit_price"])))
     return 0
 
 
@@ -977,9 +1019,10 @@ def cmd_paper_check(a):
                   % (sym, sym, _p(leg["stop"]), _p(leg["target"])))
             continue
         hit = None
-        if leg.get("stop") and p <= leg["stop"] + 1e-9:
+        short = leg.get("side") == "short"
+        if leg.get("stop") and ((p >= leg["stop"] - 1e-9) if short else (p <= leg["stop"] + 1e-9)):
             hit, fill = "stop-loss", p
-        elif leg.get("target") and p >= leg["target"] - 1e-9:
+        elif leg.get("target") and ((p <= leg["target"] + 1e-9) if short else (p >= leg["target"] - 1e-9)):
             hit, fill = "target", leg["target"]
         if not hit:
             line = "%s %s: between the stop %s and the target %s, still open" % (sym, _p(p), _p(leg["stop"]),
@@ -994,15 +1037,16 @@ def cmd_paper_check(a):
         leg["exit"] = fill
         leg["exit_reason"] = hit
         write_json(a.state, state)
-        apply_fill(a.portfolio, cfg, sym, "sell", float(leg["qty"]), fill, today)
-        rec = log_fill(a.state, now, today, sym, "sell", float(leg["qty"]), fill, cfg, paper=True,
+        out = "buy" if short else "sell"
+        apply_fill(a.portfolio, cfg, sym, out, float(leg["qty"]), fill, today)
+        rec = log_fill(a.state, now, today, sym, out, float(leg["qty"]), fill, cfg, paper=True,
                        note="paper %s" % hit)
         state = load_state(a.state)
-        print("PAPER %s filled: SELL %s %s at %s (%s charges)%s; the %s is canceled."
-              % (hit, leg["qty"], sym, _p(fill), _money(rec["charges"]),
-                 " (under the stop %s: an SL-M fills at the market)" % _p(leg["stop"])
-                 if hit == "stop-loss" and fill < leg["stop"] - 0.005 else "",
-                 "target" if hit == "stop-loss" else "stop-loss"))
+        gapped = hit == "stop-loss" and ((fill > leg["stop"] + 0.005) if short else (fill < leg["stop"] - 0.005))
+        print("PAPER %s filled: %s %s %s at %s (%s charges)%s; the %s is canceled."
+              % (hit, out.upper(), leg["qty"], sym, _p(fill), _money(rec["charges"]),
+                 " (%s the stop %s: an SL-M fills at the market)" % ("over" if short else "under", _p(leg["stop"]))
+                 if gapped else "", "target" if hit == "stop-loss" else "stop-loss"))
     for sym, bq, sq, pnl, ch in day_pnl(load_state(a.state), today):
         if pnl is None:
             print("%s: %s bought, %s sold, still open (charges so far %s)" % (sym, _str_num(bq), _str_num(sq),
@@ -1019,7 +1063,7 @@ def cmd_fill(a):
     date = a.date or to_ist(now).date().isoformat()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
         raise TicketError("--date wants a date like 2026-11-05")
-    pf = apply_fill(a.portfolio, cfg, a.symbol, a.side, a.qty, a.price, date)
+    pf = apply_fill(a.portfolio, cfg, a.symbol, a.side, a.qty, a.price, date, short=bool(cfg.get("allow_short")))
     rec = log_fill(a.state, now, date, a.symbol, a.side, a.qty, a.price, cfg)
     print("Recorded %s %s %s at %s on %s in %s (about %s charges). Cash now %s."
           % (a.side, a.qty, a.symbol.upper(), _money(a.price), date, a.portfolio, _money(rec["charges"]),
@@ -1032,25 +1076,29 @@ def cmd_flatten(a):
     sym = a.symbol.strip().upper()
     now, today = _clock(a)
     source = "the broker, get_positions"
+    side = "sell"
     if a.qty is not None:
         qty = _f(a.qty)
         if qty is None or qty <= 0:
             raise TicketError("--qty wants the number of shares you hold, like --qty 41")
+        if a.short:
+            side = "buy"
     else:
         pf = read_json(a.portfolio, "portfolio", required=False) or {}
-        qty = sum(_f(p.get("shares", p.get("qty"))) or 0 for p in pf.get("positions", [])
-                  if str(p.get("ticker") or p.get("symbol") or "").upper() == sym)
+        held = sum(_f(p.get("shares", p.get("qty"))) or 0 for p in pf.get("positions", [])
+                   if str(p.get("ticker") or p.get("symbol") or "").upper() == sym)
         source = a.portfolio
-        if qty <= 1e-9:
+        if abs(held) <= 1e-9:
             raise TicketError("nothing to flatten: no %s shares in %s. Check the broker (get_positions) "
                               "and pass --qty if you do hold some" % (sym, a.portfolio))
+        qty, side = abs(held), ("buy" if held < 0 else "sell")
     plan = read_json(a.plan, "plan", required=False) or {}
     flat_by = (plan.get("flat_by") if str(plan.get("symbol", "")).upper() == sym else None) \
         or cfg.get("flat_by") or "15:10"
-    order = {"symbol": sym, "exchange": "NSE", "product": str(cfg.get("product") or "MIS").upper(), "side": "sell",
+    order = {"symbol": sym, "exchange": "NSE", "product": str(cfg.get("product") or "MIS").upper(), "side": side,
              "qty": _str_num(qty), "type": "market", "time_in_force": "day",
-             "why": "flat by %s IST: closes the %s day trade before the close (qty from %s)"
-             % (flat_by, sym, source)}
+             "why": "flat by %s IST: %s the %s day trade before the close (qty from %s)"
+             % (flat_by, "buys back the short in" if side == "buy" else "closes", sym, source)}
     old = read_json(a.orders, "orders", required=False)
     replaced = len(old.get("orders", [])) if isinstance(old, dict) else 0
     doc = {"created_by": "trader-broker", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "status": "proposed",
@@ -1064,14 +1112,15 @@ def cmd_flatten(a):
     if a.qty is None:
         print("The qty comes from %s. Check it against the broker's positions before you say yes." % source)
     print("Next:")
-    print("  1. trader-risk: check.py. A sell that only closes what you hold is never blocked by the daily")
-    print("     limits or the entry window.")
+    print("  1. trader-risk: check.py. An order that only closes what you hold (or buys back a short) is never")
+    print("     blocked by the daily limits or the entry window.")
     print("  2. ticket.py show, then the user's yes for this one order.")
     if cfg.get("paper", True):
-        print("  3. ticket.py paper --index 1: it sells at the live price and cancels the open paper stop-loss")
+        print("  3. ticket.py paper --index 1: it %s at the live price and cancels the open paper stop-loss"
+              % ("buys back" if side == "buy" else "sells"))
         print("     and target.")
     else:
-        print("  3. Cancel the open stop-loss and target first, or they could sell the same shares twice:")
+        print("  3. Cancel the open stop-loss and target first, or they could close the same shares twice:")
         print("     get_orders, then cancel_order for each open one (Needs approval). Then place_order with")
         print("     the ticket. Zerodha squares off what is still open at about 3:20 PM for 50 rupees + GST.")
     return 0
@@ -1163,6 +1212,7 @@ def main(argv=None):
     p = sub.add_parser("flatten", help="a sell ticket that closes a symbol's position by flat_by")
     p.add_argument("--symbol", required=True)
     p.add_argument("--qty", help="shares you hold, from get_open_position (default: trader/portfolio.json)")
+    p.add_argument("--short", action="store_true", help="with --qty: the position is a short, so buy it back")
     p.add_argument("--orders", default="trader/orders.json", help="where the ticket is written")
     p.add_argument("--portfolio", default="trader/portfolio.json")
     p.add_argument("--plan", default="trader/plan.json")

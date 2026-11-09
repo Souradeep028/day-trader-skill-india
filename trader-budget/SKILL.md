@@ -117,7 +117,8 @@ charges at the stop are over `max_charges_pct_of_risk` of the risk (a stop so
 close that charges eat the trade: it says how far a stop needs to be), the
 stop is not below the entry, the target is not above it (the move already
 happened), the plan is for another day, the symbol is blocked, leverage is
-set without `allow_margin`, or the plan is a short. Say the reason to the
+set without `allow_margin`, or the plan is a short while `allow_short` is
+false (or not intraday MIS). Say the reason to the
 user in one line.
 
 Why the charges limit: charges are mostly a percentage of the money traded,
@@ -178,9 +179,24 @@ config) it buys whole shares and needs prices (`--prices trader/prices.json`).
 These are delivery (CNC) buys with no stop: trader-risk blocks them while
 `require_stop` is true. Use them for a long-term split, not a day trade.
 
+## Shorts (off by default)
+
+An intraday (MIS) short sells first and buys back by the flat-by. It is off
+until `trader/config.json` says `"allow_short": true`; the edge report's
+best lead so far is a short, which is why it exists. With it on:
+`entry.py --side sell` watches for a close below the range low,
+`exit.py` puts the stop above the entry and the target below,
+`size.py` sizes it (STT on the sale, stamp duty on the buy back),
+`check.py` blocks a CNC short and a sale near the lower price band,
+`ticket.py` sends SELL then a BUY SL-M stop and a BUY LIMIT target (or
+fills them on paper), and `alerts.py` rings when the price rises to the
+stop. A short's loss has no ceiling if the stock gaps up through the stop,
+and a stock locked at its upper band cannot be bought back until it
+reopens: paper trade shorts first.
+
 ## What it never does
 
-It never places an order, never sizes a short, never rounds up past a limit,
+It never places an order, never sizes a short unless `allow_short` is on, never rounds up past a limit,
 never hides charges, and never treats a refusal as "buy fewer then". A
 refusal means skip the trade or make a new plan.
 

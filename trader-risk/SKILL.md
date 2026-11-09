@@ -75,7 +75,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | --- | --- |
 | format | no symbol; side not buy or sell; no whole-share qty (the NSE takes no rupee-amount orders); exchange not NSE; product not MIS or CNC; a limit order with no limit price; validity not day or ioc; extended hours (the NSE has none); a bracket that is not day validity or misses its stop-loss or target |
 | asset | futures and options (like `INFY26NOVFUT`, `NIFTY26N1225000PE`) while `allow_options` is false; anything that is not an NSE symbol like `INFY.NS` |
-| short | a sell of more than you hold (`allow_short` false) |
+| short | a sell of more than you hold while `allow_short` is false; with it on, a short that is not intraday (MIS) |
 | blocked | (entries) the symbol is on the `blocked` list |
 | size | (entries) under `min_order_inr` or over `max_order_inr` |
 | position | (entries) the stock would be over `max_position_pct` of the account |
@@ -87,7 +87,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_inr` |
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) before `no_entries_before` (09:30) or after `no_entries_after` (14:45), or the NSE is closed |
-| band | (entries) the entry is within 1% of the upper price band: the previous close plus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |
+| band | (entries) a buy within 1% of the upper price band, or a short within 1% of the lower one: the previous close plus or minus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |
 | cool-off | (entries) `max_losing_streak` (2) losing trades in a row today, after charges: no new entries for the rest of the day |
 | sector | (entries) `max_entries_per_sector` (2) entries in one NSE industry today, this batch included (`trader/sectors.json`) |
 | results | (entries, `skip_results_days` true) the stock's results date in `trader/events.json` is today, or was the last trading day (results out after the close move the next open) |

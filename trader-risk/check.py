@@ -27,7 +27,8 @@ What blocks an order (every order):
   asset         futures and options (like INFY26NOVFUT, NIFTY26N2026000CE)
                 unless "allow_options": true; anything that is not an NSE
                 stock or ETF symbol like INFY.NS
-  short         selling more than you hold, unless "allow_short": true
+  short         selling more than you hold, unless "allow_short": true; with it on,
+                a short must be intraday (MIS), and its margin counts against cash
 
 What blocks an entry (on top):
 
@@ -620,11 +621,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         if ref is None:
             cands = [(p, w) for p, w in ((plan_entry, "plan"), (live, "price")) if p]
             if cands:
-                ref, ref_from = max(cands, key=lambda x: x[0])
+                # the worse fill for the risk: the higher price for a buy, the lower for a sale
+                ref, ref_from = (min if side == "sell" else max)(cands, key=lambda x: x[0])
                 ref = _cent(ref)
-                if live and ref_from == "price" and plan_entry and live > plan_entry + CENT:
-                    info.append("%s last %s is above the plan's entry %s: the risk is measured from %s"
-                                % (sym, _p(ref), _p(plan_entry), _p(ref)))
+                if live and ref_from == "price" and plan_entry and abs(live - plan_entry) > CENT:
+                    info.append("%s last %s is %s the plan's entry %s: the risk is measured from %s"
+                                % (sym, _p(ref), "below" if side == "sell" else "above", _p(plan_entry), _p(ref)))
             elif sym in prices:
                 ref, ref_from = prices[sym], "stale price"
         if plan_entry and live is None and sym in prices and price_times is not None and typ == "market":
@@ -649,6 +651,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         elif side == "buy" and held < -1e-9 and q is not None:
             exiting = q <= -held + 1e-9
         kind = "exit" if exiting else "entry"
+        shorting = False
+        if side == "sell" and sym and kind == "entry":
+            if q is not None:
+                shorting = q > held + 1e-9
+            elif value is not None:
+                shorting = value > held_value + CENT
+            else:
+                shorting = held <= 0
         if kind == "entry" and value is None and q:
             later.append("price: no price for %s to size a %s-share order; add it to "
                          "trader/prices.json (trader-alerts: alerts.py quote %s --write)" % (sym, qty, sym))
@@ -668,7 +678,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         cash = acct["cash"]
         total = cash + sum(acct["values"].values())
         buffer_inr = total * float(c.get("cash_buffer_pct") or 0) / 100.0
-        if value is not None and side == "buy" and kind == "entry":
+        if value is not None and (side == "buy" or shorting) and kind == "entry":
             need = value / lev
             after_cash = cash - need
             if after_cash < -CENT:
@@ -681,25 +691,23 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if lev > 1 and value > cash + CENT:
                 warns.append("leverage: %s of this %s position is borrowed (%sx intraday): losses are on the full "
                              "amount" % (money(value - need), money(value), _num(lev)))
-            if product != "MIS":
+            if product != "MIS" and not shorting:
                 warns.append("product %s is delivery, not intraday: delivery STT is 0.1%% on both sides and "
                              "nothing squares it off for you" % product)
-            pos_after = held_value + value
+            pos_after = abs(held_value) + value
             limit = total * float(c.get("max_position_pct") or 100) / 100.0
             if total > 0 and pos_after > limit + CENT:
                 later.append("position: %s would be %s, %.1f%% of the %s account, over your %s%% cap"
                              % (sym, money(pos_after), 100.0 * pos_after / total, money(total),
                                 _pct(c["max_position_pct"])))
-        if side == "sell" and sym and kind == "entry":
-            if q is not None:
-                over = q > held + 1e-9
-            elif value is not None:
-                over = value > held_value + CENT
-            else:
-                over = held <= 0
-            if over and not c.get("allow_short"):
+        if shorting:
+            if not c.get("allow_short"):
                 reasons.append("short: selling more %s than you hold (%s shares); short selling is off. "
                                "If you bought it, record the fill first (ticket.py fill)" % (sym, _num(held)))
+            elif product != "MIS":
+                reasons.append("short: a short sale on the NSE cash market must be intraday (MIS); a %s short "
+                               "cannot be carried overnight and the exchange auctions what is not delivered"
+                               % product)
 
         # day-trade checks: stop, loss, reward:risk, daily loss, trades, window, band
         max_loss = risk_ps = rr = stop = target = charges = None
@@ -808,9 +816,17 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     later.append("band: %s at %s is within %s%% of its upper price band %s (%s%% over the previous "
                                  "close %s): at the band sellers vanish and it can lock"
                                  % (sym, _p(ref), _num(BAND_MARGIN_PCT), _p(upper), _num(band), _p(pc)))
+                if not long and ref <= lower * (1 + BAND_MARGIN_PCT / 100.0) + CENT:
+                    later.append("band: %s at %s is within %s%% of its lower price band %s (%s%% under the previous "
+                                 "close %s): at the band buyers vanish and it can lock"
+                                 % (sym, _p(ref), _num(BAND_MARGIN_PCT), _p(lower), _num(band), _p(pc)))
                 if long and stop and stop < lower - CENT:
                     warns.append("the stop %s is under the lower price band %s: if %s locks at the band, the stop "
                                  "cannot fill until it reopens" % (_p(stop), _p(lower), sym))
+                if not long and stop and stop > upper + CENT:
+                    warns.append("the stop %s is over the upper price band %s: if %s locks at the band, the stop "
+                                 "cannot fill and the short cannot be bought back until it reopens"
+                                 % (_p(stop), _p(upper), sym))
             elif bands and sym not in bands:
                 warns.append("%s is not in trader/bands.json: its price band is unknown (run scan.py universe)" % sym)
             if stop and ref and risk_ps:
@@ -860,6 +876,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     acct["shares"][sym] = held + q
                 elif ref and value is not None:
                     acct["shares"][sym] = held + value / ref
+            elif shorting:
+                if value is not None:
+                    acct["cash"] -= value            # the margin the short ties up, value / leverage at most
+                if q is not None:
+                    acct["shares"][sym] = held - q
+                elif ref and value is not None:
+                    acct["shares"][sym] = held - value / ref
             elif side == "sell":
                 if value is not None:
                     acct["cash"] += value
