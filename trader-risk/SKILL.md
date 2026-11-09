@@ -52,7 +52,7 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-11-05 09:40"  # pin the clock
 | `trader/prices.json` | a fresh price raises the entry it measures risk from; its previous close feeds the band check |
 | `trader/bands.json` | each stock's NSE price band (trader-scanner: `scan.py universe`) |
 | `trader/sectors.json` | each Nifty 500 stock's NSE industry, for the sector cap (copy it from this pack's `trader/` folder) |
-| `trader/events.json` | results dates (trader-analyst: `results.py event INFY.NS 2026-11-12`) |
+| `trader/events.json` | results dates, ex-dates and whole-market events (trader-analyst: `results.py event`) |
 | `trader/surveillance.json` | NSE's ASM and GSM lists (trader-scanner: `scan.py surveillance`); missing or over 7 days old is a warning |
 | `trader/state/broker.json` | what was placed today: duplicates, trades per day, daily loss |
 | `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
@@ -89,6 +89,12 @@ batch that is fine order by order but breaks a limit together is caught.
 | window | (entries) before `no_entries_before` (09:30) or after `no_entries_after` (14:45), or the NSE is closed |
 | band | (entries) a buy within 1% of the upper price band, or a short within 1% of the lower one: the previous close plus or minus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |
 | cool-off | (entries) `max_losing_streak` (2) losing trades in a row today, after charges: no new entries for the rest of the day |
+| weekly / monthly loss | (entries) the loss realised since Monday (since the 1st) plus this trade's max loss over `max_weekly_loss_inr` (3,000) or `max_monthly_loss_inr` (6,000) |
+| direction | (entries) the max losses of today's still-open entries on the same side, longs or shorts, plus this one over `max_same_side_risk_inr` (1,000): three longs in three sectors still fall together on a Nifty selloff |
+| index | (entries) Nifty 50 has moved `max_index_move_pct` (3) % or more from yesterday's close (`^NSEI` in `trader/prices.json`; a missing or stale one is a warning). At 10 % the market-wide circuit breaker halts all trading |
+| market event | (entries, `skip_market_event_days` true) a MARKET event in `trader/events.json` today: RBI policy, the Union Budget, election results |
+| ex-date | (entries, `skip_ex_dates` true) the stock goes ex-dividend, ex-split or ex-bonus today: the open drops mechanically |
+| special session | (entries) Diwali Muhurat trading and other one-off sessions: not traded |
 | sector | (entries) `max_entries_per_sector` (2) entries in one NSE industry today, this batch included (`trader/sectors.json`) |
 | results | (entries, `skip_results_days` true) the stock's results date in `trader/events.json` is today, or was the last trading day (results out after the close move the next open) |
 | expiry | (entries, `skip_expiry_days`, off by default: a warning instead) Nifty's weekly F&O expiry, Tuesday or the Monday before a Tuesday holiday |
@@ -141,7 +147,7 @@ money, a holiday list that does not cover the date.
 ## Steps
 
 1. If the price may have moved since the plan, refresh it first
-   (trader-alerts: `alerts.py quote INFY.NS --write`). Run `scan.py universe`
+   with the Nifty 50 for the index check (trader-alerts: `alerts.py quote INFY.NS ^NSEI --write`). Run `scan.py universe`
    in the morning so `trader/bands.json` is today's.
 2. Run `check.py`. Exit code 0 means every order passed, 1 means at least one
    was blocked.

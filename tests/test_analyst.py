@@ -129,14 +129,23 @@ class Events(unittest.TestCase):
             run(["event", "INFY.NS", "2026-11-12", "--what", "Q2 FY27 results (moved)", "--events", ev])
             with open(ev) as fh:
                 doc = json.load(fh)
-            self.assertEqual(doc["events"], [{"symbol": "TCS.NS", "date": "2026-10-09", "what": "results"},
+            self.assertEqual(doc["events"], [{"symbol": "TCS.NS", "date": "2026-10-09", "what": "results",
+                                              "kind": "results"},
                                              {"symbol": "INFY.NS", "date": "2026-11-12",
-                                              "what": "Q2 FY27 results (moved)"}])
+                                              "what": "Q2 FY27 results (moved)", "kind": "results"}])
             code, text, _ = run(["events", "--events", ev, "--today", "2026-11-09"])
             self.assertEqual(text, "2026-11-12  INFY.NS        Q2 FY27 results (moved)\n")
             self.assertIn("TCS.NS", run(["events", "--events", ev, "--all"])[1])
             check = load("trader-risk", "check")
-            self.assertEqual(check.load_events(doc)["INFY.NS"], [("2026-11-12", "Q2 FY27 results (moved)")])
+            self.assertEqual(check.load_events(doc)["INFY.NS"], [("2026-11-12", "Q2 FY27 results (moved)", "results")])
+            code, text, _ = run(["event", "infy", "2026-11-12", "--what", "ex-dividend 21.50", "--events", ev])
+            self.assertIn("INFY.NS: ex-dividend 21.50 on 2026-11-12. trader-risk blocks new entries in it that day.", text)
+            code, text, _ = run(["event", "market", "2026-12-04", "--what", "RBI policy", "--events", ev])
+            self.assertIn("MARKET: RBI policy on 2026-12-04. trader-risk blocks every new entry that day.", text)
+            with open(ev) as fh:
+                kinds = {(e["symbol"], e["what"]): e["kind"] for e in json.load(fh)["events"]}
+            self.assertEqual((kinds[("INFY.NS", "ex-dividend 21.50")], kinds[("MARKET", "RBI policy")]),
+                             ("ex-date", "market"))
             code, _, err = run(["event", "INFY.NS", "12-11-2026", "--events", ev])
             self.assertEqual(code, 1)
             self.assertIn("YYYY-MM-DD", err)

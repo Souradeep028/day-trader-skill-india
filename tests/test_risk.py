@@ -249,7 +249,7 @@ class DayTradeChecks(unittest.TestCase):
 
     def test_the_batch_counts_toward_the_daily_limits(self):
         orders = [bracket(s, 2, 400.0, 200.0, 900.0) for s in ("AAA.NS", "BBB.NS", "CCC.NS", "DDD.NS")]
-        res = check.check(orders, cfg(), now=at(NOW))
+        res = check.check(orders, cfg(max_same_side_risk_inr=0), now=at(NOW))
         self.assertEqual(verdicts(res), ["PASS", "PASS", "PASS", "BLOCK"])
         why = reasons(res, 3)
         self.assertIn("trades: 0 entries placed today plus 3 passed earlier", why)
@@ -636,7 +636,7 @@ class SkipDays(unittest.TestCase):
 
     def test_results_day_and_the_day_after(self):
         ev = check.load_events({"events": [{"symbol": "INFY.NS", "date": "2026-11-05", "what": "Q2 FY27 results"}]})
-        self.assertEqual(ev, {"INFY.NS": [("2026-11-05", "Q2 FY27 results")]})
+        self.assertEqual(ev, {"INFY.NS": [("2026-11-05", "Q2 FY27 results", "results")]})
         self.assertEqual(self.one(events=ev)["results"][0]["reasons"],
                          ["results: INFY.NS has Q2 FY27 results today (trader/events.json): the price can gap or "
                           "swing on the numbers, so no new entries in it today"])
@@ -737,6 +737,106 @@ class Shorts(unittest.TestCase):
         res = check.check([o], cfg(allow_short=True), portfolio=pf, prices={"INFY.NS": 1130.0}, now=at("2026-11-05 15:10"),
                           surveillance={"symbols": {}})
         self.assertEqual((res["results"][0]["kind"], res["results"][0]["verdict"]), ("exit", "PASS"))
+
+
+class LossLimits(unittest.TestCase):
+    """Weekly, monthly and same-direction limits. 5 November 2026 is a Thursday: the week began on Monday
+    2 November, the month on 1 November."""
+
+    def fills(self, day, buy=100.0, sell=74.0, sym="ABC.NS", qty="100"):
+        return [{"status": "filled", "date": day, "symbol": sym, "side": "buy", "qty": qty, "price": buy},
+                {"status": "filled", "date": day, "symbol": sym, "side": "sell", "qty": qty, "price": sell}]
+
+    def one(self, state, **over):
+        return check.check([infy()], cfg(**over), state=state, now=at(NOW), surveillance={"symbols": {}})
+
+    def test_a_losing_week(self):
+        # Monday: bought 100 at 100 (4.22 of charges), sold at 74 (2.22 + 1.85 STT + 0.23 + 0.01 + 0.44 GST = 4.75):
+        # -2,600 - 8.97 = -2,608.97. Plus the reel's 489 at risk = 3,097.97, over 3,000
+        st = {"orders": self.fills("2026-11-02")}
+        self.assertEqual(check.closed_trades(st, "2026-11-02", TODAY), [("2026-11-02", "ABC.NS", -2608.97)])
+        res = self.one(st)
+        self.assertIn("weekly loss: -₹2,608.97 realised since 2026-11-02, plus ₹489 at risk on this one, is over "
+                      "your ₹3,000 weekly limit: no new entries until next Monday", reasons(res))
+        self.assertNotIn("monthly loss", reasons(res))
+        self.assertEqual(verdicts(self.one(st, max_weekly_loss_inr=4000)), ["PASS"])
+
+    def test_last_week_does_not_count_but_the_month_does(self):
+        st = {"orders": self.fills("2026-10-30")}              # last Friday, last month: neither
+        self.assertEqual(verdicts(self.one(st)), ["PASS"])
+        st = {"orders": self.fills("2026-11-02") + self.fills("2026-11-03", 100.0, 101.0, "XYZ.NS")}
+        res = self.one(st, max_weekly_loss_inr=0, max_monthly_loss_inr=2500)
+        # Tuesday's +100 less 4.22 and 6.47 of charges (the sale's STT 2.525 rounds to 2.52) = +89.31
+        self.assertIn("monthly loss: -₹2,519.66 realised since 2026-11-01", reasons(res))   # -2,608.97 + 89.31
+        self.assertIn("no new entries until next month", reasons(res))
+
+    def test_a_winning_week_leaves_room(self):
+        st = {"orders": self.fills("2026-11-02", 100.0, 130.0)}
+        self.assertEqual(verdicts(self.one(st)), ["PASS"])
+
+    def test_same_direction(self):
+        orders = [bracket(s, 2, 400.0, 200.0, 900.0) for s in ("AAA.NS", "BBB.NS", "CCC.NS")]
+        res = check.check(orders, cfg(max_entries_per_sector=0), now=at(NOW), surveillance={"symbols": {}})
+        self.assertEqual(verdicts(res), ["PASS", "PASS", "BLOCK"])
+        self.assertIn("direction: ", reasons(res, 2))
+        self.assertIn("already at risk in open longs today", reasons(res, 2))
+        self.assertIn("over your ₹1,000 same-direction limit", reasons(res, 2))
+
+    def test_only_open_entries_count(self):
+        placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
+                  "max_loss": 600.0}
+        buy = {"status": "filled", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "qty": "10", "price": 100.0}
+        sell = dict(buy, side="sell", price=101.0)
+        res = self.one({"orders": [placed, buy]})                      # 600 open + 489 = 1,089
+        self.assertIn("direction: ₹600 already at risk in open longs today, plus ₹489 = ₹1,089", reasons(res))
+        self.assertNotIn("direction", reasons(self.one({"orders": [placed, buy, sell]})))   # closed: off the hook
+
+
+class Calendar(unittest.TestCase):
+    def one(self, now=NOW, events=None, prices=None, prev=None, times=None, **over):
+        return check.check([infy()], cfg(**over), now=at(now), events=events, prices=prices, prev_close=prev,
+                           price_times=times, surveillance={"symbols": {}})
+
+    def test_a_market_event_stops_every_entry(self):
+        ev = check.load_events({"events": [{"symbol": "MARKET", "date": TODAY, "what": "RBI policy"}]})
+        self.assertEqual(ev, {"MARKET": [(TODAY, "RBI policy", "market")]})
+        self.assertEqual(self.one(events=ev)["results"][0]["reasons"],
+                         ["market event: RBI policy today (trader/events.json): the whole market can swing on it, so "
+                          "no new entries today"])
+        self.assertEqual(verdicts(self.one(events=ev, skip_market_event_days=False)), ["PASS"])
+
+    def test_an_ex_date_is_that_day_only(self):
+        ev = check.load_events({"INFY.NS": [TODAY]})
+        ev = check.load_events({"events": [{"symbol": "INFY.NS", "date": TODAY, "what": "ex-dividend 21.50"}]})
+        self.assertEqual(ev["INFY.NS"][0][2], "ex-date")
+        self.assertIn("ex-date: INFY.NS goes ex-dividend 21.50 today", reasons(self.one(events=ev)))
+        self.assertNotIn("results:", reasons(self.one(events=ev)))
+        ev = check.load_events({"events": [{"symbol": "INFY.NS", "date": "2026-11-04", "what": "split 1:2"}]})
+        self.assertEqual(verdicts(self.one(events=ev)), ["PASS"])          # the day after an ex-date is fine
+
+    def test_a_special_session(self):
+        res = self.one(now="2026-11-08 15:00")
+        self.assertIn("window: today is a special session (Diwali Muhurat trading, a short Sunday session)",
+                      reasons(res))
+
+    def test_a_big_nifty_day(self):
+        res = self.one(prices={"^NSEI": 24200.0, "INFY.NS": 1160.5}, prev={"^NSEI": 25000.0})
+        self.assertIn("index: Nifty 50 is -3.20% from yesterday's close (25000.00 to 24200.00), past your 3% limit",
+                      reasons(res))
+        self.assertIn("at 10% the market-wide circuit breaker halts all trading", reasons(res))
+        res = self.one(prices={"^NSEI": 22400.0}, prev={"^NSEI": 25000.0})
+        self.assertIn("the market-wide circuit breaker level is reached", reasons(res))
+        self.assertEqual(verdicts(self.one(prices={"^NSEI": 25300.0}, prev={"^NSEI": 25000.0})), ["PASS"])
+        self.assertEqual(verdicts(self.one(prices={"^NSEI": 24200.0}, prev={"^NSEI": 25000.0},
+                                           max_index_move_pct=0)), ["PASS"])
+
+    def test_a_stale_or_missing_nifty_price_is_a_warning(self):
+        old = datetime.datetime(2026, 11, 5, 3, 0)                          # 8:30 IST, 70 minutes before
+        res = self.one(prices={"^NSEI": 24200.0}, prev={"^NSEI": 25000.0}, times={"^NSEI": old})
+        self.assertNotIn("index:", reasons(res))
+        self.assertTrue(any("Nifty 50 price in trader/prices.json is older" in w for w in res["warnings"]))
+        res = self.one(prices={"INFY.NS": 1160.5}, times={"INFY.NS": QUOTE_TIME})
+        self.assertTrue(any("no Nifty 50 price in trader/prices.json" in w for w in res["warnings"]))
 
 
 if __name__ == "__main__":

@@ -69,6 +69,10 @@ If `trader/config.json` does not exist, copy `config.example.json` into
   ("09:30" / "14:45") and **flat_by** ("15:10"), all IST, plus
   **max_losing_streak** (2: no new entries after two losing trades in a row
   today), **max_entries_per_sector** (2 a day in one industry),
+  **max_weekly_loss_inr** (3,000) and **max_monthly_loss_inr** (6,000),
+  **max_same_side_risk_inr** (1,000 at risk in open longs, or open shorts),
+  **max_index_move_pct** (3: no entries on a 3 % Nifty day),
+  **skip_ex_dates** and **skip_market_event_days** (true),
   **max_charges_pct_of_risk** (15: the round trip's charges at the stop at
   most 15 % of the loss on price), **skip_results_days** (true),
   **skip_expiry_days** (false: a warning on expiry days) and

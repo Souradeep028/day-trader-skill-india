@@ -160,12 +160,14 @@ python3 trader-risk/check.py                                           # PASS / 
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
 python3 trader-broker/ticket.py paper --index 1 --price 1160.50        # paper: fill it
 python3 trader-broker/ticket.py paper-check                            # paper: stop or target hit?
+python3 trader-broker/ticket.py reconcile --paper                      # no position without its stop
 python3 trader-broker/ticket.py journal --paper                        # win rate, R, P&L after charges
 python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
 python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by 15:10
 python3 trader-alerts/alerts.py check                                  # rings what hit, once
 python3 trader-analyst/results.py show trader/results/INFY.json        # quarters, growth, margins
 python3 trader-analyst/results.py event INFY.NS 2026-11-12             # a results date: no entries that day
+python3 trader-analyst/results.py event MARKET 2026-12-04 --what "RBI policy"   # no entries at all that day
 python3 trader-pelosi/ptr.py index --member pelosi                     # her PTRs this year (US)
 ```
 
@@ -209,7 +211,8 @@ Over the 58 sessions to 6 November 2026:
 
 So: run `edge.py` on fresh data, paper trade what looks promising, keep
 `ticket.py journal`, and go live only if the journal holds up. The risk
-check's cool-off, sector cap, charges limit, results-day and surveillance
+check's cool-off, sector cap, weekly and monthly loss limits, same-direction
+cap, charges limit, big-Nifty-day halt, results-day, ex-date, market-event and surveillance
 blocks are there for the days it does not.
 
 ## Fine print

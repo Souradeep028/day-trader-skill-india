@@ -661,6 +661,11 @@ class Morning(unittest.TestCase):
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         return p.returncode, p.stdout, p.stderr
 
+    def test_a_special_session(self):
+        code, text, _ = self.morning("--now", "2026-11-08 12:00")
+        self.assertIn("special session: Diwali Muhurat trading, a short Sunday session; the pack does not trade it",
+                      text)
+
     def test_a_closed_day(self):
         code, text, _ = self.morning("--now", "2026-11-10 08:30")
         self.assertEqual(code, 0)
@@ -670,7 +675,8 @@ class Morning(unittest.TestCase):
 
     def test_the_brief(self):
         with open("trader/events.json", "w") as fh:
-            json.dump({"events": [{"symbol": "ICICIBANK.NS", "date": "2026-11-11", "what": "a board meeting"},
+            json.dump({"events": [{"symbol": "MARKET", "date": "2026-11-09", "what": "US jobs data", "kind": "market"},
+                                  {"symbol": "ICICIBANK.NS", "date": "2026-11-11", "what": "a board meeting"},
                                   {"symbol": "ICICIBANK.NS", "date": "2026-11-20", "what": "too late"}]}, fh)
         with open("trader/surveillance.json", "w") as fh:
             json.dump({"updated": "2026-10-20", "symbols": {}}, fh)
@@ -683,6 +689,8 @@ class Morning(unittest.TestCase):
                      "31 of 41 charts matched a setup (2026-11-06 close).",
                      "| ICICIBANK.NS | breakout_20d | 1571.20 | 79.5 |",
                      "- ICICIBANK.NS: a board meeting on 2026-11-11.",
+                     "- MARKET: US jobs data on 2026-11-09. The risk check blocks every new entry that day.",
+                     "run ticket.py reconcile after every fill",
                      "- Max loss ₹500 a trade with charges, ₹1,500 a day, 3 trades, charges at most 15 % of the risk.",
                      "Nothing has been placed."):
             self.assertIn(line, text)

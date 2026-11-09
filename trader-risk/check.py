@@ -58,8 +58,20 @@ What blocks an entry (on top):
                 time), or the market is closed (weekend, NSE holiday, outside
                 9:15 to the 15:30 close)
   cool-off      max_losing_streak (2) losing trades in a row today, after charges
+  weekly loss   the loss realised since Monday plus this trade's max loss over
+                max_weekly_loss_inr (3,000); monthly the same from the 1st
+                (max_monthly_loss_inr, 6,000)
+  direction     the max losses of today's still-open entries on the same side
+                (longs, or shorts) plus this one over max_same_side_risk_inr
+                (1,000): three longs in three sectors still fall together
   sector        max_entries_per_sector (2) entries in one NSE industry today
                 (trader/sectors.json, from NSE's Nifty 500 list), this batch included
+  market event  (skip_market_event_days, on) a MARKET event today in trader/events.json
+                (RBI policy, the Union Budget, election results): no entries at all
+  ex-date       (skip_ex_dates, on) the stock goes ex-dividend, ex-split or ex-bonus today
+  index         (max_index_move_pct, 3) Nifty 50 (^NSEI in trader/prices.json) has moved
+                3 % or more from yesterday's close; 10 % is the market-wide circuit breaker
+  special       a special session on a closed day (Diwali Muhurat trading): not traded
   results       (skip_results_days, on) the stock's results day in trader/events.json, or
                 the trading day after it (results out after the close move the next open)
   expiry        (skip_expiry_days, off: a warning instead) Nifty's weekly F&O expiry,
@@ -97,6 +109,8 @@ DEFAULTS = {
     "paper": True, "blocked": [], "allow_options": False, "allow_margin": False, "allow_short": False,
     "intraday_leverage": 1, "charges": {}, "max_losing_streak": 2, "max_entries_per_sector": 2,
     "max_charges_pct_of_risk": 15, "skip_results_days": True, "skip_expiry_days": False,
+    "max_weekly_loss_inr": 3000, "max_monthly_loss_inr": 6000, "max_same_side_risk_inr": 1000,
+    "skip_ex_dates": True, "skip_market_event_days": True, "max_index_move_pct": 3,
     "block_surveillance": True,
 }
 EXPIRY_WEEKDAY = 1         # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
@@ -142,6 +156,11 @@ NSE_HOLIDAYS = {  # NSE equity segment trading holidays, NSE circular for 2026
     "2026-12-25": "Christmas",
 }
 NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes
+NSE_SPECIAL_SESSIONS = {  # one-off sessions on closed days: the pack does not trade them
+    "2026-11-08": "Diwali Muhurat trading, a short Sunday session",
+}
+INDEX = "^NSEI"
+MWCB_PCT = 10.0            # a 10 % move in Nifty or the Sensex halts all trading (market-wide circuit breaker)
 CALENDAR_YEARS = (2026,)
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
@@ -232,6 +251,10 @@ def window_check(now_ist, c):
     ok, why = trading_day(d)
     stamp = now_ist.strftime("%a %Y-%m-%d %H:%M")
     if not ok:
+        special = NSE_SPECIAL_SESSIONS.get(d.isoformat())
+        if special:
+            return ["window: today is a special session (%s): short hours and thin books, the pack does not "
+                    "trade it" % special], warns
         return ["window: the market is closed today (%s, %s IST)" % (why, stamp)], warns
     close = EARLY if d.isoformat() in NSE_EARLY_CLOSE else CLOSE
     if t < OPEN or now_ist.time() >= close:
@@ -416,6 +439,37 @@ def losing_streak(state, today, rates=None):
     return n, closed
 
 
+def closed_trades(state, date_from, date_to, rates=None):
+    """[(date, symbol, net P&L after charges)] for every round trip closed between the two dates: each day's
+    fills per symbol paired back to flat (paper and live alike)."""
+    per, out = {}, []
+    for r in (state or {}).get("orders", []):
+        d = rec_day(r)
+        if r.get("status") != "filled" or not date_from <= d <= date_to:
+            continue
+        sym = str(r.get("symbol", "")).upper()
+        x = per.setdefault((d, sym), {"pos": 0.0, "cash": 0.0})
+        q, px, side = _f(r.get("qty")) or 0, _f(r.get("price")) or 0, r.get("side")
+        x["cash"] += (-1 if side == "buy" else 1) * q * px - order_charges(side, q * px, rates)["total"]
+        x["pos"] += q if side == "buy" else -q
+        if abs(x["pos"]) < 1e-9:
+            out.append((d, sym, round(x["cash"], 2)))
+            per[(d, sym)] = {"pos": 0.0, "cash": 0.0}
+    return out
+
+
+def open_today(state, today):
+    """{SYM: net shares} still open from today's fills."""
+    pos = {}
+    for r in (state or {}).get("orders", []):
+        if r.get("status") != "filled" or rec_day(r) != today:
+            continue
+        sym = str(r.get("symbol", "")).upper()
+        q = _f(r.get("qty")) or 0
+        pos[sym] = pos.get(sym, 0) + (q if r.get("side") == "buy" else -q)
+    return {k: v for k, v in pos.items() if abs(v) > 1e-9}
+
+
 def expiry_day(d):
     """True when d is Nifty's weekly F&O expiry: a trading day with no trading day between it and the next
     expiry weekday (Tuesday). So the Tuesday itself, or the Monday when the Tuesday is a holiday."""
@@ -434,8 +488,21 @@ def previous_trading_day(d):
     return d
 
 
+EX_WORDS = re.compile(r"\bex[- ]|dividend|split|bonus|rights|demerger", re.I)
+
+
+def event_kind(sym, what, kind=None):
+    if kind in ("results", "ex-date", "market"):
+        return kind
+    if str(sym).upper() in ("MARKET", "*"):
+        return "market"
+    return "ex-date" if EX_WORDS.search(str(what or "")) else "results"
+
+
 def load_events(doc):
-    """trader/events.json -> {SYM: [(date, what)]}. {"events": [{"symbol", "date", "what"}]} or {SYM: [dates]}."""
+    """trader/events.json -> {SYM: [(date, what, kind)]}; the whole market's events under "MARKET".
+    {"events": [{"symbol", "date", "what", "kind"}]} or {SYM: [dates]}. kind: results (the default),
+    ex-date (dividend, split, bonus: told from the words when not given) or market (symbol MARKET)."""
     out = {}
     if not doc:
         return out
@@ -444,7 +511,10 @@ def load_events(doc):
         rows = [{"symbol": k, "date": d} for k, v in doc.items() for d in (v if isinstance(v, list) else [v])]
     for r in rows or []:
         if isinstance(r, dict) and r.get("symbol") and re.match(r"^\d{4}-\d{2}-\d{2}$", str(r.get("date", ""))):
-            out.setdefault(str(r["symbol"]).upper(), []).append((str(r["date"]), r.get("what") or "results"))
+            sym = str(r["symbol"]).upper()
+            sym = "MARKET" if sym == "*" else sym
+            what = r.get("what") or ("market event" if sym == "MARKET" else "results")
+            out.setdefault(sym, []).append((str(r["date"]), what, event_kind(sym, what, r.get("kind"))))
     return out
 
 
@@ -507,9 +577,43 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             day_warn.append("trader/surveillance.json is %d days old: NSE changes the ASM and GSM lists every "
                             "week, refresh it (scan.py surveillance)" % age)
     is_expiry = expiry_day(today_d)
+    rates0 = c.get("charges") or {}
+    week_from = (today_d - datetime.timedelta(days=today_d.weekday())).isoformat()
+    month_from = today_d.replace(day=1).isoformat()
+    recent = closed_trades(state, min(week_from, month_from), today, rates0)
+    week_net = round(sum(t[2] for t in recent if t[0] >= week_from), 2)
+    month_net = round(sum(t[2] for t in recent if t[0] >= month_from), 2)
+    still_open = open_today(state, today)
+    side_risk = {"buy": 0.0, "sell": 0.0}
+    for r in entries_today:
+        sym_r = str(r.get("symbol", "")).upper()
+        if sym_r in still_open and _f(r.get("max_loss")):
+            side_risk[str(r.get("side", "buy")).lower()] = side_risk.get(str(r.get("side", "buy")).lower(), 0) \
+                + _f(r["max_loss"])
     if is_expiry and not c.get("skip_expiry_days"):
         day_warn.append("today is Nifty's weekly F&O expiry: index moves can be sharper and reverse late "
                         "(\"skip_expiry_days\": true blocks new entries on expiry days)")
+    index_reason = None
+    cap_idx = _f(c.get("max_index_move_pct"))
+    n_px = prices.get(INDEX)
+    n_pc = {str(k).upper(): _f(v) for k, v in (prev_close or {}).items()}.get(INDEX)
+    if cap_idx and n_px and n_pc:
+        stale = price_times is not None and (price_times.get(INDEX) is None
+                                             or (now_utc - price_times[INDEX]).total_seconds() > FRESH_MINUTES * 60)
+        move = 100.0 * (n_px / n_pc - 1)
+        if stale:
+            day_warn.append("the Nifty 50 price in trader/prices.json is older than %d minutes: the index-move "
+                            "check is off (alerts.py quote ^NSEI --write)" % FRESH_MINUTES)
+        elif abs(move) >= cap_idx - 1e-9:
+            index_reason = ("index: Nifty 50 is %+.2f%% from yesterday's close (%s to %s), past your %s%% limit: a "
+                            "day this big is a panic or a squeeze, not a setup%s"
+                            % (move, _p(n_pc), _p(n_px), _num(cap_idx),
+                               "; at %d%% the market-wide circuit breaker halts all trading" % MWCB_PCT
+                               if abs(move) < MWCB_PCT else "; the market-wide circuit breaker level is reached: "
+                               "trading halts, and stops cannot fill during the halt"))
+    elif cap_idx and prices and INDEX not in prices:
+        day_warn.append("no Nifty 50 price in trader/prices.json: the index-move check is off "
+                        "(alerts.py quote ^NSEI INFY.NS --write)")
     rates = c.get("charges") or {}
     bands = {str(k).upper(): v for k, v in (bands or {}).items()}
     prev_close = {str(k).upper(): _f(v) for k, v in (prev_close or {}).items() if _f(v)}
@@ -788,6 +892,23 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 later.append("cool-off: %d losing trades in a row today (%s), your limit is %d: no new entries "
                              "today" % (streak, ", ".join(("-" if x < 0 else "") + money(abs(x)) for x in closed_today[-streak:]),
                                          cap_s))
+            for label, net, cap_key, since, when in (
+                    ("weekly loss", week_net, "max_weekly_loss_inr", week_from, "next Monday"),
+                    ("monthly loss", month_net, "max_monthly_loss_inr", month_from, "next month")):
+                cap_l = _f(c.get(cap_key))
+                if cap_l and max_loss is not None and max(-net, 0) + max_loss > cap_l + CENT:
+                    later.append("%s: %s realised since %s, plus %s at risk on this one, is over your %s %s "
+                                 "limit: no new entries until %s"
+                                 % (label, ("-" if net < 0 else "+") + money(abs(net)), since, money(max_loss),
+                                    money(cap_l), label.split()[0], when))
+            cap_side = _f(c.get("max_same_side_risk_inr"))
+            if cap_side and max_loss is not None:
+                used_side = side_risk.get(side, 0.0)
+                if used_side + max_loss > cap_side + CENT:
+                    later.append("direction: %s already at risk in open %s today, plus %s = %s, over your %s "
+                                 "same-direction limit: one market move would hit them all"
+                                 % (money(used_side), "longs" if side == "buy" else "shorts", money(max_loss),
+                                    money(used_side + max_loss), money(cap_side)))
             cap_sec = int(c.get("max_entries_per_sector") or 0)
             sec = sectors.get(sym)
             if cap_sec and sec and sector_count.get(sec, 0) >= cap_sec:
@@ -795,8 +916,20 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                              "sector would hit them all" % (sector_count[sec], sec, cap_sec))
             elif sectors and not sec:
                 warns.append("%s is not in trader/sectors.json: its sector is unknown" % sym)
+            if index_reason:
+                later.append(index_reason)
+            for d, what, ekind in events.get("MARKET", []):
+                if ekind == "market" and d == today and c.get("skip_market_event_days"):
+                    later.append("market event: %s today (trader/events.json): the whole market can swing on it, "
+                                 "so no new entries today" % what)
+            for d, what, ekind in events.get(sym, []):
+                if ekind == "ex-date" and d == today and c.get("skip_ex_dates"):
+                    later.append("ex-date: %s goes %s today (trader/events.json): the open drops by it, which "
+                                 "breaks the gap and price-band arithmetic, so no new entries in it today" % (sym, what))
             if c.get("skip_results_days"):
-                for d, what in events.get(sym, []):
+                for d, what, ekind in events.get(sym, []):
+                    if ekind != "results":
+                        continue
                     if d == today:
                         later.append("results: %s has %s today (trader/events.json): the price can gap or swing on "
                                      "the numbers, so no new entries in it today" % (sym, what))
@@ -868,6 +1001,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 if sectors.get(sym):
                     sector_count[sectors[sym]] = sector_count.get(sectors[sym], 0) + 1
                 batch_loss += max_loss or 0.0
+                side_risk[side] = side_risk.get(side, 0.0) + (max_loss or 0.0)
             if side == "buy":
                 if value is not None:
                     acct["cash"] -= value

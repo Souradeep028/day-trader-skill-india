@@ -38,6 +38,7 @@ SCAN = os.path.join(HERE, "scan.py")
 NEWS = os.path.join(SKILLS, "trader-news", "news.py")
 EXPIRY_WEEKDAY = 1        # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
 STALE_DAYS = 7
+SPECIAL_SESSIONS = {"2026-11-08": "Diwali Muhurat trading, a short Sunday session"}   # as in trader-risk
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
           "November", "December")
@@ -97,7 +98,7 @@ def money(x):
 def events_for(doc, symbols, days):
     rows = []
     for e in (doc or {}).get("events", []):
-        if e.get("symbol") in symbols and e.get("date") in days:
+        if (e.get("symbol") in symbols or str(e.get("symbol")).upper() in ("MARKET", "*")) and e.get("date") in days:
             rows.append(e)
     return sorted(rows, key=lambda e: (e["date"], e["symbol"]))
 
@@ -149,11 +150,14 @@ def brief(today, steps, cfg):
     else:
         L.append("The scan did not run: %s" % (s or "no answer"))
     ev = steps.get("events") or []
-    L += ["", "## Results dates"]
+    L += ["", "## Results, ex-dates and market events"]
     if ev:
         for e in ev:
-            L.append("- %s: %s on %s. The risk check blocks new entries in it that day and the next session."
-                     % (e["symbol"], e.get("what") or "results", e["date"]))
+            kind = e.get("kind") or ("market" if str(e["symbol"]).upper() in ("MARKET", "*") else "results")
+            L.append("- %s: %s on %s. %s" % (e["symbol"], e.get("what") or kind, e["date"], {
+                "results": "The risk check blocks new entries in it that day and the next session.",
+                "ex-date": "The risk check blocks new entries in it that day.",
+                "market": "The risk check blocks every new entry that day."}.get(kind, "")))
     else:
         L.append("None on file for these stocks today or next session (trader-analyst: results.py event adds one).")
     n = steps.get("news")
@@ -175,7 +179,11 @@ def brief(today, steps, cfg):
           "- Max loss %s a trade with charges, %s a day, %s trades, charges at most %s %% of the risk."
           % (money(cfg.get("max_loss_per_trade_inr", 500)), money(cfg.get("max_daily_loss_inr", 1500)),
              cfg.get("max_trades_per_day", 3), cfg.get("max_charges_pct_of_risk", 15)),
-          "- Two losing trades in a row ends the day's entries; two entries a sector at most.",
+          "- Two losing trades in a row ends the day's entries; two entries a sector at most; %s at most at risk "
+          "in open trades on one side; %s a week and %s a month of losses stop new entries."
+          % (money(cfg.get("max_same_side_risk_inr", 1000)), money(cfg.get("max_weekly_loss_inr", 3000)),
+             money(cfg.get("max_monthly_loss_inr", 6000))),
+          "- If a trade is open, run ticket.py reconcile after every fill: no position without its stop.",
           "- Paper trading is %s." % ("ON" if cfg.get("paper", True) else "OFF: orders are live"),
           "", "Next: at 9:30, /trader-entry on the setups worth watching. Nothing has been placed. "
               "This is a list to read, not advice."]
@@ -201,8 +209,10 @@ def main(argv=None):
     ok, why = scan.trading_day(today)
     if not ok:
         nxt = next_trading_day(today)
-        print("No NSE session today, %s (%s). The next one is %s." % (long_date(today), why,
-                                                                       long_date(nxt) if nxt else "not in the calendar"))
+        special = SPECIAL_SESSIONS.get(today.isoformat())
+        print("No NSE session today, %s (%s). The next one is %s." % (
+            long_date(today), ("special session: %s; the pack does not trade it" % special) if special else why,
+            long_date(nxt) if nxt else "not in the calendar"))
         return 0
     cfg = read_json(a.config) or {}
     now_arg = ["--now", a.now] if a.now else []

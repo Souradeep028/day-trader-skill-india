@@ -12,7 +12,9 @@ does the arithmetic, exactly, so nothing is rounded twice or compared wrongly.
     python3 results.py show trader/results/INFY.json --metrics trader/metrics.json
     python3 results.py template INFY.NS > trader/results/INFY.json   # an empty file to fill in
     python3 results.py event INFY.NS 2026-10-16 --what "Q2 FY27 results"   # trader-risk skips that day
-    python3 results.py events                                # the results dates from today on
+    python3 results.py event INFY.NS 2026-10-28 --what "ex-dividend 21.50"   # an ex-date: that day only
+    python3 results.py event MARKET 2026-12-04 --what "RBI policy"            # no entries at all that day
+    python3 results.py events                                # the dates from today on
 
 The results dates (trader/events.json) come from the company's board meeting
 notice: the NSE (Corporate Filings, Board Meetings) or BSE announcement that
@@ -47,6 +49,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -316,7 +319,9 @@ def read_events(path):
 
 def cmd_event(a):
     sym = a.symbol.upper()
-    if not sym.endswith(".NS"):
+    if sym in ("MARKET", "*"):
+        sym = "MARKET"
+    elif not sym.endswith(".NS"):
         sym += ".NS"
     try:
         datetime.date.fromisoformat(a.date)
@@ -324,7 +329,11 @@ def cmd_event(a):
         raise ResultsError("the date wants YYYY-MM-DD, not %r" % a.date)
     doc = read_events(a.events)
     doc["events"] = [e for e in doc["events"] if not (e.get("symbol") == sym and e.get("date") == a.date)]
-    doc["events"].append({"symbol": sym, "date": a.date, "what": a.what})
+    kind = a.kind or ("market" if sym == "MARKET" else
+                      "ex-date" if re.search(r"\bex[- ]|dividend|split|bonus|rights|demerger", a.what, re.I) else "results")
+    what = a.what if (a.what != "results" or kind == "results") else {"market": "a market event",
+                                                                       "ex-date": "an ex-date"}[kind]
+    doc["events"].append({"symbol": sym, "date": a.date, "what": what, "kind": kind})
     doc["events"].sort(key=lambda e: (e.get("date", ""), e.get("symbol", "")))
     d = os.path.dirname(a.events)
     if d:
@@ -332,8 +341,10 @@ def cmd_event(a):
     with open(a.events, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
-    print("%s: %s on %s. trader-risk blocks new entries in it that day and the next trading day."
-          % (sym, a.what, a.date))
+    print("%s: %s on %s. %s" % (sym, what, a.date, {
+        "results": "trader-risk blocks new entries in it that day and the next trading day.",
+        "ex-date": "trader-risk blocks new entries in it that day.",
+        "market": "trader-risk blocks every new entry that day."}[kind]))
     return 0
 
 
@@ -361,7 +372,9 @@ def main(argv=None):
     p = sub.add_parser("event", help="record a results date in trader/events.json (trader-risk skips that day)")
     p.add_argument("symbol")
     p.add_argument("date", help="the board meeting date, YYYY-MM-DD")
-    p.add_argument("--what", default="results", help='e.g. "Q2 FY27 results"')
+    p.add_argument("--what", default="results", help='e.g. "Q2 FY27 results", "ex-dividend 21.50", "RBI policy"')
+    p.add_argument("--kind", choices=("results", "ex-date", "market"),
+                   help="default: market for MARKET, ex-date when --what says dividend/split/bonus, else results")
     p.add_argument("--events", default="trader/events.json")
     p = sub.add_parser("events", help="list the results dates from today on")
     p.add_argument("--events", default="trader/events.json")

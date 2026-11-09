@@ -35,6 +35,8 @@ python3 "${CLAUDE_SKILL_DIR}/results.py" show trader/results/INFY.json          
 python3 "${CLAUDE_SKILL_DIR}/results.py" show trader/results/INFY.json --metrics trader/metrics.json
 python3 "${CLAUDE_SKILL_DIR}/results.py" show trader/results/INFY.json --json
 python3 "${CLAUDE_SKILL_DIR}/results.py" event INFY.NS 2026-11-12 --what "Q2 FY27 results"   # trader/events.json
+python3 "${CLAUDE_SKILL_DIR}/results.py" event INFY.NS 2026-10-28 --what "ex-dividend 21.50"     # an ex-date
+python3 "${CLAUDE_SKILL_DIR}/results.py" event MARKET 2026-12-04 --what "RBI policy"             # the whole market
 python3 "${CLAUDE_SKILL_DIR}/results.py" events                                             # dates from today on
 ```
 
@@ -43,6 +45,14 @@ company's NSE or BSE notice, filed days ahead) in `trader/events.json`.
 trader-risk then blocks new entries in that stock on the date and the next
 trading day, since results often come out after the 15:30 close. The
 morning brief (trader-scanner's `morning.py`) lists the ones coming up.
+
+Three kinds, told from the words when `--kind` is not given: **results**
+(blocked that day and the next session), **ex-date** (ex-dividend, split,
+bonus, rights: blocked that day only, since the open drops by it
+mechanically) and **market** (symbol `MARKET`: RBI policy, the Union
+Budget, election results, a big US release; every entry is blocked that
+day). Add the month's RBI and Budget dates and the ex-dates of the stocks
+you trade from the exchange's corporate actions page.
 
 ## Why the figures come from the filing
 

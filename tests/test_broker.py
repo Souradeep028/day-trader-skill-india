@@ -264,6 +264,18 @@ class Flow(FlowBase):
         code, text, _ = self.check_paper("1190.00", "2026-11-05 11:00")
         self.assertIn("No open paper orders", text)
 
+    def test_reconcile_on_paper(self):
+        self.paper_buy()
+        code, text, _ = run(["reconcile", "--paper", "--state", self.state, "--portfolio", self.pf,
+                             "--config", self.cfg, "--now", "2026-11-05 10:00"])
+        self.assertEqual(code, 0, text)
+        self.assertIn("OK       INFY.NS: long 41, stop SL-M 1149.80, target 1181.90", text)
+        self.check_paper("1182.50", "2026-11-05 11:00")
+        code, text, _ = run(["reconcile", "--paper", "--state", self.state, "--portfolio", self.pf,
+                             "--config", self.cfg, "--now", "2026-11-05 11:05"])
+        self.assertEqual(code, 0)
+        self.assertIn("nothing open", text)
+
     def test_the_paper_target_fills_at_its_limit(self):
         self.paper_buy()
         code, text, _ = self.check_paper("1182.50", "2026-11-05 11:00")
@@ -489,6 +501,118 @@ class ShortFlow(FlowBase):
         with open(self.cfg, "w") as fh:
             json.dump(c, fh)
         self.assertEqual(self.run_risk(), 1)                     # trader-risk blocks it
+
+
+class Reconcile(unittest.TestCase):
+    """The broker's view (Kite's get_positions and get_orders shapes) against today's approved entry."""
+    FP = "a8795375" + "0" * 56
+    TAG = "dtsa8795375"
+
+    def state(self, side="buy", qty="41", stop=1149.8):
+        return {"orders": [{"status": "approved", "date": TODAY, "symbol": "INFY.NS", "side": side, "qty": qty,
+                            "kind": "entry", "stop": stop, "fingerprint": self.FP}]}
+
+    def order(self, oid, side, typ, qty, status, trigger=None, price=None, tag=None, filled=0):
+        return {"order_id": oid, "exchange": "NSE", "tradingsymbol": "INFY", "transaction_type": side,
+                "order_type": typ, "quantity": qty, "pending_quantity": 0 if status == "COMPLETE" else qty,
+                "filled_quantity": filled, "status": status, "trigger_price": trigger, "price": price,
+                "tag": tag or self.TAG}
+
+    def run_(self, qty, orders, now="10:30", state=None):
+        pos, book, prod = ticket.kite_book({"net": [{"exchange": "NSE", "tradingsymbol": "INFY", "quantity": qty,
+                                                      "product": "MIS"}] if qty else []}, {"data": orders})
+        return ticket.reconcile(pos, book, state or self.state(), TODAY, now, "15:10", prod)
+
+    def entry(self, oid="1", side="BUY"):
+        return self.order(oid, side, "MARKET", 41, "COMPLETE", filled=41)
+
+    def test_a_protected_long_is_ok(self):
+        r = self.run_(41, [self.entry(), self.order("2", "SELL", "SL-M", 41, "TRIGGER PENDING", trigger=1149.8),
+                           self.order("3", "SELL", "LIMIT", 41, "OPEN", price=1181.9)])
+        self.assertEqual(r["problems"], [])
+        self.assertEqual(r["ok"], ["INFY.NS: long 41, stop SL-M 1149.80, target 1181.90"])
+
+    def test_an_unprotected_position(self):
+        r = self.run_(41, [self.entry(), self.order("2", "SELL", "SL-M", 41, "REJECTED", trigger=1149.8)])
+        pr = r["problems"][0]
+        self.assertEqual(pr["what"], "unprotected: long 41 INFY.NS with no open stop-loss")
+        fix = json.loads(pr["fix"][len("place_order "):])
+        self.assertEqual((fix["transaction_type"], fix["order_type"], fix["quantity"], fix["trigger_price"]),
+                         ("SELL", "SL-M", 41, 1149.8))
+
+    def test_an_orphan_stop_after_the_target_filled(self):
+        # the target sold the 41 shares; the stop is still waiting and would open a short
+        r = self.run_(0, [self.entry(), self.order("3", "SELL", "LIMIT", 41, "COMPLETE", price=1181.9, filled=41),
+                          self.order("2", "SELL", "SL-M", 41, "TRIGGER PENDING", trigger=1149.8)])
+        self.assertEqual(len(r["problems"]), 1)
+        self.assertIn("orphan: SL-M SELL 41 INFY.NS is still open but INFY.NS is flat; if it fills it opens a new "
+                      "short position", r["problems"][0]["what"])
+        self.assertEqual(r["problems"][0]["fix"], "cancel_order 2 (Needs approval)")
+
+    def test_a_double_entry(self):
+        r = self.run_(82, [self.entry("1"), self.entry("4"),
+                           self.order("2", "SELL", "SL-M", 41, "TRIGGER PENDING", trigger=1149.8)])
+        what = [p["what"] for p in r["problems"]]
+        self.assertTrue(any(w.startswith("duplicate: 2 entry orders with tag dtsa8795375 filled (1, 4)") for w in what))
+        self.assertIn("under-protected: the stop covers 41 of 82 shares", what)
+        self.assertIn("INFY.NS: 82 shares held, 41 approved today", r["warnings"])
+
+    def test_a_pending_entry_must_not_be_retried(self):
+        r = self.run_(0, [self.order("1", "BUY", "MARKET", 41, "OPEN PENDING")])
+        self.assertIn("Do NOT place it again", r["warnings"][0])
+
+    def test_a_stop_moved_away(self):
+        r = self.run_(41, [self.entry(), self.order("2", "SELL", "SL-M", 41, "TRIGGER PENDING", trigger=1140.0)])
+        self.assertEqual(r["problems"][0]["what"], "stop moved away: order 2 triggers at 1140.00, the plan's stop "
+                                                   "is 1149.80, so the loss can be bigger than the one you approved")
+        # moved CLOSER to the entry is fine
+        r = self.run_(41, [self.entry(), self.order("2", "SELL", "SL-M", 41, "TRIGGER PENDING", trigger=1155.0)])
+        self.assertEqual(r["problems"], [])
+
+    def test_a_short(self):
+        st = self.state(side="sell", stop=1150.2)
+        ok = self.run_(-41, [self.entry(side="SELL"),
+                             self.order("2", "BUY", "SL-M", 41, "TRIGGER PENDING", trigger=1150.2)], state=st)
+        self.assertEqual(ok["ok"], ["INFY.NS: short 41, stop SL-M 1150.20, no target"])
+        bad = self.run_(-41, [self.entry(side="SELL"),
+                              self.order("2", "BUY", "SL-M", 41, "TRIGGER PENDING", trigger=1160.0)], state=st)
+        self.assertIn("stop moved away", bad["problems"][0]["what"])
+        bad = self.run_(-41, [self.entry(side="SELL"),
+                              self.order("2", "BUY", "SL-M", 82, "TRIGGER PENDING", trigger=1150.2)], state=st)
+        self.assertIn("over-protected: stops for 82 shares on a 41-share position; the extra would open a long",
+                      bad["problems"][0]["what"])
+
+    def test_past_the_flat_by(self):
+        r = self.run_(41, [self.entry(), self.order("2", "SELL", "SL-M", 41, "TRIGGER PENDING", trigger=1149.8)],
+                      now="15:12")
+        self.assertIn("past the flat-by 15:10 with long 41 still open", r["problems"][0]["what"])
+
+    def test_the_cli_live_and_paper(self):
+        d = tempfile.mkdtemp()
+        try:
+            posf, ordf, stf = (os.path.join(d, x) for x in ("pos.json", "ord.json", "state.json"))
+            with open(posf, "w") as fh:
+                json.dump({"data": {"net": [{"exchange": "NSE", "tradingsymbol": "INFY", "quantity": 41,
+                                             "product": "MIS"}]}}, fh)
+            with open(ordf, "w") as fh:
+                json.dump({"data": [self.entry()]}, fh)
+            with open(stf, "w") as fh:
+                json.dump(self.state(), fh)
+            code, text, err = run(["reconcile", "--positions", posf, "--broker-orders", ordf, "--state", stf,
+                                   "--config", os.path.join(d, "none"), "--now", "2026-11-05 10:30"])
+            self.assertEqual(code, 1, err)
+            self.assertIn("PROBLEM  INFY.NS: unprotected: long 41 INFY.NS with no open stop-loss", text)
+            self.assertIn('Fix: place_order {"variety": "regular"', text)
+            code, _, err = run(["reconcile", "--positions", posf, "--state", stf, "--config", os.path.join(d, "none")])
+            self.assertEqual(code, 1)
+            self.assertIn("get_positions and get_orders", err)
+            # paper: an open paper position with its legs is OK; no portfolio at all is nothing open
+            code, text, _ = run(["reconcile", "--paper", "--state", stf, "--portfolio", os.path.join(d, "none"),
+                                 "--config", os.path.join(d, "none"), "--now", "2026-11-05 10:30"])
+            self.assertEqual(code, 0)
+            self.assertIn("nothing open", text)
+        finally:
+            shutil.rmtree(d)
 
 
 class JournalAndTax(unittest.TestCase):

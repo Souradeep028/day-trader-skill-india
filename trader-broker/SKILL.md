@@ -45,6 +45,8 @@ python3 "${CLAUDE_SKILL_DIR}/ticket.py" paper-check --price INFY.NS=1164.90  # p
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 1 --status placed --broker-id ID --filled-qty 41 --filled-price 1160.60
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol INFY.NS --side sell --qty 41 --price 1149.80
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol INFY.NS --qty 41
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" reconcile --paper        # every position has its stop, nothing orphaned
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" reconcile --positions pos.json --broker-orders ord.json   # live
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" log                      # today's decisions and P&L after charges
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" journal --paper          # every closed trade: win rate, R, P&L
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" tax --fy FY27 --csv trader/tax-FY27.csv   # the year, as a worksheet
@@ -126,6 +128,33 @@ measures R from the stop overhead.
   trade. It is a worksheet, not tax advice: intraday equity is speculative
   business income, filed on ITR-3, and its losses only set off against
   speculative income. Check it against the broker's tax P&L and a CA.
+
+## Reconcile: what the broker holds against the plan
+
+Kite has no bracket order for stocks, so the stop and the target are two
+separate orders placed after the entry fills, and nothing links them. That
+leaves gaps a plan cannot see: a stop rejected (say, a trigger beyond the
+price band) leaves the position with no stop; a target that fills leaves its
+stop waiting, and if that stop triggers later it opens the OPPOSITE position;
+a timed-out place_order retried blindly buys twice.
+
+`ticket.py reconcile` checks the broker's own view against today's approved
+entries and prints OK, or a PROBLEM with the exact fix:
+
+- **unprotected**: a position with no open stop-loss (the fix is the Kite
+  place_order call for an SL-M at the plan's stop)
+- **under- or over-protected**: stops for fewer or more shares than held
+- **orphan**: a stop or target still open on a flat symbol (cancel_order)
+- **duplicate**: the same entry (its dts tag) filled twice
+- **stop moved away**: the stop is further from the entry than the plan's
+- **past the flat-by** with an intraday position still open
+- a still-pending entry is a note: do NOT place it again
+
+Live, call Kite's read-only `get_positions` and `get_orders`, save each
+answer as JSON, and pass `--positions` and `--broker-orders`; on paper it
+reads the paper account. Run it after every fill, after every stop or target
+fills, before any retry of an order that timed out, and at the flat-by.
+Exit code 1 means fix something before anything else.
 
 ## Live: Zerodha Kite, self-hosted MCP server
 
@@ -218,6 +247,9 @@ position still open at about 3:20 PM, for 50 rupees plus GST an order: the
    own Allow once.
 
 ## Steps: while it is open, and out by 15:10
+
+0. After the entry fills and the stop and target are in: `ticket.py reconcile`.
+   Again whenever either one fills, and before retrying any order.
 
 - trader-alerts watches the stop, the target and the flat-by time
   (`alerts.py add --from-plan`, then `alerts.py check`).

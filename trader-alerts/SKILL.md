@@ -38,6 +38,7 @@ python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --at 15:10 --label "flat by close" -
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol TCS.NS --pct 3
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" check                          # exit 0 = something rang
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote INFY.NS --write          # -> trader/prices.json
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote INFY.NS ^NSEI --write    # with Nifty 50, for trader-risk's index check
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote --holdings --write       # portfolio + plan symbols
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" list
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" reset infy.ns-plan-stop

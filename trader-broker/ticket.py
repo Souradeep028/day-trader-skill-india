@@ -26,6 +26,12 @@ its work around the one moment that matters, your yes:
   fill        records a fill in trader/portfolio.json (cash, shares, charges).
   flatten     builds a sell ticket that closes a symbol's open position by
               flat_by. It still goes through trader-risk and your yes.
+  reconcile   compares what the broker holds with what should be there: every open
+              position has ONE stop on the closing side for its full qty, no stop or
+              target is left over from a closed trade (it would open the opposite
+              position), no entry filled twice, no stop moved further from the plan,
+              nothing open past the flat-by. Live: the JSON of Kite's get_positions
+              and get_orders; paper: the paper account. Exit 1 with the fix for each.
   log         prints today's decisions and the realised P&L after charges.
   journal     every closed trade (paper, live or both): win rate, average R, P&L
               after charges, the longest run of losses, by day and by stock.
@@ -40,6 +46,8 @@ its work around the one moment that matters, your yes:
     python3 ticket.py result --index 1 --status placed --broker-id 251105000123456
     python3 ticket.py fill --symbol INFY.NS --side buy --qty 41 --price 1160.50
     python3 ticket.py flatten --symbol INFY.NS --qty 41
+    python3 ticket.py reconcile --paper
+    python3 ticket.py reconcile --positions positions.json --broker-orders orders.json
     python3 ticket.py log
 
 Everything is written to trader/state/broker.json (append only). Dates are
@@ -1126,6 +1134,210 @@ def cmd_flatten(a):
     return 0
 
 
+# ---------------------------------------------------------------- reconcile: the broker against the plan
+
+OPEN_STATUSES = {"OPEN", "TRIGGER PENDING", "OPEN PENDING", "MODIFY PENDING", "VALIDATION PENDING",
+                 "PUT ORDER REQ RECEIVED", "AMO REQ RECEIVED", "MODIFY VALIDATION PENDING"}
+STOP_TYPES = {"SL", "SL-M"}
+
+
+def _rows(doc, *keys):
+    """Kite answers as a list, {"data": [...]}, or {"net": [...], "day": [...]} for positions."""
+    if isinstance(doc, list):
+        return doc
+    if not isinstance(doc, dict):
+        return []
+    for k in keys:
+        v = doc.get(k)
+        if isinstance(v, list):
+            return v
+        if isinstance(v, dict):
+            got = _rows(v, *keys)
+            if got:
+                return got
+    return []
+
+
+def kite_book(positions_doc, orders_doc):
+    """Kite's get_positions and get_orders -> ({SYM.NS: qty}, [order dicts], {SYM.NS: product})."""
+    pos, prod = {}, {}
+    for p in _rows(positions_doc, "net", "data"):
+        if str(p.get("exchange", "NSE")).upper() != "NSE":
+            continue
+        q = _f(p.get("quantity"))
+        sym = str(p.get("tradingsymbol", "")).upper() + ".NS"
+        if q:
+            pos[sym] = pos.get(sym, 0) + q
+            prod[sym] = str(p.get("product") or "MIS").upper()
+    orders = []
+    for o in _rows(orders_doc, "data", "orders"):
+        if str(o.get("exchange", "NSE")).upper() != "NSE":
+            continue
+        orders.append({"id": str(o.get("order_id") or o.get("id") or "?"),
+                       "symbol": str(o.get("tradingsymbol", "")).upper() + ".NS",
+                       "side": str(o.get("transaction_type", "")).lower(),
+                       "type": str(o.get("order_type", "")).upper(), "qty": _f(o.get("quantity")) or 0,
+                       "pending": _f(o.get("pending_quantity")) if o.get("pending_quantity") is not None
+                       else _f(o.get("quantity")) or 0,
+                       "status": str(o.get("status", "")).upper(), "trigger": _f(o.get("trigger_price")),
+                       "price": _f(o.get("price")), "tag": str(o.get("tag") or ""),
+                       "filled": _f(o.get("filled_quantity")) or 0})
+    return pos, orders, prod
+
+
+def paper_book(portfolio, state):
+    """The paper account in the same shape: positions from trader/portfolio.json, open stop-losses and
+    targets from the open paper legs, and the paper entries as filled orders."""
+    pos = {}
+    for p in (portfolio or {}).get("positions", []):
+        sym = str(p.get("ticker") or p.get("symbol") or "").upper()
+        q = _f(p.get("shares", p.get("qty")))
+        if sym and q:
+            pos[sym] = pos.get(sym, 0) + q
+    orders = []
+    for i, leg in enumerate((state or {}).get("paper_legs", [])):
+        if leg.get("status") != "open":
+            continue
+        out = "buy" if leg.get("side") == "short" else "sell"
+        tag = "dts" + str(leg.get("fingerprint", ""))[:8]
+        q = _f(leg.get("qty")) or 0
+        if leg.get("stop"):
+            orders.append({"id": "paper-stop-%d" % i, "symbol": leg["symbol"], "side": out, "type": "SL-M",
+                           "qty": q, "pending": q, "status": "TRIGGER PENDING", "trigger": leg["stop"],
+                           "price": None, "tag": tag, "filled": 0})
+        if leg.get("target"):
+            orders.append({"id": "paper-target-%d" % i, "symbol": leg["symbol"], "side": out, "type": "LIMIT",
+                           "qty": q, "pending": q, "status": "OPEN", "trigger": None, "price": leg["target"],
+                           "tag": tag, "filled": 0})
+    return pos, orders, {s: "MIS" for s in pos}
+
+
+def reconcile(pos, orders, state, today, now_ist_hhmm, flat_by="15:10", product=None):
+    """Pure function. Returns {"ok": [...], "problems": [{"symbol", "what", "fix"}], "warnings": [...]}."""
+    product = product or {}
+    plan = {}          # today's approved entries: what the stop and the size should be
+    for r in (state or {}).get("orders", []):
+        if r.get("status") == "approved" and rec_day(r) == today and r.get("kind", "entry") == "entry":
+            plan[str(r.get("symbol", "")).upper()] = {"side": r.get("side"), "stop": _f(r.get("stop")),
+                                                     "qty": _f(r.get("qty")), "tag": "dts" + str(r.get("fingerprint", ""))[:8]}
+    probs, ok, warns = [], [], []
+    syms = sorted(set(pos) | {o["symbol"] for o in orders})
+    for sym in syms:
+        q = pos.get(sym, 0)
+        mine = [o for o in orders if o["symbol"] == sym]
+        live = [o for o in mine if o["status"] in OPEN_STATUSES]
+        closing_side = "sell" if q > 0 else "buy"
+        stops = [o for o in live if o["type"] in STOP_TYPES and o["side"] == closing_side]
+        targets = [o for o in live if o["type"] == "LIMIT" and o["side"] == closing_side]
+        p = plan.get(sym) or {}
+        tag = p.get("tag")
+        if p and tag:
+            filled_entries = [o for o in mine if o["tag"] == tag and o["status"] == "COMPLETE"
+                              and o["side"] == p.get("side") and o["type"] in ("MARKET", "LIMIT")]
+            if len(filled_entries) > 1:
+                probs.append({"symbol": sym, "what": "duplicate: %d entry orders with tag %s filled (%s): the "
+                              "trade was placed twice" % (len(filled_entries), tag,
+                                                          ", ".join(o["id"] for o in filled_entries)),
+                              "fix": "close the extra %s shares now (a closing order through trader-risk and your "
+                                     "yes), then reconcile again" % _str_num(sum(o["filled"] or o["qty"]
+                                                                               for o in filled_entries[1:]))})
+            pending_entries = [o for o in live if o["tag"] == tag and o["side"] == p.get("side")
+                               and o["type"] in ("MARKET", "LIMIT") and not (q and o in targets)]
+            if pending_entries:
+                warns.append("%s: entry order %s is still %s at the broker. Do NOT place it again: wait for it "
+                             "or cancel it" % (sym, pending_entries[0]["id"], pending_entries[0]["status"].lower()))
+        if abs(q) < 1e-9:
+            for o in live:
+                if o["type"] in STOP_TYPES or (o["type"] == "LIMIT" and o["tag"].startswith("dts")
+                                               and not (p and o["side"] == p.get("side"))):
+                    probs.append({"symbol": sym, "what": "orphan: %s %s %s %s is still open but %s is flat; if it "
+                                  "fills it opens a new %s position" % (o["type"], o["side"].upper(),
+                                                                        _str_num(o["pending"]), sym, sym,
+                                                                        "short" if o["side"] == "sell" else "long"),
+                                  "fix": "cancel_order %s (Needs approval)" % o["id"]})
+            continue
+        side_word = "long" if q > 0 else "short"
+        if not stops:
+            want = p.get("stop")
+            probs.append({"symbol": sym, "what": "unprotected: %s %s %s with no open stop-loss" %
+                          (side_word, _str_num(abs(q)), sym),
+                          "fix": ("place_order %s" % json.dumps(kite_call({"symbol": sym, "product": product.get(sym, "MIS")},
+                                                                          closing_side, "stop", abs(q), None, want)))
+                          if want else "place a %s SL-M stop for %s shares at the plan's stop now, or close the "
+                                       "position" % (closing_side.upper(), _str_num(abs(q)))})
+        else:
+            cover = sum(o["pending"] for o in stops)
+            if cover + 1e-9 < abs(q):
+                probs.append({"symbol": sym, "what": "under-protected: the stop covers %s of %s shares"
+                              % (_str_num(cover), _str_num(abs(q))),
+                              "fix": "modify_order %s to qty %s, or add a stop for the rest" % (stops[0]["id"],
+                                                                                       _str_num(abs(q)))})
+            elif cover > abs(q) + 1e-9:
+                probs.append({"symbol": sym, "what": "over-protected: stops for %s shares on a %s-share position; "
+                              "the extra would open a %s position" % (_str_num(cover), _str_num(abs(q)),
+                                                                       "short" if q > 0 else "long"),
+                              "fix": "cancel the extra stop%s: %s" % ("s" if len(stops) > 2 else "",
+                                                                        ", ".join(o["id"] for o in stops[1:]))})
+            want = p.get("stop")
+            for o in stops:
+                trig = o["trigger"]
+                if want and trig and ((q > 0 and trig < want - 0.005) or (q < 0 and trig > want + 0.005)):
+                    probs.append({"symbol": sym, "what": "stop moved away: order %s triggers at %s, the plan's "
+                                  "stop is %s, so the loss can be bigger than the one you approved"
+                                  % (o["id"], _p(trig), _p(want)),
+                                  "fix": "modify_order %s trigger_price %s" % (o["id"], _p(want))})
+        tq = sum(o["pending"] for o in targets)
+        if tq > abs(q) + 1e-9:
+            probs.append({"symbol": sym, "what": "targets for %s shares on a %s-share position" % (_str_num(tq),
+                                                                                                 _str_num(abs(q))),
+                          "fix": "cancel the extra target: %s" % ", ".join(o["id"] for o in targets[1:])})
+        if p.get("qty") and abs(q) > p["qty"] + 1e-9:
+            warns.append("%s: %s shares held, %s approved today" % (sym, _str_num(abs(q)), _str_num(p["qty"])))
+        if product.get(sym, "MIS") == "MIS" and now_ist_hhmm >= (flat_by or "15:10"):
+            probs.append({"symbol": sym, "what": "past the flat-by %s with %s %s still open" % (flat_by, side_word,
+                                                                                         _str_num(abs(q))),
+                          "fix": "ticket.py flatten --symbol %s, then trader-risk and your yes; cancel the stop "
+                                 "and target first" % sym})
+        if not [x for x in probs if x["symbol"] == sym]:
+            ok.append("%s: %s %s, stop %s%s" % (sym, side_word, _str_num(abs(q)),
+                                               ", ".join("%s %s" % (o["type"], _p(o["trigger"])) for o in stops),
+                                               (", target %s" % ", ".join(_p(o["price"]) for o in targets))
+                                               if targets else ", no target"))
+    return {"ok": ok, "problems": probs, "warnings": warns}
+
+
+def cmd_reconcile(a):
+    cfg = read_json(a.config, "config", required=False) or {}
+    now, today = _clock(a)
+    state = load_state(a.state)
+    if a.paper or (not a.positions and cfg.get("paper", True)):
+        pos, orders, prod = paper_book(read_json(a.portfolio, "portfolio", required=False), state)
+        where = "the paper account"
+    else:
+        if not (a.positions and a.broker_orders):
+            raise TicketError("a live reconcile needs the broker's own view: save the JSON of the Kite tools "
+                              "get_positions and get_orders, then --positions FILE --broker-orders FILE")
+        pos, orders, prod = kite_book(read_json(a.positions, "positions"), read_json(a.broker_orders, "orders"))
+        where = "Kite (%s, %s)" % (a.positions, a.broker_orders)
+    res = reconcile(pos, orders, state, today, to_ist(now).strftime("%H:%M"), cfg.get("flat_by") or "15:10", prod)
+    if a.json:
+        print(json.dumps(res, indent=2))
+    else:
+        print("Reconcile against %s at %s IST:" % (where, to_ist(now).strftime("%H:%M")))
+        if not res["ok"] and not res["problems"]:
+            print("  nothing open, no open orders.")
+        for line in res["ok"]:
+            print("  OK       " + line)
+        for pr in res["problems"]:
+            print("  PROBLEM  %s: %s" % (pr["symbol"], pr["what"]))
+            print("           Fix: %s" % pr["fix"])
+        for w in res["warnings"]:
+            print("  Note     " + w)
+        if res["problems"]:
+            print("Fix these first: every change to a live order is a Kite call with its own Allow once card.")
+    return 1 if res["problems"] else 0
+
+
 def cmd_log(a):
     state = load_state(a.state)
     now, today = _clock(a)
@@ -1234,6 +1446,15 @@ def main(argv=None):
     p.add_argument("--include-paper", choices=["no", "yes", "only"], default="no")
     p.add_argument("--csv", metavar="PATH", help="also write one row per trade")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("reconcile", help="the broker against the plan: unprotected positions, orphan orders")
+    p.add_argument("--paper", action="store_true", help="the paper account (the default on a paper config)")
+    p.add_argument("--positions", help="the JSON of Kite's get_positions")
+    p.add_argument("--broker-orders", help="the JSON of Kite's get_orders")
+    p.add_argument("--state", default="trader/state/broker.json")
+    p.add_argument("--portfolio", default="trader/portfolio.json")
+    p.add_argument("--config", default="trader/config.json")
+    p.add_argument("--json", action="store_true")
+    clock(p)
     p = sub.add_parser("log", help="today's decisions")
     p.add_argument("--state", default="trader/state/broker.json")
     clock(p)
@@ -1245,7 +1466,7 @@ def main(argv=None):
     try:
         return {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
                 "paper": cmd_paper, "paper-check": cmd_paper_check,
-                "fill": cmd_fill, "flatten": cmd_flatten, "log": cmd_log, "journal": cmd_journal,
+                "fill": cmd_fill, "flatten": cmd_flatten, "reconcile": cmd_reconcile, "log": cmd_log, "journal": cmd_journal,
                 "tax": cmd_tax}[a.cmd](a)
     except TicketError as e:
         print("ticket.py: %s" % e, file=sys.stderr)
