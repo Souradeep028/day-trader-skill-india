@@ -451,6 +451,7 @@ def evaluate(chart, now_utc, setup="orb", or_minutes=15, interval="5m", level=No
         elif b["et"] <= local:
             res["forming"] = {"bar_start": hm(b["et"]), "closes": ampm(b["end"]), "price": r2(b["c"])}
     res["_bars"] = bars
+    res["tick"] = observed_tick([b[k] for b in bars for k in ("o", "h", "l", "c") if b.get(k) is not None])
     res["bars_closed"] = len(bars)
 
     if local < open_dt:
@@ -536,6 +537,19 @@ def public(res):
     return {k: v for k, v in res.items() if not k.startswith("_")}
 
 
+def observed_tick(prices, min_count=12):
+    """The NSE tick a stock is really trading at, from its own prices: the largest tick every price is
+    a multiple of. NSE sets each stock's tick in a monthly review, so a stock that just crossed 1,000 or
+    5,000 can keep its old, smaller tick for weeks. None with too few prices to tell."""
+    vals = [int(round(float(p) * 100)) for p in prices if p]
+    if len(vals) < min_count:
+        return None
+    for t in (500, 100, 50, 10, 5):
+        if all(v % t == 0 for v in vals):
+            return t / 100.0
+    return 0.01
+
+
 def entry_doc(res, now_utc):
     """trader/entry.json, the contract shape (plus a plain-words reason)."""
     t = res.get("trigger") or {}
@@ -545,7 +559,7 @@ def entry_doc(res, now_utc):
             "bar_index": t.get("bar_index"), "price": t.get("price"), "level": res.get("level"),
             "interval": res["interval"],
             "opening_range": {"high": orr["high"], "low": orr["low"], "minutes": orr["minutes"]} if orr else None,
-            "source": "yahoo", "checked_at": iso(now_utc), "reason": res.get("reason")}
+            "tick": res.get("tick"), "source": "yahoo", "checked_at": iso(now_utc), "reason": res.get("reason")}
 
 
 def write_json(path, doc):

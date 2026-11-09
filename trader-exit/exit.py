@@ -12,8 +12,10 @@ It never places an order.
 
 Prices land on the NSE tick: 0.01 under 250, 0.05 from 250, 0.10 from 1,000,
 0.50 from 5,000, 1.00 from 10,000 and 5.00 from 20,000 (NSE circular CMTR/67133,
-in force since 15 April 2025). NSE reviews each stock's tick every month from
-its price; --tick X sets it by hand.
+in force since 15 April 2025). NSE reviews each stock's tick every month, so a
+stock that just crossed 1,000 or 5,000 can keep its old tick for weeks: the
+plan uses the tick trader-entry saw the stock trade at (entry.json "tick"),
+else --tick X, else the price rule.
 
 Stops (a long's stop rounds DOWN to the tick, away from the entry):
   or-mid     the opening-range midpoint (the default for an orb entry)
@@ -564,7 +566,7 @@ def gather(a):
             raise PlanError("give both --or-high and --or-low, or neither")
         info = {"symbol": a.symbol.upper(), "entry": a.entry, "setup": a.setup or ("orb" if a.or_high is not None else "level"),
                 "date": a.date, "entry_time": a.time, "entry_bar": a.entry_bar, "interval": a.interval or "5m",
-                "or_high": a.or_high, "or_low": a.or_low, "or_minutes": a.or_minutes, "source": "flags"}
+                "or_high": a.or_high, "or_low": a.or_low, "or_minutes": a.or_minutes, "source": "flags", "tick": None}
     else:
         path = a.from_path or "trader/entry.json"
         doc = read_json(path, "entry (run /trader-entry first, or give --symbol and --entry)")
@@ -581,7 +583,7 @@ def gather(a):
                 "interval": a.interval or doc.get("interval") or "5m",
                 "or_high": a.or_high if a.or_high is not None else orr.get("high"),
                 "or_low": a.or_low if a.or_low is not None else orr.get("low"),
-                "or_minutes": orr.get("minutes") or a.or_minutes, "source": path}
+                "or_minutes": orr.get("minutes") or a.or_minutes, "source": path, "tick": doc.get("tick")}
         if not info["symbol"] or info["entry"] is None:
             raise PlanError("%s has no symbol or price" % path)
     if info["interval"] not in INTERVALS:
@@ -618,7 +620,7 @@ def build_plan(a, now_utc):
                             % (info["interval"], info["symbol"], day, len(bars)))
         atr, atr_n = atr_of(bars)
     c = compute(info["entry"], stop_rule, stop_param, target_rule, target_param, info["or_high"], info["or_low"],
-                atr, atr_n, a.tick)
+                atr, atr_n, a.tick or info.get("tick"))
     flat_by, flat_note = resolve_flat_by(day, a.flat_by, cfg, entry_time)
     orr = None
     if info["or_high"] is not None and info["or_low"] is not None:

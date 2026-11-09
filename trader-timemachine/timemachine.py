@@ -42,7 +42,7 @@ How the replays work (the reel's sim.py, same algorithm, same random draws):
   6. History: the plan's own rule (an opening-range breakout with the same
      opening range, stop rule and target R) re-run on every one of those past
      full sessions, first close beyond the range = entry, same stop-first rule.
-     Its stops and targets land on the NSE tick, like trader-exit's.
+     Its stops and targets land on the NSE tick each session really traded at.
 
 Charges: the average R is also shown after charges (Zerodha's equity intraday
 rates on the NSE, see trader-budget) for the size trader-budget would buy:
@@ -487,6 +487,19 @@ def tick_for(price):
     return 5.00
 
 
+def observed_tick(prices, min_count=12):
+    """The NSE tick a stock is really trading at, from its own prices: the largest tick every price is
+    a multiple of. NSE sets each stock's tick in a monthly review, so a stock that just crossed 1,000 or
+    5,000 can keep its old, smaller tick for weeks. None with too few prices to tell."""
+    vals = [int(round(float(p) * 100)) for p in prices if p]
+    if len(vals) < min_count:
+        return None
+    for t in (500, 100, 50, 10, 5):
+        if all(v % t == 0 for v in vals):
+            return t / 100.0
+    return 0.01
+
+
 def tick_away(x, long, tick):
     """A stop on the tick, away from the entry: down for a buy, up for a sell."""
     units = x / tick
@@ -506,10 +519,10 @@ def opening_range(D, n):
     return round(max(b["h"] for b in rows), 2), round(min(b["l"] for b in rows), 2)
 
 
-def rule_stop(rule, oh, ol, entry, long):
+def rule_stop(rule, oh, ol, entry, long, tick=None):
     """The rule's stop for one session, on the NSE tick, the way trader-exit sets it."""
     r = rule["stop_rule"]
-    tick = tick_for(entry)
+    tick = tick or tick_for(entry)
     if r == "or_mid":
         return tick_away((oh + ol) / 2, long, tick)
     if r in ("or_low", "or_high"):
@@ -532,11 +545,12 @@ def history_replay(sessions, rule, last, side="buy"):
         if kk is None:
             continue
         e = round(D[kk]["c"], 2)
-        s = rule_stop(rule, oh, ol, e, long)
+        tk = observed_tick([b[f] for b in D for f in ("o", "h", "l", "c")]) or tick_for(e)
+        s = rule_stop(rule, oh, ol, e, long, tk)
         risk = (e - s) if long else (s - e)
         if risk <= 0:
             continue
-        t = tick_round(e + rule["target_r"] * risk if long else e - rule["target_r"] * risk, tick_for(e))
+        t = tick_round(e + rule["target_r"] * risk if long else e - rule["target_r"] * risk, tk)
         oc = None
         for b in D[kk + 1:last + 1]:
             if (b["l"] <= s) if long else (b["h"] >= s):

@@ -34,7 +34,7 @@ PLAN = {"created_by": "trader-exit", "symbol": "INFY.NS", "side": "buy", "date":
 # replay is checked against a separate implementation in Reel.test_history_matches_an_independent_replay.
 SIM_BANDS = "54267ac677bf2208"
 SIM_PATHS = "6689b32b9f49c76e"
-SIM_TRADES = "ad325d187020960d"
+SIM_TRADES = "01db48fcfd1643fe"
 SIM_HIST = {"lo": 1127.32, "hi": 1185.76,
             "bins": [118, 101, 133, 205, 287, 376, 476, 529, 624, 761, 763, 760, 794, 734, 661, 570, 474, 413,
                      325, 262, 175, 142, 106, 58]}
@@ -84,7 +84,7 @@ def run(argv):
 def replay_by_hand(text, before, last_slot, target_r=2.0):
     """The opening-range rule written out a second way, in exact decimals, straight from the
     raw chart JSON: the 15-minute range to the paisa, the first close above it, the stop at
-    the midpoint rounded down to the NSE tick, the target 2R on the tick (half up), the stop
+    the midpoint rounded down to the tick the stock traded at that day, the target 2R on it, the stop
     checked before the target, else out at the last_slot bar's close."""
     from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
     r = json.loads(text)["chart"]["result"][0]
@@ -96,13 +96,7 @@ def replay_by_hand(text, before, last_slot, target_r=2.0):
         local = ist(t)
         slot = (local.hour * 60 + local.minute - 555) // 5
         days.setdefault(local.date().isoformat(), {})[slot] = tuple(
-            Decimal(repr(q[k][i])).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) for k in ("high", "low", "close"))
-
-    def tick(p):
-        for below, size in ((250, "0.01"), (1000, "0.05"), (5000, "0.10"), (10000, "0.50"), (20000, "1.00")):
-            if p < below:
-                return Decimal(size)
-        return Decimal("5.00")
+            Decimal(repr(q[k][i])).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) for k in ("high", "low", "close", "open"))
 
     sessions = 0
     out = []
@@ -116,7 +110,10 @@ def replay_by_hand(text, before, last_slot, target_r=2.0):
         if k is None:
             continue
         e = bars[k][2]
-        tk = tick(e)
+        # the tick the stock really traded at that day: the largest one every price is a multiple of
+        prices = [x for bar in bars.values() for x in bar]
+        tk = next((Decimal(t) for t in ("5.00", "1.00", "0.50", "0.10", "0.05")
+                   if all(x % Decimal(t) == 0 for x in prices)), Decimal("0.01"))
         s = ((oh + ol) / 2 / tk).to_integral_value(rounding=ROUND_FLOOR) * tk
         t = ((e + Decimal(str(target_r)) * (e - s)) / tk).to_integral_value(rounding=ROUND_HALF_UP) * tk
         o = "close"
