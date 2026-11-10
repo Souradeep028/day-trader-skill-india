@@ -17,6 +17,8 @@ It runs, in order, each skill's own tool (siblings of this folder), and writes o
   5. results        trader/events.json: results dates today or on the next session for the scanned list
   6. the news       news.py --tickers <the top hits> --hours 24, headlines new since the last check
   7. the rules      the day's limits from trader/config.json: entry window, flat-by, max loss, trades
+  0. the pre-flight with a frozen rule in trader/forward.json: trader-broker's preflight.py, GO or NO-GO at
+                    the top of the brief (it also records the day's limits for trader-risk and the autopilot)
 
 The brief goes to trader/morning.md and the terminal. On a day the NSE is closed it says so and stops.
 It places nothing and changes no order: it is the list to read before /trader-entry at 9:30.
@@ -35,6 +37,7 @@ sys.path.insert(0, HERE)
 import scan  # noqa: E402  (this folder's scanner: its calendar and clock)
 
 SCAN = os.path.join(HERE, "scan.py")
+PREFLIGHT = os.path.join(SKILLS, "trader-broker", "preflight.py")
 NEWS = os.path.join(SKILLS, "trader-news", "news.py")
 EXPIRY_WEEKDAY = 1        # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
 STALE_DAYS = 7
@@ -108,6 +111,14 @@ def brief(today, steps, cfg):
     """steps: {"universe": {...}, "surveillance": age, "scan": doc or error, "events": [...], "news": doc or
     error, "expiry": bool, "next": date}. Returns the markdown lines."""
     L = ["# Morning brief: %s" % long_date(today), ""]
+    pf = steps.get("preflight")
+    if isinstance(pf, dict) and not pf.get("closed"):
+        L.append("**Pre-flight: %s.**%s" % ("GO" if pf.get("go") else "NO-GO", "" if pf.get("go") else
+                                            " No new trades today until this is fixed:"))
+        for x in pf.get("checks", []):
+            if not x.get("ok"):
+                L.append("- %s: %s" % (x["check"], x["detail"]))
+        L.append("")
     L.append("The NSE is open 9:15 AM to 3:30 PM IST. Your window: entries %s to %s, flat by %s."
              % (cfg.get("no_entries_before") or "09:30", cfg.get("no_entries_after") or "14:45",
                 cfg.get("flat_by") or "15:10"))
@@ -206,6 +217,9 @@ def main(argv=None):
     ap.add_argument("--universe-offline", metavar="DIR", help="pass to scan.py universe --offline")
     ap.add_argument("--news-offline", metavar="DIR", help="pass to news.py --offline (tests)")
     ap.add_argument("--no-write", action="store_true")
+    ap.add_argument("--forward", default="trader/forward.json", help="with a frozen rule here, the pre-flight runs too")
+    ap.add_argument("--no-preflight", action="store_true")
+    ap.add_argument("--preflight-offline", metavar="DIR", help="pass to preflight.py --offline (tests)")
     a = ap.parse_args(argv)
     now_utc = scan.parse_now(a.now)
     today = scan.to_ist(now_utc).date()
@@ -220,6 +234,15 @@ def main(argv=None):
     cfg = read_json(a.config) or {}
     now_arg = ["--now", a.now] if a.now else []
     steps = {"expiry": expiry_day(today), "next": next_trading_day(today), "stale": []}
+    if os.path.exists(a.forward) and not a.no_preflight:
+        cmd = [PREFLIGHT, "--json", "--forward", a.forward] + now_arg + (["--no-write"] if a.no_write else [])
+        if a.preflight_offline:
+            cmd += ["--offline", a.preflight_offline]
+        code, out, err = run(cmd)
+        try:
+            steps["preflight"] = json.loads(out)
+        except ValueError:
+            steps["preflight"] = None
     if today.month == 12 and today.year + 1 not in scan.CALENDAR_YEARS:
         steps["stale"].append("NSE publishes %d's holidays in December: add them to the pack before 1 January"
                               % (today.year + 1))

@@ -264,8 +264,11 @@ crontab -e                                                  # then add the three
 50 15 * * 1-5     cd ~/trading && python3 /path/to/trader-broker/daily.py >> trader/daily.log 2>&1
 ```
 
-Then, with no input: the morning brief at 8:40, the frozen rule traded on
-paper all day (every risk check applied, stops and targets managed, flat by
+Then, with no input: the morning brief at 8:40 with the pre-flight's GO or
+NO-GO at the top (calendar, config, the frozen rule, the data feed, anything
+left over from yesterday, the loss limits left, market events; it also
+records the day's limits, which hold all day), the frozen rule traded on
+paper all day on a GO only (every risk check applied, stops and targets managed, flat by
 15:10), and the daily report after the close, with the forward test's
 verdict updated for the live lock. Set `"allow_short": true` in
 trader/config.json for a short rule like this one.
@@ -387,7 +390,7 @@ trader-exit/        SKILL.md, exit.py
 trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, sip.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, forward.py, daily.py, autopilot.py, claude_desktop_config.example.json
+trader-broker/      SKILL.md, ticket.py, forward.py, daily.py, autopilot.py, preflight.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py
 trader-pelosi/      SKILL.md, ptr.py

@@ -701,6 +701,23 @@ class Morning(unittest.TestCase):
             self.assertEqual(len(json.load(fh)["hits"]), 31)
         self.assertTrue(os.path.exists("trader/bands.json"))
 
+    def test_the_preflight_at_the_top(self):
+        import subprocess
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.dirname(here)
+        subprocess.run([sys.executable, os.path.join(root, "trader-broker", "forward.py"), "start", "--rule",
+                        "orb30 short tight 2R none", "--expect-r", "0.05", "--file", "trader/forward.json",
+                        "--today", "2026-11-01"], capture_output=True)
+        with open("trader/config.json", "w") as fh:
+            json.dump({"budget": 100000}, fh)
+        code, text, err = self.morning("--now", "2026-11-09 08:30", "--no-news", "--preflight-offline",
+                                       os.path.join(FIX, "trader-timemachine", "edge"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("**Pre-flight: NO-GO.** No new trades today until this is fixed:", text)
+        self.assertIn("- rule: orb30 short tight 2R none is a short and \"allow_short\" is off", text)
+        self.assertTrue(os.path.exists("trader/state/preflight.json"))
+
     def test_a_universe_failure_and_no_lists(self):
         code, text, _ = self.morning("--now", "2026-11-11 08:30", "--universe-offline", "/nowhere", "--no-news")
         self.assertEqual(code, 0)

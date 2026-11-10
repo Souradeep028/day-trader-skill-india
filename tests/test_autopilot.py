@@ -33,7 +33,8 @@ class Autopilot(unittest.TestCase):
         with open(self.wl, "w") as fh:
             fh.write("\n".join(FIVE) + "\n")
         self.p = {k: os.path.join(self.d, k + ".json") for k in ("forward", "state", "portfolio", "config",
-                                                                 "sectors", "events", "surveillance")}
+                                                                 "sectors", "events", "surveillance", "preflight",
+                                                                 "limits-state")}
         with open(self.p["surveillance"], "w") as fh:
             json.dump({"symbols": {}, "updated": DAY}, fh)
 
@@ -69,8 +70,11 @@ class Autopilot(unittest.TestCase):
                     max_daily_loss_inr=0)
         self.start()
         lines = self.whole_day()
-        self.assertEqual(lines[0], "2026-11-05 9:40: BUY 41 INFY.NS at 1160.60, stop 1149.80, target 1182.20 "
-                                   "(paper, autopilot)")
+        # nobody ran the pre-flight this morning, so the first pass (9:20) does, and it says GO
+        self.assertEqual(lines[0], "Pre-flight 2026-11-05 at 09:20 IST: GO")
+        trades = [x for x in lines if x.startswith("2026-11-05 ")]
+        self.assertEqual(trades[0], "2026-11-05 9:40: BUY 41 INFY.NS at 1160.60, stop 1149.80, target 1182.20 "
+                                    "(paper, autopilot)")
         self.assertIn("2026-11-05 15:10: SELL 41 INFY.NS at 1164.80 (flat-by, paper, autopilot)", lines)
         with open(self.p["state"]) as fh:
             mine, still = ticket.round_trips(json.load(fh), DAY, DAY, paper=True)

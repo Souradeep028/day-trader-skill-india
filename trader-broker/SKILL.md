@@ -129,6 +129,29 @@ measures R from the stop overhead.
   business income, filed on ITR-3, and its losses only set off against
   speculative income. Check it against the broker's tax P&L and a CA.
 
+## The pre-flight (preflight.py): GO or NO-GO before the open
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/preflight.py"          # before 9:15; the morning brief runs it too
+```
+
+| check | NO-GO when |
+| --- | --- |
+| calendar | (not a fault) a weekend, an NSE holiday or a special session like Muhurat trading |
+| config | trader/config.json does not read or has no budget; a live account's lock status is reported |
+| rule | no frozen rule in trader/forward.json, a setup edge.py does not know, or a short without `allow_short` |
+| data | Yahoo sends no Nifty 50 bars, or its last session is not the previous trading day |
+| files | trader/state is not writable |
+| leftovers | a position, an open paper stop or target, or an unclosed fill from an earlier day |
+| limits | the week's or the month's loss limit has less left than one trade's max loss |
+| events | a market event today (RBI policy, the Budget) with `skip_market_event_days`, or expiry with `skip_expiry_days` |
+
+The result goes to trader/state/preflight.json and the day's limits to
+trader/state/limits.json (trader-risk's morning snapshot). The autopilot
+takes new trades only on today's GO, runs the pre-flight itself on its first
+pass if nobody did, keeps managing open positions on a NO-GO, and holds the
+morning's limits all day.
+
 ## The paper autopilot (autopilot.py)
 
 Trades the frozen rule on PAPER all day with nobody at the keyboard. Each

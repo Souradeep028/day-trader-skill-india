@@ -5,6 +5,10 @@ Standard library only.
     python3 autopilot.py run --once            # one pass: run it every 5 minutes, 9:20 to 15:20 IST (cron below)
     python3 autopilot.py run --once --now "2026-11-05 10:05" --offline DIR   # a pass at a past moment (the tests)
 
+Before anything: today's pre-flight (preflight.py: GO or NO-GO). On a NO-GO no new trade is taken all day,
+while open positions are still managed; when nobody ran the pre-flight this morning, the first pass runs it.
+The day's limits recorded then hold all day, as trader-risk holds them.
+
 Each pass, on the bars that have CLOSED by now (Yahoo's 5-minute bars):
   1. exits    each open autopilot position: the first closed bar that reaches its stop (first) or its target
               fills it there (a stop that gaps fills at the bar's open, less a tick); at the flat-by bar
@@ -44,6 +48,7 @@ sys.path.insert(0, HERE)
 import ticket  # noqa: E402
 import forward  # noqa: E402
 import check  # noqa: E402
+import preflight  # noqa: E402
 
 edge = forward.edge
 OPEN_MIN = 9 * 60 + 15
@@ -93,6 +98,24 @@ def one_pass(a, now_utc):
     if not cfg.get("paper", True):
         raise AutopilotError("trader/config.json says \"paper\": false. The autopilot trades paper only: a live "
                              "order needs your yes in the chat, one at a time")
+    # today's pre-flight: entries only on a GO; it runs here if nobody ran it this morning
+    paths = preflight.paths_of(a)
+    pre = preflight.todays(paths, today)
+    if pre is None:
+        pre = preflight.run(now_utc, paths, a.offline)
+        out += preflight.lines(pre)
+    go = pre.get("go", False)
+    # the day's limits hold all day: a limit loosened after the morning waits until tomorrow
+    morning = forward.read(a.limits, "the day's limits", required=False)
+    if morning and morning.get("date") == today:
+        eff, held = check.hold_morning_limits(dict(check.DEFAULTS, **check.inr_keys(cfg)), morning.get("limits") or {})
+        cfg = dict(cfg, **eff)
+        if held and (forward.read(a.out, "pre-flight", required=False) or {}).get("held_warned") != today:
+            out += ["%s: %s" % (today, w) for w in held]
+            pre["held_warned"] = today
+            forward.write(a.out, pre)
+    else:
+        morning = None
     test = forward.read(a.forward, "forward test (forward.py start first)")
     rule, need = test["rule"], test["filter"].split("+")
     per_day = (test.get("shadow") or {}).get("per_day", forward.PER_DAY)
@@ -132,7 +155,10 @@ def one_pass(a, now_utc):
     taken_today = {l["symbol"] for l in legs if l.get("auto") and l.get("date") == today}
     blocked_today = {b["symbol"] for b in state.get("autopilot_blocked", []) if b.get("date") == today}
     room = per_day - len(taken_today)
-    if room > 0 and n - 1 <= c["last_entry_slot"] + 1:
+    if not go and room > 0 and not any("NO-GO" in x for x in out):
+        out.append("%s %s: NO-GO this morning (%s): no new trades today; open positions are still managed."
+                   % (today, now_ist.strftime("%H:%M"), "; ".join(pre.get("no_go") or ["see preflight.py"])))
+    if go and room > 0 and n - 1 <= c["last_entry_slot"] + 1:
         cands = []
         for sym, d in sorted(days.items()):
             if sym in taken_today or sym in blocked_today or today not in d:
@@ -154,7 +180,7 @@ def one_pass(a, now_utc):
                               (lambda sd: sd.get("sectors", sd) if isinstance(sd, dict) else {})(
                                   forward.read(a.sectors, "sectors", required=False) or {}),
                               check.load_events(forward.read(a.events, "events", required=False)),
-                              forward.read(a.surveillance, "surveillance", required=False), test, None)
+                              forward.read(a.surveillance, "surveillance", required=False), test, morning)
             r = res["results"][0]
             if r["verdict"] != "PASS":
                 state.setdefault("autopilot_blocked", []).append({"date": today, "symbol": sym, "time": e["time"],
@@ -249,6 +275,8 @@ def main(argv=None):
     p.add_argument("--sectors", default="trader/sectors.json")
     p.add_argument("--events", default="trader/events.json")
     p.add_argument("--surveillance", default="trader/surveillance.json")
+    p.add_argument("--preflight", dest="out", default=preflight.STATE, help="today's pre-flight (preflight.py)")
+    p.add_argument("--limits-state", dest="limits", default=preflight.LIMITS, help="the day's limits (trader-risk)")
     a = ap.parse_args(argv)
     if a.cmd != "run":
         ap.print_help()
