@@ -289,5 +289,81 @@ class Gaps(unittest.TestCase):
         self.assertIn("shadow", v)
 
 
+class Accuracy(unittest.TestCase):
+    """Paper fills as a broker would make them: 1-minute order of events, targets that trade through, gaps,
+    and no entries on stale data."""
+    LEG = {"stop": 99.0, "target": 102.0}
+
+    def test_the_minute_that_came_first_decides(self):
+        bar5 = (100.0, 102.5, 98.5, 100.0, 9)                     # touched both: the 5-minute bar cannot say
+        target_first = {10: (100.0, 101.0, 99.8, 100.9), 11: (100.9, 102.2, 100.8, 102.1),
+                        12: (102.1, 102.1, 98.5, 99.0), 13: (99.0, 99.5, 98.9, 99.2), 14: (99.2, 100.0, 99.1, 100.0)}
+        self.assertEqual(autopilot.exit_in(bar5, 2, target_first, self.LEG, True, 1, 0.05), ("target", 102.0, 11))
+        stop_first = dict(target_first)
+        stop_first[11] = (100.9, 101.0, 98.9, 99.1)
+        self.assertEqual(autopilot.exit_in(bar5, 2, stop_first, self.LEG, True, 1, 0.05), ("stop", 98.95, 11))
+        # without 1-minute bars: the stop, the cautious call
+        self.assertEqual(autopilot.exit_in(bar5, 2, {}, self.LEG, True, 1, 0.05), ("stop", 98.95, None))
+
+    def test_a_target_has_to_trade_through(self):
+        touch = (100.0, 102.0, 99.5, 101.5, 9)                     # reached 102.00, never 102.05
+        self.assertIsNone(autopilot.exit_in(touch, 0, {}, self.LEG, True, 1, 0.05))
+        through = (100.0, 102.05, 99.5, 101.5, 9)
+        self.assertEqual(autopilot.exit_in(through, 0, {}, self.LEG, True, 1, 0.05), ("target", 102.0, None))
+        # a short's target is under it: 98.00, through at 97.95
+        short = {"stop": 101.0, "target": 98.0}
+        self.assertIsNone(autopilot.exit_in((100.0, 100.5, 98.0, 98.5, 9), 0, {}, short, False, 1, 0.05))
+        self.assertEqual(autopilot.exit_in((100.0, 100.5, 97.95, 98.5, 9), 0, {}, short, False, 1, 0.05)[0], "target")
+
+    def test_a_gap_through_the_stop_fills_at_the_minutes_open(self):
+        bar5 = (99.5, 99.8, 97.0, 97.5, 9)
+        mins = {0: (100.0, 100.1, 99.6, 99.7), 1: (98.0, 98.2, 97.0, 97.4), 2: (97.4, 97.8, 97.2, 97.5),
+                3: (97.5, 97.6, 97.3, 97.4), 4: (97.4, 97.6, 97.4, 97.5)}
+        # the 9:15 minute stays over 99, the 9:16 minute opens at 98.00: filled there, a tick worse
+        self.assertEqual(autopilot.exit_in(bar5, 0, mins, self.LEG, True, 1, 0.05), ("stop", 97.95, 1))
+
+    def test_minutes_of_reads_a_one_minute_chart(self):
+        ts = [1793850300 + 60 * k for k in range(3)]                # 9:15, 9:16, 9:17 IST on 5 November
+        q = {"open": [1, 2, 3], "high": [1, 2, 3], "low": [1, 2, 3], "close": [1, 2, 3]}
+        text = json.dumps({"chart": {"result": [{"meta": {}, "timestamp": ts, "indicators": {"quote": [q]}}]}})
+        self.assertEqual(autopilot.minutes_of(text, DAY), {0: (1, 1, 1, 1), 1: (2, 2, 2, 2), 2: (3, 3, 3, 3)})
+
+    def test_no_entries_on_stale_data(self):
+        d = tempfile.mkdtemp()
+        try:
+            wl = os.path.join(d, "infy.txt")
+            with open(wl, "w") as fh:
+                fh.write("INFY.NS\n")
+            p = {k: os.path.join(d, k + ".json") for k in ("forward", "state", "portfolio", "config", "sectors",
+                                                           "events", "surveillance", "preflight", "limits-state",
+                                                           "heartbeat")}
+            with open(p["config"], "w") as fh:
+                json.dump({"budget": 1000000, "max_charges_pct_of_risk": 0}, fh)
+            with open(p["surveillance"], "w") as fh:
+                json.dump({"symbols": {}, "updated": DAY}, fh)
+            quiet(forward.main, ["start", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--file",
+                                 p["forward"], "--today", DAY])
+
+            def stale(sym, rng="60d", interval="5m"):
+                doc = json.loads(autopilot.edge.read_offline(EDGE, sym))
+                doc["chart"]["result"][0]["meta"]["regularMarketTime"] = 1793850300 + 15 * 60   # 9:30, 11 min old
+                return json.dumps(doc)
+            real_fetch, real_sleep = autopilot.edge.fetch, autopilot.edge._sleep
+            autopilot.edge.fetch, autopilot.edge._sleep = stale, (lambda s: None)
+            try:
+                args = ["run", "--once", "--now", "2026-11-05 09:41", "--watchlist", wl,
+                        "--lock", os.path.join(d, "lock")]
+                for k, v in p.items():
+                    args += ["--" + k, v]
+                code, out, err = quiet(autopilot.main, args)
+            finally:
+                autopilot.edge.fetch, autopilot.edge._sleep = real_fetch, real_sleep
+            self.assertEqual(code, 0, err)
+            self.assertIn("WARNING 2026-11-05 09:41: Yahoo's prices are stale for INFY.NS (11 min)", out)
+            self.assertNotIn("BUY", out)
+        finally:
+            shutil.rmtree(d)
+
+
 if __name__ == "__main__":
     unittest.main()

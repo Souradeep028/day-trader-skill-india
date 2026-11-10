@@ -167,6 +167,19 @@ not model switched off, it takes the shadow's three trades to the paisa;
 with the pack's limits, it takes the first and blocks the other two (cash,
 charges).
 
+**How close is paper to real?** What it models: the delay between the bar
+and the order, the price at that moment, a tick of slippage on every market
+order, gaps through the stop, the order of events inside a 5-minute bar, a
+limit that has to trade through, Zerodha's exact charges, and every risk
+check. What free data cannot show: the bid-ask spread and the order book
+(how many shares sit at each price; a one-tick cost is right for Nifty 50
+stocks at this size, not in a thin stock or a fast market), where your limit
+would be in the queue, an SL-M that fills more than a tick past the stop in a
+fast fall, a stock locked at its price band, and orders the broker rejects
+(a stock not allowed for MIS, a freeze quantity). Kite's live quotes would
+close most of these. Paper results are the upper end of what live trading
+gets: read the journal's slippage, and expect a little worse.
+
 It refuses to run with `"paper": false`. A live order always needs the
 user's own yes in the chat, one order at a time, and Kite's Allow once card.
 
@@ -188,6 +201,20 @@ Built to run unattended:
   last trade), a tick worse, not at the signal bar's close; it is sized again
   to the same max loss, skipped if the price already ran past the stop or
   target, and the difference is kept on the position as slippage.
+- **Exits minute by minute**: for a held stock it also reads Yahoo's
+  1-minute bars. When a 5-minute bar reaches the stop or the target, the
+  1-minute bars say which came first. The stop (an SL-M at the broker)
+  fills at the stop, or at the open of the minute that gapped through it,
+  a tick worse. The target (a resting LIMIT) only fills when the price
+  trades THROUGH it by a tick: a bare touch does not fill an order queued
+  behind others. Without 1-minute bars the 5-minute bar decides, stop
+  first.
+- **No trading on stale data**: when Yahoo's last trade is over 3 minutes
+  old during the session, no entry is taken in that stock that pass (a
+  WARNING, counted in the heartbeat); exits still follow the finished bars.
+- **The flat-by at the price then**: the 15:10 close-out is a market
+  order sent by that pass, so it fills at the price when the pass runs, a
+  tick worse.
 - **One pass at a time**: a lock file makes a second pass exit at once
   while a slow one is still running.
 - **No bad prints**: a 5-minute bar 8 % or more away from the bar before,

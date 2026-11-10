@@ -189,8 +189,8 @@ def _sleep(s):
     time.sleep(s)
 
 
-def fetch(sym, rng="60d"):
-    path = "/v8/finance/chart/%s?range=%s&interval=5m" % (urllib.parse.quote(sym, safe=""), rng)
+def fetch(sym, rng="60d", interval="5m"):
+    path = "/v8/finance/chart/%s?range=%s&interval=%s" % (urllib.parse.quote(sym, safe=""), rng, interval)
     last = "no answer"
     for host in HOSTS:
         for attempt in (0, 1):

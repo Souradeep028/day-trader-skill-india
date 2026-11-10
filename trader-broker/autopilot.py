@@ -136,6 +136,67 @@ def live_price(text, days, day, n, offline):
     return bars[k][3] if k is not None else None
 
 
+MAX_LAG = 180       # seconds: Yahoo's last trade older than this while the market is open is stale data
+
+
+def lag_seconds(text, now_utc):
+    """How old Yahoo's last trade is, or None when it does not say."""
+    stamp = chart_meta(text).get("regularMarketTime")
+    if not stamp:
+        return None
+    return (now_utc - datetime.datetime(1970, 1, 1)).total_seconds() - stamp
+
+
+def minutes_of(text, day):
+    """A 1-minute chart -> {minute since 9:15: (o, h, l, c)} for one day."""
+    try:
+        r = json.loads(text)["chart"]["result"][0]
+    except (ValueError, KeyError, TypeError, IndexError):
+        return {}
+    q = ((r.get("indicators") or {}).get("quote") or [{}])[0]
+    out = {}
+    for i, t in enumerate(r.get("timestamp") or []):
+        vals = [(q.get(k) or [None] * (i + 1))[i] if i < len(q.get(k) or []) else None
+                for k in ("open", "high", "low", "close")]
+        if t is None or t % 60 or None in vals:
+            continue
+        local = datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=int(t), hours=5, minutes=30)
+        if local.date().isoformat() != day:
+            continue
+        m = local.hour * 60 + local.minute - OPEN_MIN
+        if 0 <= m < 375:
+            out[m] = tuple(round(v, 2) for v in vals)
+    return out
+
+
+def exit_in(bar5, slot, minutes, leg, long, slip, tick):
+    """Does this 5-minute bar take the position out, and how? With the bar's 1-minute bars, minute by minute:
+    the stop (an SL-M at the broker) fills at the stop, or at the minute's open when it gapped through, a tick
+    worse; the target (a resting LIMIT) only fills when the price trades THROUGH it by a tick, since a touch
+    does not fill a queue that formed before you. Without 1-minute bars, the 5-minute bar decides, stop first.
+    Returns (outcome, price, minute or None) or None."""
+    o5, h5, l5, c5, v5 = bar5
+    stop, target = leg["stop"], leg["target"]
+    through = (target + tick) if long else (target - tick)
+    if not ((l5 <= stop or h5 >= target) if long else (h5 >= stop or l5 <= target)):
+        return None
+    mins = [minutes.get(5 * slot + i) for i in range(5)]
+    if all(m is not None for m in mins):
+        for i, (o, h, l, c) in enumerate(mins):
+            if (l <= stop) if long else (h >= stop):
+                px = edge.tick_down(min(stop, o) - slip * tick, tick) if long else edge.tick_up(max(stop, o) + slip * tick, tick)
+                return "stop", px, 5 * slot + i
+            if (h >= through) if long else (l <= through):
+                return "target", target, 5 * slot + i
+        return None
+    if (l5 <= stop) if long else (h5 >= stop):
+        return "stop", (edge.tick_down(min(stop, o5) - slip * tick, tick) if long
+                        else edge.tick_up(max(stop, o5) + slip * tick, tick)), None
+    if (h5 >= through) if long else (l5 <= through):
+        return "target", target, None
+    return None
+
+
 def side_of(rule):
     return "buy" if rule["side"] == "long" else "sell"
 
@@ -209,6 +270,16 @@ def one_pass(a, now_utc):
                 break
             except edge.EdgeError:
                 continue
+    mins = {}
+    for s_ in sorted({l["symbol"] for l in state.get("paper_legs", []) if l.get("auto") and l.get("status") == "open"}):
+        try:
+            if a.offline_1m:
+                mins[s_] = minutes_of(edge.read_offline(a.offline_1m, s_), today)
+            elif not a.offline:
+                edge._sleep(edge.PAUSE)
+                mins[s_] = minutes_of(edge.fetch(s_, "1d", "1m"), today)
+        except edge.EdgeError:
+            pass
     idx_text = charts.pop(edge.INDEX, None)
     idx_days = edge.sessions_of(idx_text, edge.INDEX) if idx_text else {}
     if today in idx_days:                       # Nifty's unfinished bar is not read either
@@ -242,17 +313,27 @@ def one_pass(a, now_utc):
         out.append("%s %s: NO-GO this morning (%s): no new trades today; open positions are still managed."
                    % (today, now_ist.strftime("%H:%M"), "; ".join(pre.get("no_go") or ["see preflight.py"])))
     if go and room > 0 and n - 1 <= c["last_entry_slot"] + 1:
-        cands = []
+        cands, stale_syms = [], []
         for sym, d in sorted(days.items()):
             if sym in taken_today or sym in blocked_today or today not in d:
                 continue
             n_s = n_of.get(sym, 0)
+            lag = None if a.offline else lag_seconds(charts.get(sym, ""), now_utc)
+            if lag is not None and lag > MAX_LAG and now_ist.time() < datetime.time(15, 30):
+                stale_syms.append("%s (%d min)" % (sym, lag // 60))
+                continue
             sess = [x for x in edge.prepare(d, idx_days, vix_days, c, partial=(today, n_s)) if x["date"] == today]
             if not sess:
                 continue
             e = edge.entry_at(sess[0], rule["setup"], rule["side"], rule["stop"], rule["target_r"], c)
             if e and all(e["filters"].get(x, False) for x in need) and e["slot"] >= n_s - FRESH_BARS:
                 cands.append((e["slot"], sym, e, sess[0]))
+        if stale_syms:
+            msg = "%s %s: Yahoo's prices are stale for %s: no entries in them this pass" % (
+                today, now_ist.strftime("%H:%M"), ", ".join(stale_syms[:5]) + (" and %d more" % (len(stale_syms) - 5)
+                                                                             if len(stale_syms) > 5 else ""))
+            out.append("WARNING " + msg)
+            PROBLEMS.append(msg)
         for slot, sym, e, sess in sorted(cands)[:room]:
             # a market order sent now meets today's price, not the signal bar's close: fill there, a tick worse,
             # sized again to the same max loss, and skipped if the price already ran past the stop or target
@@ -339,12 +420,17 @@ def one_pass(a, now_utc):
         while hit is None and j <= min(last_closed, c["flat_slot"]):
             if j not in bars:
                 break
-            hit = edge.exit_on(bars[j], leg, lg, slip, tick)
+            r = exit_in(bars[j], j, mins.get(sym, {}), leg, lg, slip, tick)
+            hit = (r[0], r[1]) if r else None
             at = j
             leg["checked"] = j
             j += 1
         if hit is None and leg["checked"] >= c["flat_slot"] and c["flat_slot"] in bars:
-            hit, at = ("flat-by", edge.flat_price(bars[c["flat_slot"]], lg, slip, tick)), c["flat_slot"]
+            # the flat-by order is a market order sent by this pass: online it meets the price now
+            px_now = live_price(charts.get(sym, ""), days.get(sym) or {}, leg["date"], n_of.get(sym, 0), a.offline) \
+                if leg["date"] == today else None
+            bar = (px_now,) * 4 + (0,) if px_now and not a.offline else bars[c["flat_slot"]]
+            hit, at = ("flat-by", edge.flat_price(bar, lg, slip, tick)), c["flat_slot"]
         done = [k for k in bars if k <= leg["checked"]]
         if done:
             leg["last_price"] = bars[max(done)][3]
@@ -404,6 +490,7 @@ def main(argv=None):
     p.add_argument("--preflight", dest="out", default=preflight.STATE, help="today's pre-flight (preflight.py)")
     p.add_argument("--limits-state", dest="limits", default=preflight.LIMITS, help="the day's limits (trader-risk)")
     p.add_argument("--heartbeat", help="default: autopilot.json next to the broker log")
+    p.add_argument("--offline-1m", metavar="DIR", help="1-minute charts for held stocks (the tests)")
     p.add_argument("--lock", help="default: autopilot.lock next to the broker log")
     a = ap.parse_args(argv)
     if a.cmd != "run":
