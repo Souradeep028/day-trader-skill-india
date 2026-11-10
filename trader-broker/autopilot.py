@@ -73,6 +73,33 @@ def closed_bars(now_ist):
 
 
 SETTLE = 60         # seconds after a bar's close before its prices count, when Yahoo gives no data time
+SPIKE = 0.08        # a 5-minute bar 8 % or more away from the bar before is a bad print until confirmed
+BACK = 0.02         # ... and is one when the next bar is back within 2 % of the bar before it
+PROBLEMS = []       # this pass's warnings, for the heartbeat
+
+
+def clean_bars(bars, n):
+    """(bars, n) with Yahoo's bad prints taken out of one day's bars {slot: (o, h, l, c, v)}. A bar whose high,
+    low or close is SPIKE or more from the close before it, while the next bar is back within BACK of that
+    close, never happened: it is replaced by a flat bar at the close before, so a stop or an entry cannot
+    come from it. A jump like that on the last finished bar waits a bar for its confirmation (n - 1)."""
+    out = dict(bars)
+    bad = []
+    for k in sorted(out):
+        if k >= n or k - 1 not in out:
+            continue
+        prev = out[k - 1][3]
+        o, h, l, c, v = out[k]
+        far = max(abs(h / prev - 1), abs(l / prev - 1), abs(c / prev - 1)) >= SPIKE
+        if not far:
+            continue
+        if k + 1 < n and k + 1 in out:
+            if abs(out[k + 1][3] / prev - 1) < BACK:
+                out[k] = (prev, prev, prev, prev, 0)
+                bad.append(k)
+        elif k == n - 1:
+            n -= 1                                              # wait for the next bar to confirm it
+    return out, n, bad
 
 
 def chart_meta(text):
@@ -169,16 +196,19 @@ def one_pass(a, now_utc):
     syms = edge.symbols_from(argparse.Namespace(symbols=a.symbols, watchlist=a.watchlist))
     want_vix = "calm_vix" in need
     charts = {}
-    for i, s in enumerate(syms + [edge.INDEX] + ([edge.VIX] if want_vix else [])):
-        try:
-            if a.offline:
-                charts[s] = edge.read_offline(a.offline, s)
-            else:
-                if i:
-                    edge._sleep(edge.PAUSE)
-                charts[s] = edge.fetch(s, "60d" if s == edge.VIX else "5d")
-        except edge.EdgeError:
-            pass
+    held = {l["symbol"] for l in state.get("paper_legs", []) if l.get("auto") and l.get("status") == "open"}
+    for i, s in enumerate(sorted(held - set(syms)) + syms + [edge.INDEX] + ([edge.VIX] if want_vix else [])):
+        for attempt in ((0, 1) if s in held else (0,)):          # a stock we hold gets a second try
+            try:
+                if a.offline:
+                    charts[s] = edge.read_offline(a.offline, s)
+                else:
+                    if i or attempt:
+                        edge._sleep(edge.PAUSE * (1 + 4 * attempt))
+                    charts[s] = edge.fetch(s, "60d" if s == edge.VIX else "5d")
+                break
+            except edge.EdgeError:
+                continue
     idx_text = charts.pop(edge.INDEX, None)
     idx_days = edge.sessions_of(idx_text, edge.INDEX) if idx_text else {}
     if today in idx_days:                       # Nifty's unfinished bar is not read either
@@ -192,6 +222,11 @@ def one_pass(a, now_utc):
             days[s] = edge.sessions_of(t, s)
             all_days |= set(days[s])
             n_of[s] = settled(t, now_utc, n, today)
+            if today in days[s]:
+                days[s][today], n_of[s], bad = clean_bars(days[s][today], n_of[s])
+                for k in bad:
+                    out.append("%s: %s's %d:%02d bar was a bad print (a jump that came straight back): ignored"
+                               % (today, s, *divmod(OPEN_MIN + 5 * k, 60)))
         except edge.EdgeError:
             continue
     c["expiry"] = edge.expiry_dates(all_days)
@@ -310,6 +345,25 @@ def one_pass(a, now_utc):
             j += 1
         if hit is None and leg["checked"] >= c["flat_slot"] and c["flat_slot"] in bars:
             hit, at = ("flat-by", edge.flat_price(bars[c["flat_slot"]], lg, slip, tick)), c["flat_slot"]
+        done = [k for k in bars if k <= leg["checked"]]
+        if done:
+            leg["last_price"] = bars[max(done)][3]
+        if hit is None and leg["date"] == today and (sym not in days or n_of.get(sym, 0) - 1 <= leg["checked"]
+                                                     and not any(k > leg["checked"] for k in bars if k < n)):
+            stale = sym not in days or not bars
+            if stale:
+                leg["missed"] = leg.get("missed", 0) + 1
+                msg = ("%s %s: no data for %s: the open position was NOT checked this pass (%d in a row)"
+                       % (today, now_ist.strftime("%H:%M"), sym, leg["missed"]))
+                out.append("WARNING " + msg)
+                PROBLEMS.append(msg)
+        if hit is None and leg["date"] == today and n > c["flat_slot"] + 1 and (sym not in days or c["flat_slot"]
+                                                                                   not in bars):
+            # past the flat-by with no bars to close on: out at the last price seen, and say so
+            px0 = leg.get("last_price") or leg["entry"]
+            hit, at = ("flat-by, no data: closed at the last price seen", edge.flat_price(
+                (px0, px0, px0, px0, 0), lg, slip, tick)), c["flat_slot"]
+            PROBLEMS.append("%s: %s closed at its last price seen %.2f with no data at the flat-by" % (today, sym, px0))
         if hit is None:
             continue
         why, px = hit
@@ -362,9 +416,10 @@ def main(argv=None):
         return 0
     hb_path = a.heartbeat or os.path.join(os.path.dirname(a.state) or ".", "autopilot.json")
     try:
+        del PROBLEMS[:]
         for line in one_pass(a, now):
             print(line)
-        heartbeat(hb_path, now, None)
+        heartbeat(hb_path, now, None, list(PROBLEMS))
     except (AutopilotError, forward.ForwardError, ticket.TicketError, edge.EdgeError, check.RiskError) as e:
         heartbeat(hb_path, now, str(e))
         print("autopilot.py: %s" % e, file=sys.stderr)
@@ -410,7 +465,7 @@ def release(lock):
         os.close(lock)
 
 
-def heartbeat(path, now_utc, error):
+def heartbeat(path, now_utc, error, warnings=()):
     """Each pass leaves a mark: the day's passes, the last one, the last good one and the day's errors. The daily
     report and the pre-flight read it, so a stopped autopilot does not go unnoticed."""
     ist = check.to_ist(now_utc)
@@ -420,9 +475,11 @@ def heartbeat(path, now_utc, error):
         hb = {"date": day, "passes": 0, "errors": []}
     hb["passes"] = hb.get("passes", 0) + 1
     hb["last_pass"] = ist.strftime("%H:%M")
+    for w in warnings:
+        hb.setdefault("errors", []).append({"at": ist.strftime("%H:%M"), "error": w[:300]})
     if error:
         hb.setdefault("errors", []).append({"at": ist.strftime("%H:%M"), "error": error[:300]})
-    else:
+    elif not warnings:
         hb["last_ok"] = ist.strftime("%H:%M")
     forward.write(path, hb)
 

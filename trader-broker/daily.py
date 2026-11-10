@@ -208,7 +208,7 @@ def tomorrow_part(day, events_doc, surveillance_doc):
     return out
 
 
-def report(day, mk, fw, fw_today, test, tr, core, tm):
+def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None):
     d = datetime.date.fromisoformat(day)
     L = ["# Daily report: %s" % d.strftime("%A %d %B %Y").replace(" 0", " "), "", "## The market"]
     if mk["nifty"]:
@@ -238,6 +238,9 @@ def report(day, mk, fw, fw_today, test, tr, core, tm):
             len(test["shadow"]["sessions"]), fw["trades"], "%+.2f" % fw["avg_R"] if fw["avg_R"] is not None else "n/a",
             fw["total_R"], fw["worst_drawdown_R"]))
         L.append("- " + fw["verdict"])
+    if test is not None and paper is not None:
+        L.append("- Paper trades since the start (the autopilot's and yours): %d, average %s R. %s" % (
+            paper["trades"], "%+.2f" % paper["avg_R"] if paper["avg_R"] is not None else "n/a", paper["verdict"]))
     L += ["", "## Your trading"]
     if tr is None:
         L.append("No trader-broker log here (trader/state/broker.json): run this report where you trade to see "
@@ -327,6 +330,15 @@ def main(argv=None):
                 forward.write(a.forward, test)
         state = ticket.load_state(a.state) if os.path.exists(a.state) else None
         tr = trading_part(state, cfg, day, test) if state else None
+        paper_res = None
+        if test and state:
+            # the paper half of the forward test (the autopilot's trades and your own): recorded every day, so the
+            # live lock does not wait for someone to run forward.py status
+            pts, _ = ticket.round_trips(state, test["started"], day, paper=True, rates=cfg.get("charges"))
+            paper_res = forward.evaluate(test, pts)
+            forward.record(test, "paper", paper_res, day)
+            if not a.no_write:
+                forward.write(a.forward, test)
         hb_line = autopilot_part(forward.read(a.heartbeat, "heartbeat", required=False), day,
                                  cfg.get("flat_by") or "15:10")
         if hb_line:
@@ -341,7 +353,7 @@ def main(argv=None):
                 core = None
         tm = tomorrow_part(day, forward.read(a.events, "events", required=False),
                            forward.read(a.surveillance, "surveillance", required=False))
-        lines = report(day, mk, fw, fw_today, test, tr, core, tm)
+        lines = report(day, mk, fw, fw_today, test, tr, core, tm, paper_res)
     except (DailyError, forward.ForwardError, edge.EdgeError, ticket.TicketError) as e:
         print("daily.py: %s" % e, file=sys.stderr)
         return 1

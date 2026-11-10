@@ -233,5 +233,61 @@ class Hardening(unittest.TestCase):
                             for x in doc["notes"]))
 
 
+class Gaps(unittest.TestCase):
+    """Bad prints, a stock whose data stops coming, and the daily report keeping the paper verdict."""
+    setUp, tearDown, pass_at = Hardening.setUp, Hardening.tearDown, Hardening.pass_at
+
+    def test_bad_prints(self):
+        b = {0: (100.0, 100.5, 99.5, 100.0, 9), 1: (100.0, 100.2, 99.8, 100.1, 9), 2: (100.1, 100.1, 50.0, 52.0, 9),
+             3: (100.2, 100.4, 100.0, 100.3, 9)}
+        clean, n, bad = autopilot.clean_bars(b, 4)
+        self.assertEqual((bad, clean[2], n), ([2], (100.1, 100.1, 100.1, 100.1, 0), 4))   # 50 then back to 100
+        # the same jump on the last finished bar waits for the next one
+        clean, n, bad = autopilot.clean_bars({k: b[k] for k in (0, 1, 2)}, 3)
+        self.assertEqual((bad, n), ([], 2))
+        # a real move stays: the next bar holds the new level
+        real = dict(b)
+        real[3] = (52.0, 53.0, 51.5, 52.5, 9)
+        self.assertEqual(autopilot.clean_bars(real, 4)[2], [])
+
+    def test_a_held_stock_with_no_data(self):
+        self.assertIn("BUY", self.pass_at("09:41")[1])                    # INFY bought on the 9:35 bar
+        blind = os.path.join(self.d, "blind")
+        os.makedirs(blind)
+        for f in os.listdir(EDGE):
+            if not f.startswith("INFY"):
+                shutil.copy(os.path.join(EDGE, f), blind)
+        out = self.pass_at("09:46", offline=blind)[1] + self.pass_at("09:51", offline=blind)[1]
+        self.assertIn("WARNING 2026-11-05 09:46: no data for INFY.NS: the open position was NOT checked this pass "
+                      "(1 in a row)", out)
+        self.assertIn("(2 in a row)", out)
+        with open(self.p["heartbeat"]) as fh:
+            hb = json.load(fh)
+        self.assertEqual(len(hb["errors"]), 2)
+        self.assertNotEqual(hb.get("last_ok"), "09:51")
+        # past the flat-by with still no data: closed at the last price seen, a tick worse, and flagged
+        out = self.pass_at("15:16", offline=blind)[1]
+        self.assertIn("flat-by, no data: closed at the last price seen", out)
+        with open(self.p["state"]) as fh:
+            legs = json.load(fh)["paper_legs"]
+        self.assertEqual(legs[0]["status"], "filled")
+
+    def test_the_daily_report_keeps_the_paper_verdict(self):
+        for t in ("09:41", "15:11"):
+            self.pass_at(t)
+        daily = load("trader-broker", "daily")
+        code, out, err = quiet(daily.main, ["--date", DAY, "--offline", EDGE, "--watchlist", self.wl, "--forward",
+                                            self.p["forward"], "--state", self.p["state"], "--config", self.p["config"],
+                                            "--heartbeat", self.p["heartbeat"], "--out", os.path.join(self.d, "d.md"),
+                                            "--sip", os.path.join(self.d, "none"), "--events", os.path.join(self.d, "none"),
+                                            "--surveillance", self.p["surveillance"]])
+        self.assertEqual(code, 0, err)
+        self.assertIn("- Paper trades since the start (the autopilot's and yours): 1, average", out)
+        with open(self.p["forward"]) as fh:
+            v = json.load(fh)["verdicts"]
+        self.assertEqual((v["paper"]["date"], v["paper"]["trades"]), (DAY, 1))
+        self.assertIn("shadow", v)
+
+
 if __name__ == "__main__":
     unittest.main()

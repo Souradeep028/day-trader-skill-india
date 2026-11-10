@@ -190,6 +190,13 @@ Built to run unattended:
   target, and the difference is kept on the position as slippage.
 - **One pass at a time**: a lock file makes a second pass exit at once
   while a slow one is still running.
+- **No bad prints**: a 5-minute bar 8 % or more away from the bar before,
+  when the next bar is straight back, is replaced by a flat bar (it never
+  traded); a jump like that on the latest bar waits one bar to be confirmed.
+- **No position left blind**: a stock it holds gets a second fetch; while
+  its data is missing every pass logs a WARNING and counts it in the
+  heartbeat, and past the flat-by with still no data the position is closed
+  at the last price seen, and flagged.
 - **A heartbeat**: each pass records itself and any error in
   trader/state/autopilot.json. The daily report says how many passes ran,
   the last one, the failures, and whether it stopped before the flat-by;
@@ -262,6 +269,8 @@ python3 "${CLAUDE_SKILL_DIR}/forward.py" shadow --from 2026-11-10  # every sessi
 ```
 
 Every `status` and `shadow` run writes its verdicts into trader/forward.json,
+and so does the daily report (daily.py), for the shadow AND the paper trades
+(the autopilot's and your own), so the lock never waits for a manual run;
 and trader-risk reads them: a live account can only enter trades when the
 shadow replay AND your paper trades have both PASSED within the last 30 days.
 Then live trades start at 25 % of the max loss, go to 50 % and 100 % after
