@@ -134,5 +134,104 @@ class Autopilot(unittest.TestCase):
         self.assertNotIn("INFY.NS", out)
 
 
+class Hardening(unittest.TestCase):
+    """The fixes for a machine running unattended: unfinished bars, live-price fills, one pass at a time, and a
+    heartbeat the reports read."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.wl = os.path.join(self.d, "infy.txt")
+        with open(self.wl, "w") as fh:
+            fh.write("INFY.NS\n")
+        self.p = {k: os.path.join(self.d, k + ".json") for k in ("forward", "state", "portfolio", "config",
+                                                                 "sectors", "events", "surveillance", "preflight",
+                                                                 "limits-state", "heartbeat")}
+        self.p["lock"] = os.path.join(self.d, "autopilot.lock")
+        with open(self.p["surveillance"], "w") as fh:
+            json.dump({"symbols": {}, "updated": DAY}, fh)
+        with open(self.p["config"], "w") as fh:
+            json.dump({"budget": 1000000, "max_charges_pct_of_risk": 0}, fh)
+        quiet(forward.main, ["start", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--expect-low",
+                             "-0.1", "--file", self.p["forward"], "--today", DAY])
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def pass_at(self, hhmm, offline=EDGE):
+        args = ["run", "--once", "--now", "%s %s" % (DAY, hhmm), "--offline", offline, "--watchlist", self.wl]
+        for k, v in self.p.items():
+            args += ["--" + k, v]
+        return quiet(autopilot.main, args)
+
+    def test_a_bar_yahoo_has_not_finished_does_not_count(self):
+        text = autopilot.edge.read_offline(EDGE, "INFY.NS")
+        doc = json.loads(text)
+        now = autopilot.check.parse_now("2026-11-05 09:40:30")
+        n_clock = autopilot.closed_bars(autopilot.check.to_ist(now))
+        self.assertEqual(n_clock, 5)                                       # 9:15 to 9:35 bars, closed by 9:40
+        self.assertEqual(autopilot.settled(text, now, n_clock, DAY), 5)    # the saved chart runs to 9 November
+        # Yahoo's last trade at 9:39:30: the 9:35 bar (closing 9:40) is still being filled in
+        doc["chart"]["result"][0]["meta"]["regularMarketTime"] = 1793851770     # 9:15 IST is 1793850300
+        self.assertEqual(autopilot.settled(json.dumps(doc), now, n_clock, DAY), 4)
+        # no data time at all: a minute's grace after the close
+        del doc["chart"]["result"][0]["meta"]["regularMarketTime"]
+        self.assertEqual(autopilot.settled(json.dumps(doc), autopilot.check.parse_now("2026-11-05 09:40:30"),
+                                           n_clock, DAY), 4)
+        self.assertEqual(autopilot.settled(json.dumps(doc), autopilot.check.parse_now("2026-11-05 09:41:00"),
+                                           n_clock, DAY), 5)
+
+    def test_a_late_pass_fills_at_the_price_then(self):
+        # the first pass at 9:45: the 9:40 signal is still fresh, but the price has moved from 1160.50 to the
+        # 9:40 bar's close 1164.00: filled there a tick worse, 1164.10, and sized again to the same max loss:
+        # risk 14.30 a share, 32 x 14.30 = 457.60 + 39.30 of charges = 496.90 (33 would be 512.40)
+        code, out, err = self.pass_at("09:45")
+        self.assertEqual(code, 0, err)
+        self.assertIn("BUY 32 INFY.NS at 1164.10, stop 1149.80, target 1182.20 (paper, autopilot; signal 1160.60, "
+                      "the price had moved on)", out)
+        with open(self.p["state"]) as fh:
+            leg = json.load(fh)["paper_legs"][0]
+        self.assertEqual((leg["signal"], leg["entry"], leg["slippage"]), (1160.6, 1164.1, 3.5))
+
+    def test_one_pass_at_a_time(self):
+        import fcntl
+        with open(self.p["lock"], "a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, out, _ = self.pass_at("09:45")
+        self.assertEqual(code, 0)
+        self.assertIn("another autopilot pass is still running: this one is skipped", out)
+        self.assertFalse(os.path.exists(self.p["state"]))                  # it touched nothing
+        self.assertIn("BUY", self.pass_at("09:45")[1])                       # free again
+
+    def test_the_heartbeat(self):
+        self.pass_at("09:40")
+        self.pass_at("09:45")
+        with open(self.p["heartbeat"]) as fh:
+            hb = json.load(fh)
+        self.assertEqual((hb["date"], hb["passes"], hb["last_pass"], hb["errors"]), (DAY, 2, "09:45", []))
+        with open(self.p["config"], "w") as fh:
+            json.dump({"budget": 1000000, "paper": False}, fh)
+        self.assertEqual(self.pass_at("09:50")[0], 1)
+        with open(self.p["heartbeat"]) as fh:
+            hb = json.load(fh)
+        self.assertEqual((hb["passes"], hb["last_ok"], hb["errors"][0]["at"]), (3, "09:45", "09:50"))
+        self.assertIn("paper only", hb["errors"][0]["error"])
+
+    def test_the_reports_read_the_heartbeat(self):
+        daily = load("trader-broker", "daily")
+        stopped = daily.autopilot_part({"date": DAY, "passes": 20, "last_pass": "11:05", "errors": [
+            {"at": "11:05", "error": "Yahoo did not answer"}]}, DAY)
+        self.assertIn("Autopilot: 20 passes, the last at 11:05, 1 failed (the last at 11:05: Yahoo did not answer).",
+                      stopped)
+        self.assertIn("It stopped before the 15:10 flat-by", stopped)
+        self.assertIn("did NOT run today", daily.autopilot_part({"date": "2026-11-04", "passes": 70}, DAY))
+        self.assertIsNone(daily.autopilot_part(None, DAY))
+        pf = load("trader-broker", "preflight")
+        doc = pf.run_checks(autopilot.check.parse_now("2026-11-06 09:00"), {"budget": 100000}, None, None, None,
+                            None, {"symbols": {}, "updated": "2026-11-06"}, autopilot.edge.read_offline(EDGE, "^NSEI"),
+                            self.d, {"date": DAY, "passes": 20, "last_pass": "11:05", "errors": []})
+        self.assertTrue(any("the autopilot's last pass on 2026-11-05 was at 11:05, before the 15:10 flat-by" in x
+                            for x in doc["notes"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51,7 +51,8 @@ STATE = "trader/state/preflight.json"
 LIMITS = "trader/state/limits.json"
 
 
-def run_checks(now_utc, cfg, test, state, portfolio, events_doc, surveillance_doc, index_text, state_dir):
+def run_checks(now_utc, cfg, test, state, portfolio, events_doc, surveillance_doc, index_text, state_dir,
+               heartbeat=None):
     """Pure apart from the writable-folder probe. Returns the document."""
     now_ist = check.to_ist(now_utc)
     d = now_ist.date()
@@ -166,6 +167,14 @@ def run_checks(now_utc, cfg, test, state, portfolio, events_doc, surveillance_do
                       for dd_, w, k in rows if dd_ == today or (k == "results" and dd_ == prev))
         add("events", True, ("stocks off limits today: " + ", ".join(mine)) if mine else "no market event today")
     doc["notes"] += check.staleness(d)
+    if heartbeat and heartbeat.get("date") == prev:
+        flat = c.get("flat_by") or "15:10"
+        if (heartbeat.get("last_pass") or "00:00") < flat:
+            doc["notes"].append("the autopilot's last pass on %s was at %s, before the %s flat-by: check the "
+                                "machine and cron" % (prev, heartbeat.get("last_pass"), flat))
+        if heartbeat.get("errors"):
+            doc["notes"].append("the autopilot had %d failed passes on %s (the last: %s)"
+                                % (len(heartbeat["errors"]), prev, heartbeat["errors"][-1]["error"]))
     if surveillance_doc is None:
         doc["notes"].append("no ASM/GSM lists (trader/surveillance.json): scan.py surveillance")
     elif surveillance_doc.get("updated"):
@@ -203,7 +212,9 @@ def run(now_utc, paths, offline=None, write=True):
         idx = None
     doc = run_checks(now_utc, cfg, test, state, pf, forward.read(paths["events"], "events", required=False),
                      forward.read(paths["surveillance"], "surveillance", required=False), idx,
-                     os.path.dirname(paths["out"]) or ".")
+                     os.path.dirname(paths["out"]) or ".",
+                     forward.read(os.path.join(os.path.dirname(paths["state"]) or ".", "autopilot.json"), "heartbeat",
+                                  required=False))
     if write and not doc["closed"]:
         snap = doc.pop("morning_limits")
         forward.write(paths["out"], doc)

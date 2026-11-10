@@ -26,8 +26,14 @@ Each pass, on the bars that have CLOSED by now (Yahoo's 5-minute bars):
 PAPER ONLY. With "paper": false in trader/config.json it refuses to run: a live order always needs your own
 yes in the chat, one order at a time, and Kite's Allow once card. The autopilot never talks to a broker.
 
-Run it from your trading folder (the one with trader/), every 5 minutes on market days, for example with cron:
-    */5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
+Run it from your trading folder (the one with trader/), every 5 minutes on market days, a minute after each
+bar closes (Yahoo needs a moment to post it), for example with cron, in India time whatever the machine's:
+    CRON_TZ=Asia/Kolkata
+    1-59/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
+A bar only counts once Yahoo's last trade is past its close. Entries fill at the price when the pass runs (a
+tick worse), not the signal bar's close, and the difference is kept as slippage. Passes never overlap (a
+lock file), and each leaves a heartbeat (trader/state/autopilot.json) for the daily report and the
+pre-flight.
 It exits at once outside 9:15 to 15:30 and on NSE holidays. Same prices, same rule and same order of passes
 give the same trades as the shadow replay, except where a risk check blocks one. Not financial advice.
 """
@@ -64,6 +70,43 @@ def closed_bars(now_ist):
     """How many 5-minute bars of today's session have closed by now (the 9:15 bar closes at 9:20)."""
     m = now_ist.hour * 60 + now_ist.minute - OPEN_MIN
     return max(0, min(75, m // 5))
+
+
+SETTLE = 60         # seconds after a bar's close before its prices count, when Yahoo gives no data time
+
+
+def chart_meta(text):
+    try:
+        return json.loads(text)["chart"]["result"][0].get("meta") or {}
+    except (ValueError, KeyError, TypeError, IndexError):
+        return {}
+
+
+def settled(text, now_utc, n_clock, day):
+    """How many of the day's bars are really finished: closed by the clock AND posted by Yahoo (its last trade,
+    meta.regularMarketTime, at or after the bar's close). A bar Yahoo is still filling in has a partial high,
+    low and close, which the backtest never saw."""
+    meta = chart_meta(text)
+    stamp = meta.get("regularMarketTime")
+    now_ts = (now_utc - datetime.datetime(1970, 1, 1)).total_seconds()
+    open_ts = (datetime.datetime.fromisoformat(day + " 09:15") - datetime.timedelta(hours=5, minutes=30)
+               - datetime.datetime(1970, 1, 1)).total_seconds()
+    upto = (stamp if stamp else now_ts - SETTLE)
+    n = 0
+    while n < n_clock and open_ts + 300 * (n + 1) <= min(upto, now_ts):
+        n += 1
+    return n
+
+
+def live_price(text, days, day, n, offline):
+    """The price an order sent now would meet: Yahoo's last trade online; the last finished bar's close offline
+    (a saved chart's last trade is the end of its data, not this moment)."""
+    meta = chart_meta(text)
+    if not offline and meta.get("regularMarketPrice"):
+        return float(meta["regularMarketPrice"])
+    bars = days.get(day) or {}
+    k = max((x for x in bars if x < n), default=None)
+    return bars[k][3] if k is not None else None
 
 
 def side_of(rule):
@@ -136,14 +179,19 @@ def one_pass(a, now_utc):
                 charts[s] = edge.fetch(s, "60d" if s == edge.VIX else "5d")
         except edge.EdgeError:
             pass
-    idx_days = edge.sessions_of(charts.pop(edge.INDEX), edge.INDEX) if edge.INDEX in charts else {}
+    idx_text = charts.pop(edge.INDEX, None)
+    idx_days = edge.sessions_of(idx_text, edge.INDEX) if idx_text else {}
+    if today in idx_days:                       # Nifty's unfinished bar is not read either
+        n_idx = settled(idx_text, now_utc, n, today)
+        idx_days[today] = {k: v for k, v in idx_days[today].items() if k < n_idx}
     vix_days = edge.sessions_of(charts.pop(edge.VIX), edge.VIX) if edge.VIX in charts else {}
     all_days = set(idx_days)
-    days = {}
+    days, n_of = {}, {}
     for s, t in charts.items():
         try:
             days[s] = edge.sessions_of(t, s)
             all_days |= set(days[s])
+            n_of[s] = settled(t, now_utc, n, today)
         except edge.EdgeError:
             continue
     c["expiry"] = edge.expiry_dates(all_days)
@@ -163,13 +211,35 @@ def one_pass(a, now_utc):
         for sym, d in sorted(days.items()):
             if sym in taken_today or sym in blocked_today or today not in d:
                 continue
-            sess = [x for x in edge.prepare(d, idx_days, vix_days, c, partial=(today, n)) if x["date"] == today]
+            n_s = n_of.get(sym, 0)
+            sess = [x for x in edge.prepare(d, idx_days, vix_days, c, partial=(today, n_s)) if x["date"] == today]
             if not sess:
                 continue
             e = edge.entry_at(sess[0], rule["setup"], rule["side"], rule["stop"], rule["target_r"], c)
-            if e and all(e["filters"].get(x, False) for x in need) and e["slot"] >= n - FRESH_BARS:
+            if e and all(e["filters"].get(x, False) for x in need) and e["slot"] >= n_s - FRESH_BARS:
                 cands.append((e["slot"], sym, e, sess[0]))
         for slot, sym, e, sess in sorted(cands)[:room]:
+            # a market order sent now meets today's price, not the signal bar's close: fill there, a tick worse,
+            # sized again to the same max loss, and skipped if the price already ran past the stop or target
+            px = live_price(charts[sym], days[sym], today, n_of.get(sym, 0), a.offline)
+            t_ = sess["tick"]
+            if px is None:
+                continue
+            fill = edge.tick_up(px + slip * t_, t_) if long else edge.tick_down(px - slip * t_, t_)
+            if (fill >= e["target"] or fill <= e["stop"]) if long else (fill <= e["target"] or fill >= e["stop"]):
+                out.append("%s %s: %s signal at %.2f, but the price is %.2f, already past the %s: not chased"
+                           % (today, e["time"], sym, e["entry"], px, "target" if (fill >= e["target"]) == long
+                              else "stop"))
+                state.setdefault("autopilot_blocked", []).append({"date": today, "symbol": sym, "time": e["time"],
+                                                                  "reasons": ["the price ran past"]})
+                continue
+            if abs(fill - e["entry"]) > 0.001:
+                qty = edge.size_for(fill, e["stop"], c["max_loss"], c["max_order"], rates)
+                if qty <= 0:
+                    continue
+                e = dict(e, signal=e["entry"], entry=fill, qty=qty, risk=round(abs(fill - e["stop"]), 2))
+            else:
+                e = dict(e, signal=e["entry"])
             order = {"symbol": sym, "exchange": "NSE", "product": "MIS", "side": side_of(rule),
                      "qty": str(e["qty"]), "type": "market", "time_in_force": "day", "order_class": "bracket",
                      "stop_loss_stop_price": "%.2f" % e["stop"], "take_profit_limit_price": "%.2f" % e["target"],
@@ -202,7 +272,8 @@ def one_pass(a, now_utc):
                                     "qty": str(e["qty"]), "kind": "entry", "max_loss": loss, "stop": e["stop"]})
             leg = {"symbol": sym, "side": "long" if long else "short", "qty": str(e["qty"]), "entry": e["entry"],
                    "stop": e["stop"], "target": e["target"], "date": today, "opened_at": stamp, "fingerprint": fp,
-                   "status": "open", "auto": True, "entry_slot": slot, "checked": slot,
+                   "status": "open", "auto": True, "entry_slot": slot, "checked": slot, "signal": e["signal"],
+                   "slippage": round((e["entry"] - e["signal"]) if long else (e["signal"] - e["entry"]), 2),
                    "stop_entry": e["fill"] is not None, "flat_by": cfg.get("flat_by") or "15:10"}
             legs.append(leg)
             ticket.write_json(a.state, state)
@@ -211,9 +282,10 @@ def one_pass(a, now_utc):
                             note="autopilot entry")
             state = ticket.load_state(a.state)
             legs = state.setdefault("paper_legs", [])
-            out.append("%s %s: %s %s %s at %.2f, stop %.2f, target %.2f (paper, autopilot)"
+            out.append("%s %s: %s %s %s at %.2f, stop %.2f, target %.2f (paper, autopilot%s)"
                        % (today, e["time"], "SELL SHORT" if not long else "BUY", e["qty"], sym, e["entry"],
-                          e["stop"], e["target"]))
+                          e["stop"], e["target"], "" if e["entry"] == e["signal"] else
+                          "; signal %.2f, the price had moved on" % e["signal"]))
 
     # exits: closed bars after each open autopilot position's last check
     for leg in [l for l in legs if l.get("auto") and l.get("status") == "open"]:
@@ -227,7 +299,7 @@ def one_pass(a, now_utc):
             if leg["entry_slot"] in bars:
                 hit = edge.exit_on(bars[leg["entry_slot"]], leg, lg, slip, tick, first=True)
                 at = leg["entry_slot"]
-        last_closed = n - 1 if leg["date"] == today else c["flat_slot"]
+        last_closed = n_of.get(sym, 0) - 1 if leg["date"] == today else c["flat_slot"]
         j = leg["checked"] + 1
         while hit is None and j <= min(last_closed, c["flat_slot"]):
             if j not in bars:
@@ -277,18 +349,82 @@ def main(argv=None):
     p.add_argument("--surveillance", default="trader/surveillance.json")
     p.add_argument("--preflight", dest="out", default=preflight.STATE, help="today's pre-flight (preflight.py)")
     p.add_argument("--limits-state", dest="limits", default=preflight.LIMITS, help="the day's limits (trader-risk)")
+    p.add_argument("--heartbeat", help="default: autopilot.json next to the broker log")
+    p.add_argument("--lock", help="default: autopilot.lock next to the broker log")
     a = ap.parse_args(argv)
     if a.cmd != "run":
         ap.print_help()
         return 1
+    now = check.parse_now(a.now)
+    lock = acquire(a.lock or os.path.join(os.path.dirname(a.state) or ".", "autopilot.lock"))
+    if lock is None:
+        print("%s: another autopilot pass is still running: this one is skipped." % check.to_ist(now).strftime("%H:%M"))
+        return 0
+    hb_path = a.heartbeat or os.path.join(os.path.dirname(a.state) or ".", "autopilot.json")
     try:
-        now = check.parse_now(a.now)
         for line in one_pass(a, now):
             print(line)
+        heartbeat(hb_path, now, None)
     except (AutopilotError, forward.ForwardError, ticket.TicketError, edge.EdgeError, check.RiskError) as e:
+        heartbeat(hb_path, now, str(e))
         print("autopilot.py: %s" % e, file=sys.stderr)
         return 1
+    finally:
+        release(lock)
     return 0
+
+
+def acquire(path):
+    """An exclusive lock, so two passes never run at once (a slow pass could otherwise take the same signal or
+    record the same fill twice). None when another pass holds it. A lock left by a crashed pass expires
+    after 15 minutes where the system has no file locks."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl:
+        fh = open(path, "a+")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            return None
+        return fh
+    try:
+        if os.path.exists(path) and (datetime.datetime.now().timestamp() - os.path.getmtime(path)) > 900:
+            os.remove(path)
+        return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        return None
+
+
+def release(lock):
+    if lock is None:
+        return
+    if hasattr(lock, "close"):
+        lock.close()
+    else:
+        os.close(lock)
+
+
+def heartbeat(path, now_utc, error):
+    """Each pass leaves a mark: the day's passes, the last one, the last good one and the day's errors. The daily
+    report and the pre-flight read it, so a stopped autopilot does not go unnoticed."""
+    ist = check.to_ist(now_utc)
+    day = ist.date().isoformat()
+    hb = forward.read(path, "heartbeat", required=False) or {}
+    if hb.get("date") != day:
+        hb = {"date": day, "passes": 0, "errors": []}
+    hb["passes"] = hb.get("passes", 0) + 1
+    hb["last_pass"] = ist.strftime("%H:%M")
+    if error:
+        hb.setdefault("errors", []).append({"at": ist.strftime("%H:%M"), "error": error[:300]})
+    else:
+        hb["last_ok"] = ist.strftime("%H:%M")
+    forward.write(path, hb)
 
 
 if __name__ == "__main__":

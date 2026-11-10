@@ -100,12 +100,15 @@ def read(path, what, required=True):
 
 
 def write(path, doc):
+    """Written to a temporary file first and moved into place, so a crash mid-write never leaves half a file."""
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
+    os.replace(tmp, path)
 
 
 def evaluate(test, trades):

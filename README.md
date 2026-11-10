@@ -259,10 +259,16 @@ crontab -e                                                  # then add the three
 ```
 
 ```
-40 8 * * 1-5      cd ~/trading && python3 /path/to/trader-scanner/morning.py >> trader/morning.log 2>&1
-*/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
-50 15 * * 1-5     cd ~/trading && python3 /path/to/trader-broker/daily.py >> trader/daily.log 2>&1
+CRON_TZ=Asia/Kolkata
+40 8 * * 1-5         cd ~/trading && python3 /path/to/trader-scanner/morning.py >> trader/morning.log 2>&1
+1-59/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
+50 15 * * 1-5        cd ~/trading && python3 /path/to/trader-broker/daily.py >> trader/daily.log 2>&1
 ```
+
+`CRON_TZ` keeps the times in India time whatever the machine's clock says
+(where your cron does not know `CRON_TZ`, set the machine to IST). The
+autopilot runs a minute after each 5-minute bar closes, so Yahoo has posted
+it; it only counts a bar once Yahoo's last trade is past the bar's close.
 
 Then, with no input: the morning brief at 8:40 with the pre-flight's GO or
 NO-GO at the top (calendar, config, the frozen rule, the data feed, anything

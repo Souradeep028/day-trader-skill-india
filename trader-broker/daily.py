@@ -163,6 +163,23 @@ def trading_part(state, cfg, day, forward_doc):
     return out
 
 
+def autopilot_part(hb, day, flat_by="15:10"):
+    """The autopilot's heartbeat for the day: None when it has never run here."""
+    if not hb:
+        return None
+    if hb.get("date") != day:
+        return "Autopilot: did NOT run today (its last pass was on %s). Check the machine and cron." % hb.get("date")
+    errs = hb.get("errors") or []
+    line = "Autopilot: %d passes, the last at %s%s." % (hb.get("passes", 0), hb.get("last_pass"),
+                                                       (", %d failed (the last at %s: %s)" % (len(errs), errs[-1]["at"],
+                                                                                              errs[-1]["error"]))
+                                                       if errs else "")
+    if (hb.get("last_pass") or "00:00") < flat_by:
+        line += " It stopped before the %s flat-by: open positions were not managed after %s." % (flat_by,
+                                                                                                hb.get("last_pass"))
+    return line
+
+
 def tomorrow_part(day, events_doc, surveillance_doc):
     d = datetime.date.fromisoformat(day)
     nxt = next_session(d)
@@ -245,6 +262,8 @@ def report(day, mk, fw, fw_today, test, tr, core, tm):
             L.append("- " + x + ".")
         if tr["live"]:
             L.append("- " + tr["live"])
+        if tr.get("autopilot"):
+            L.append("- " + tr["autopilot"])
     if core:
         L += ["", "## The core (SIP)",
               "- %s: %s in, worth %s (%s)%s." % (core["fund"], ticket._money(core["invested"]), ticket._money(core["value"]),
@@ -267,6 +286,7 @@ def main(argv=None):
     ap.add_argument("--forward", default="trader/forward.json")
     ap.add_argument("--state", default="trader/state/broker.json")
     ap.add_argument("--config", default="trader/config.json")
+    ap.add_argument("--heartbeat", default="trader/state/autopilot.json", help="the autopilot's heartbeat")
     ap.add_argument("--sip", default="trader/sip.json")
     ap.add_argument("--sip-price", type=float, help="the fund's price (default: Yahoo)")
     ap.add_argument("--events", default="trader/events.json")
@@ -307,6 +327,11 @@ def main(argv=None):
                 forward.write(a.forward, test)
         state = ticket.load_state(a.state) if os.path.exists(a.state) else None
         tr = trading_part(state, cfg, day, test) if state else None
+        hb_line = autopilot_part(forward.read(a.heartbeat, "heartbeat", required=False), day,
+                                 cfg.get("flat_by") or "15:10")
+        if hb_line:
+            tr = tr or {"trades": {}, "open": [], "limits": [], "live": None}
+            tr["autopilot"] = hb_line
         core = None
         sdoc = forward.read(a.sip, "sip", required=False)
         if sdoc and sdoc.get("buys"):

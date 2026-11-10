@@ -170,12 +170,30 @@ charges).
 It refuses to run with `"paper": false`. A live order always needs the
 user's own yes in the chat, one order at a time, and Kite's Allow once card.
 
-Run it every 5 minutes on market days from the trading folder, for example
-with cron (it exits at once outside 9:15 to 15:30 and on holidays):
+Run it every 5 minutes on market days from the trading folder, a minute
+after each bar closes, in India time (it exits at once outside 9:15 to 15:30
+and on holidays):
 
 ```
-*/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
+CRON_TZ=Asia/Kolkata
+1-59/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
 ```
+
+Built to run unattended:
+
+- **Finished bars only**: a bar counts once it has closed by the clock AND
+  Yahoo's last trade is past its close, so a half-posted bar never triggers
+  an entry or a stop the backtest would not have seen.
+- **Real fills**: an entry fills at the price when the pass runs (Yahoo's
+  last trade), a tick worse, not at the signal bar's close; it is sized again
+  to the same max loss, skipped if the price already ran past the stop or
+  target, and the difference is kept on the position as slippage.
+- **One pass at a time**: a lock file makes a second pass exit at once
+  while a slow one is still running.
+- **A heartbeat**: each pass records itself and any error in
+  trader/state/autopilot.json. The daily report says how many passes ran,
+  the last one, the failures, and whether it stopped before the flat-by;
+  the next morning's pre-flight repeats it.
 
 ## The daily report (daily.py)
 
