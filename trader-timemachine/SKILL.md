@@ -13,7 +13,8 @@ description: >-
   previous-day breaks, VWAP pullbacks; long and short; with filters for Nifty,
   volume, gaps, VIX, charges and expiry) after charges and slippage, in two
   halves, with a bootstrap luck test. Its swing report (swing.py) tests 40 multi-day delivery rules on ten
-  years of daily bars against holding the same stocks and Nifty. Use when the user says "run the time
+  years of daily bars against holding the same stocks and Nifty; openclose.py tests 200 open-to-close day
+  trades on ten years of daily bars, and tom.py the turn-of-the-month effect against holding. Use when the user says "run the time
   machine", "replay this trade", "what are the odds", "simulate this trade",
   "monte carlo", "backtest this setup", "how often does this hit the target",
   "is this a coin flip", "does any setup make money", "run the edge report", or after /trader-exit writes a plan, before
@@ -280,6 +281,74 @@ but at p 0.03 against a bar of 0.00125 that is within luck. The best rule
 by average R made about 7.6 % a year after tax with 5 positions; holding
 Nifty 50 made 10.6 % a year. Say so plainly: on this evidence an index fund
 beat every rule tested, intraday or swing.
+
+## The open-to-close report: day trades on ten years of daily bars
+
+A day trade that goes in at the open, has a fixed stop and nothing else,
+and is out at the close needs nothing a daily bar does not hold: the day's
+low (high, short) says whether the stop was hit, and otherwise it ends at
+the close. So `openclose.py` tests such rules on ten years of free daily
+bars, about 40 times the sessions `edge.py` has:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/openclose.py" run --watchlist trader/nifty50.txt             # 10 y daily + 60 d 5-minute
+python3 "${CLAUDE_SKILL_DIR}/openclose.py" run --watchlist trader/nifty50.txt --auction   # entries in the pre-open auction
+```
+
+- **200 rules**: fade or follow a gap of 1 % or 2 % up or down at the open,
+  with a 1 % or 2 % stop or half or one ATR, alone or with Nifty's own gap or
+  its 200-day trend; and every stock every day, long and short, as the
+  baselines a gap rule must beat (they carry the same survivorship bias).
+- **Sized and charged** as edge.py: ₹500 max loss with charges, ₹75,000 at
+  most, a tick of slippage each way, intraday charges.
+- **The data check**: NSE's official open is the pre-open auction price and
+  its official close the average of 3:00 to 3:30, neither of which a trade
+  entered at 9:15 and out by 3:10 gets. On the 60 days the 5-minute bars
+  overlap, it measures both gaps separately for gap-up, gap-down and flat
+  days and charges them against every trade. `--auction` drops the open's
+  for someone who really enters in the 9:00 to 9:08 auction. It also re-runs
+  the leading rules on those 60 days from the 5-minute bars, next to the
+  daily version, so the method's own error is on the page.
+- **To pass**: both halves, 60 % of the years, a month bootstrap under
+  0.05 / 200, and beating the same side's every-day baseline.
+
+**What it found** on the Nifty 50, December 2016 to November 2026. On gap
+days the auction price is further out than the first trade: 0.14 % above it
+on gap-up days, 0.06 % below on gap-down days. Entering at the first trade,
+**nothing passed**; 19 rules made money in both halves and most years, the
+best fading a 2 % gap up when Nifty opened down (+0.51 R a trade over 185
+trades, p 0.018 against 0.00025). Entering in the auction, one passed:
+short a stock that opened 2 % or more up, a 1 % stop, out at the close,
++0.28 R a trade over 2,275 trades (p 0.000007), but only +0.11 R in the last
+third of the years, 2025 below zero, and -0.28 R on the last 60 days with
+real 5-minute exits. The edge sits in the auction price itself, and it has
+faded. A lead for a forward test that can place pre-open orders, not an edge.
+
+## The turn-of-the-month report
+
+Indian studies find most of the Nifty's return comes on the last days of one
+month and the first of the next. `tom.py` tests holding NIFTYBEES only then,
+cash the rest of the time, against holding it:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/tom.py" run                       # Yahoo, 10 years of NIFTYBEES
+python3 "${CLAUDE_SKILL_DIR}/tom.py" run --cash-rate 5.75      # the rest of the time in a liquid fund
+```
+
+The rule is the literature's (Lakonishok and Smidt), fixed before the test:
+the last session and the first 3, bought and sold at the close with 0.05 %
+slippage, ETF delivery charges (STT 0.001 % on the sale, stamp duty, a DP
+charge each month), 20 % short-term tax each year against 12.5 % long-term
+on holding. A grid of 25 windows shows whether the answer hangs on the
+exact days.
+
+**What it found**, December 2016 to November 2026: the effect is real
+(+0.11 % a day inside the windows against +0.04 % outside) but it does not
+pay. ₹1 lakh became ₹1.31 lakh after tax (+2.8 % a year, 19 % of the time
+in the market) against ₹3.26 lakh holding (+12.6 %); with the cash in a
+liquid fund at 5.75 %, +6.3 % a year against +12.2 %. None of the 25 windows
+beat holding. It falls less (a worst fall of 20 % against 36 %), which is
+not a reason on its own. Keep the SIP.
 
 ## The factor rotation report: momentum and low volatility
 

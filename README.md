@@ -157,6 +157,8 @@ python3 trader-timemachine/timemachine.py run --write                  # 10,000 
 python3 trader-timemachine/edge.py run --watchlist trader/nifty50.txt  # which rules made money after charges
 python3 trader-timemachine/swing.py run --watchlist trader/nifty50.txt # multi-day rules on 10 years of data
 python3 trader-timemachine/rotation.py run --watchlist trader/nifty100.txt   # momentum and low-vol, vs real funds
+python3 trader-timemachine/openclose.py run --watchlist trader/nifty50.txt   # day trades on 10 years of daily bars
+python3 trader-timemachine/tom.py run                                  # the turn of the month vs holding the index
 python3 trader-budget/sip.py status                                    # the index-fund core, XIRR, trading beside it
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
@@ -225,6 +227,21 @@ Nifty 50 daily bars with `swing.py`: 40 rules, delivery charges, against
 simply holding the same stocks. Nothing passed. The best made about 7.6 % a
 year after tax with 5 positions; holding Nifty 50 made 10.6 % a year. On
 this evidence an index fund beat every rule tested, intraday or swing.
+
+**Day trades on ten years of data.** A trade that goes in at the open with a
+fixed stop and is out at the close can be tested exactly on daily bars, so
+`openclose.py` runs 200 such rules (fading or following gaps, with Nifty
+filters) on ten years of the Nifty 50, charging the measured gap between
+NSE's official open and close and the prices a 9:15-to-3:10 trade gets.
+Entering at the first trade after 9:15, nothing passed. Entering in the
+pre-open auction, one did (short a 2 % gap-up, 1 % stop: +0.28 R a trade over
+2,275 trades), but it made only +0.11 R in the last third of the years and
+lost on the last 60 days: a lead for a forward test that can place pre-open
+orders, not an edge.
+
+**The turn of the month** (holding NIFTYBEES only over each month's last and
+first sessions, `tom.py`) is a real effect that does not pay: ₹1 lakh became
+₹1.31 lakh after tax and charges in ten years, against ₹3.26 lakh holding.
 
 **Factor portfolios** (momentum and low volatility, rebalanced monthly on the
 Nifty 100) look spectacular in a backtest, and `rotation.py` shows why not to
