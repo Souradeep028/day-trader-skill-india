@@ -129,6 +129,31 @@ measures R from the stop overhead.
   business income, filed on ITR-3, and its losses only set off against
   speculative income. Check it against the broker's tax P&L and a CA.
 
+## The paper autopilot (autopilot.py)
+
+Trades the frozen rule on PAPER all day with nobody at the keyboard. Each
+pass, on the bars that have closed: open autopilot positions are checked
+against their stop (first) and target, and closed at the 15:10 flat-by;
+fresh signals of the rule (the last closed bar or the one before) are sized
+exactly as the shadow test sizes them, run through every trader-risk check,
+and filled on paper when they pass. The approvals (reply "autopilot
+(paper)"), fills and charges go into the broker log and the paper portfolio,
+so the journal, the daily report and the forward test's PAPER verdict use
+them. On the 5 November 2026 data, with the account limits the shadow does
+not model switched off, it takes the shadow's three trades to the paisa;
+with the pack's limits, it takes the first and blocks the other two (cash,
+charges).
+
+It refuses to run with `"paper": false`. A live order always needs the
+user's own yes in the chat, one order at a time, and Kite's Allow once card.
+
+Run it every 5 minutes on market days from the trading folder, for example
+with cron (it exits at once outside 9:15 to 15:30 and on holidays):
+
+```
+*/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
+```
+
 ## The daily report (daily.py)
 
 One page after the close, every trading day:

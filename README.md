@@ -248,6 +248,40 @@ cap, weekly and monthly losses, drawdown sizing, same-direction cap,
 charges, big-Nifty-day halt, results days, ex-dates, market events,
 surveillance) are there for the days it does not work.
 
+## Hands off: what runs by itself
+
+Set it up once, in your trading folder:
+
+```bash
+python3 trader-broker/forward.py start --rule "orb30 short tight 2R low_cost+with_nifty" \
+    --expect-r 0.076 --expect-low -0.145                    # freeze the one rule to prove
+crontab -e                                                  # then add the three lines below
+```
+
+```
+40 8 * * 1-5      cd ~/trading && python3 /path/to/trader-scanner/morning.py >> trader/morning.log 2>&1
+*/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
+50 15 * * 1-5     cd ~/trading && python3 /path/to/trader-broker/daily.py >> trader/daily.log 2>&1
+```
+
+Then, with no input: the morning brief at 8:40, the frozen rule traded on
+paper all day (every risk check applied, stops and targets managed, flat by
+15:10), and the daily report after the close, with the forward test's
+verdict updated for the live lock. Set `"allow_short": true` in
+trader/config.json for a short rule like this one.
+
+What still needs you, and how often:
+
+- **Each live order, if it ever comes to that:** your yes in the chat, one
+  order at a time. Never automated: a real-money order is your decision.
+- **Weekly (5 minutes):** NSE's ASM and GSM lists, saved from the browser
+  (`scan.py surveillance`). NSE's site turns scripts away.
+- **Monthly (5 minutes):** the RBI policy date and the results and dividend
+  dates of the stocks you trade (`results.py event`); the SIP purchase, or
+  set up the broker's own ETF SIP and record it.
+- **Yearly, each December:** next year's NSE holidays, and a look at the
+  charges; the risk check and the reports remind you.
+
 ## How it keeps intraday losses small
 
 Nothing can promise no losing trades. What the pack does is make losing real
@@ -353,7 +387,7 @@ trader-exit/        SKILL.md, exit.py
 trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, sip.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, forward.py, daily.py, claude_desktop_config.example.json
+trader-broker/      SKILL.md, ticket.py, forward.py, daily.py, autopilot.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py
 trader-pelosi/      SKILL.md, ptr.py

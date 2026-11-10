@@ -189,8 +189,8 @@ def _sleep(s):
     time.sleep(s)
 
 
-def fetch(sym):
-    path = "/v8/finance/chart/%s?range=60d&interval=5m" % urllib.parse.quote(sym, safe="")
+def fetch(sym, rng="60d"):
+    path = "/v8/finance/chart/%s?range=%s&interval=5m" % (urllib.parse.quote(sym, safe=""), rng)
     last = "no answer"
     for host in HOSTS:
         for attempt in (0, 1):
@@ -296,9 +296,10 @@ def context(index_days, vix_days, day, prev_day=None):
     return nifty, n_open, calm
 
 
-def prepare(days, index_days, vix_days, cfg):
+def prepare(days, index_days, vix_days, cfg, partial=None):
     """One stock's sessions, ready for every rule: the bars to the flat-by, the tick it traded at, VWAP,
-    the previous session's high, low and close, Nifty's bars, India VIX's mood and the expiry flag."""
+    the previous session's high, low and close, Nifty's bars, India VIX's mood and the expiry flag.
+    partial (date, n): that session is still going, with its first n bars closed; it is kept with those."""
     last = cfg["flat_slot"]
     keep = cfg.get("dates")
     expiry = cfg.get("expiry") or set()
@@ -306,9 +307,14 @@ def prepare(days, index_days, vix_days, cfg):
     out = []
     for di, d in enumerate(dates):
         bars = days[d]
-        if (keep is not None and d not in keep) or not all(k in bars for k in range(last + 1)):
+        if keep is not None and d not in keep:
             continue
-        B = [bars[k] for k in range(last + 1)]
+        n_bars = partial[1] if partial and d == partial[0] else last + 1
+        if n_bars <= 0 or not all(k in bars for k in range(n_bars)):
+            continue
+        B = [bars[k] for k in range(n_bars)]
+        if partial and d == partial[0]:
+            bars = {k: bars[k] for k in range(n_bars)}
         prev = days[dates[di - 1]] if di else None
         vw, pv, v = [], 0.0, 0.0
         for o, h, l, c, vol in B:
@@ -328,7 +334,8 @@ def prepare(days, index_days, vix_days, cfg):
 def trigger(s, setup, long, cfg):
     """(entry bar, tight stop, wide stop, fill) for one session, or None. Prices are raw; the trade rounds
     them. fill is None for a close entry (the bar's close); a stop entry fills inside the bar."""
-    B, first, last_entry = s["bars"], cfg["first_slot"], cfg["last_entry_slot"]
+    B, first = s["bars"], cfg["first_slot"]
+    last_entry = min(cfg["last_entry_slot"], len(B) - 1)           # an unfinished session: its closed bars only
     if setup in ("orb15s", "orb30s"):
         # a buy-stop resting a tick over the range high (a sell-stop a tick under the low) from the first bar
         # that STARTS inside the entry window: it fills the moment the price gets there, or at the open of a
@@ -371,6 +378,82 @@ def trigger(s, setup, long, cfg):
     return k, B[k][1], max(b[1] for b in B[:k + 1]), None
 
 
+def entry_at(s, setup, side, stop_rule, target_r, cfg):
+    """The rule's entry in one (possibly unfinished) session: {slot, fill, entry, stop, target, risk, qty, time,
+    cost_pct, filters}, or None. Uses only the bars up to the entry: what a trader knew at that moment.
+    trades_for() replays the exit on the rest of the day; trader-broker's autopilot uses it live."""
+    long = side == "long"
+    slip = cfg["slippage_ticks"]
+    got = trigger(s, setup, long, cfg)
+    if got is None:
+        return None
+    k, tight, wide, fill = got
+    B, t = s["bars"], s["tick"]
+    px = B[k][3] if fill is None else fill
+    raw = tight if stop_rule == "tight" else wide
+    if long:
+        entry, stop = tick_up(px + slip * t, t), tick_down(raw, t)
+        risk = round(entry - stop, 2)
+    else:
+        entry, stop = tick_down(px - slip * t, t), tick_up(raw, t)
+        risk = round(stop - entry, 2)
+    if risk <= 0 or risk < entry * MIN_RISK_PCT / 100.0:
+        return None
+    target = tick_round(entry + target_r * risk if long else entry - target_r * risk, t)
+    if target <= 0:
+        return None
+    qty = size_for(entry, stop, cfg["max_loss"], cfg["max_order"], cfg.get("charges"))
+    if qty <= 0:
+        return None
+    sign = 1 if long else -1
+    at_stop = round_trip(qty, *((entry, stop) if long else (stop, entry)), rates=cfg.get("charges"))
+    # the filters see only what was known at the entry: the entry bar's close for a close entry, the bar
+    # before it for a stop entry (which fills inside its bar)
+    fk = k if fill is None else k - 1
+    close = B[fk][3]
+    n_at = s["nifty"].get(fk, (None,) * 4)[3] if s["nifty"] else None
+    n_open, s_open = s["n_open"], B[0][0]
+    prior = [b[4] for b in B[:fk]]
+    avg_v = sum(prior) / float(len(prior)) if prior else 0
+    cost_pct = round(100.0 * at_stop / (qty * risk), 2)
+    at_min = OPEN_MIN + 5 * (k + 1 if fill is None else k)
+    filt = {
+        "none": True,
+        "with_nifty": bool(n_open and n_at and (n_at > n_open if long else n_at < n_open)),
+        "stronger": bool(n_open and n_at and sign * ((close / s_open - 1) - (n_at / n_open - 1)) > 0),
+        "volume": bool(avg_v and B[fk][4] >= avg_v),
+        "no_gap": bool(s["prev_close"] and abs(s_open / s["prev_close"] - 1) * 100 < GAP_PCT),
+        "calm_vix": bool(s["calm"]),
+        "low_cost": cost_pct <= cfg["max_cost_pct"],
+        "not_expiry": not s["expiry"],
+        "not_10_to_11": not 600 <= at_min < 660,
+    }
+    return {"slot": k, "fill": fill, "entry": entry, "stop": stop, "target": target, "risk": risk, "qty": qty,
+            "time": "%d:%02d" % divmod(at_min, 60), "cost_pct": cost_pct, "filters": filt}
+
+
+def exit_on(bar, e, long, slip, tick, first=False):
+    """(outcome, price) if this bar takes the trade out, else None: the stop first in a bar that touches both.
+    first: the entry bar of a stop entry, where only the stop counts (the order inside the bar is unknown)."""
+    o, h, l, c, v = bar
+    stop, target = e["stop"], e["target"]
+    if first:
+        if (l <= stop) if long else (h >= stop):
+            return "stop", tick_down(stop - slip * tick, tick) if long else tick_up(stop + slip * tick, tick)
+        return None
+    if long and l <= stop:
+        return "stop", tick_down(min(stop, o) - slip * tick, tick)
+    if not long and h >= stop:
+        return "stop", tick_up(max(stop, o) + slip * tick, tick)
+    if (h >= target) if long else (l <= target):
+        return "target", target
+    return None
+
+
+def flat_price(bar, long, slip, tick):
+    return tick_down(bar[3] - slip * tick, tick) if long else tick_up(bar[3] + slip * tick, tick)
+
+
 def trades_for(sym, sessions, setup, side, stop_rule, target_r, cfg):
     """Every trade one rule takes on one stock's prepared sessions: [{date, time, side, entry, stop,
     target, exit, outcome, qty, charges, pnl, R_gross, R, cost_pct, filters: {name: bool}}]."""
@@ -378,77 +461,27 @@ def trades_for(sym, sessions, setup, side, stop_rule, target_r, cfg):
     last, slip = cfg["flat_slot"], cfg["slippage_ticks"]
     out = []
     for s in sessions:
-        got = trigger(s, setup, long, cfg)
-        if got is None:
+        e = entry_at(s, setup, side, stop_rule, target_r, cfg)
+        if e is None:
             continue
-        k, tight, wide, fill = got
-        B, t = s["bars"], s["tick"]
-        px = B[k][3] if fill is None else fill
-        raw = tight if stop_rule == "tight" else wide
-        if long:
-            entry, stop = tick_up(px + slip * t, t), tick_down(raw, t)
-            risk = round(entry - stop, 2)
-        else:
-            entry, stop = tick_down(px - slip * t, t), tick_up(raw, t)
-            risk = round(stop - entry, 2)
-        if risk <= 0 or risk < entry * MIN_RISK_PCT / 100.0:
-            continue
-        target = tick_round(entry + target_r * risk if long else entry - target_r * risk, t)
-        if target <= 0:
-            continue
-        qty = size_for(entry, stop, cfg["max_loss"], cfg["max_order"], cfg.get("charges"))
-        if qty <= 0:
-            continue
-        outcome, exit_px = "close", None
-        if fill is not None and ((B[k][2] <= stop) if long else (B[k][1] >= stop)):
-            # the entry bar reached the stop too, and 5-minute bars cannot say which came first: count the loss
-            outcome, exit_px = "stop", tick_down(stop - slip * t, t) if long else tick_up(stop + slip * t, t)
-        for j in range(k + 1, last + 1):
-            if exit_px is not None:
-                break
-            o, h, l, c, v = B[j]
-            if long and l <= stop:
-                outcome, exit_px = "stop", tick_down(min(stop, o) - slip * t, t)
-            elif not long and h >= stop:
-                outcome, exit_px = "stop", tick_up(max(stop, o) + slip * t, t)
-            elif (h >= target) if long else (l <= target):
-                outcome, exit_px = "target", target
-            if exit_px is not None:
-                break
-        if exit_px is None:
-            exit_px = tick_down(B[last][3] - slip * t, t) if long else tick_up(B[last][3] + slip * t, t)
+        B, t, k = s["bars"], s["tick"], e["slot"]
+        hit = exit_on(B[k], e, long, slip, t, first=True) if e["fill"] is not None else None
+        j = k + 1
+        while hit is None and j <= last:
+            hit = exit_on(B[j], e, long, slip, t)
+            j += 1
+        outcome, exit_px = hit if hit else ("close", flat_price(B[last], long, slip, t))
         exit_px = max(exit_px, 0.01)
         sign = 1 if long else -1
+        entry, qty, risk = e["entry"], e["qty"], e["risk"]
         buy, sell = (entry, exit_px) if long else (exit_px, entry)
         charges = round_trip(qty, buy, sell, cfg.get("charges"))
         pnl = round(sign * qty * (exit_px - entry) - charges, 2)
-        at_stop = round_trip(qty, *((entry, stop) if long else (stop, entry)), rates=cfg.get("charges"))
-        # the filters see only what was known at the entry: the entry bar's close for a close entry, the bar
-        # before it for a stop entry (which fills inside its bar)
-        fk = k if fill is None else k - 1
-        close = B[fk][3]
-        n_at = s["nifty"].get(fk, (None,) * 4)[3] if s["nifty"] else None
-        n_open, s_open = s["n_open"], B[0][0]
-        prior = [b[4] for b in B[:fk]]
-        avg_v = sum(prior) / float(len(prior)) if prior else 0
-        cost_pct = round(100.0 * at_stop / (qty * risk), 2)
-        at_min = OPEN_MIN + 5 * (k + 1 if fill is None else k)
-        filt = {
-            "none": True,
-            "with_nifty": bool(n_open and n_at and (n_at > n_open if long else n_at < n_open)),
-            "stronger": bool(n_open and n_at and sign * ((close / s_open - 1) - (n_at / n_open - 1)) > 0),
-            "volume": bool(avg_v and B[fk][4] >= avg_v),
-            "no_gap": bool(s["prev_close"] and abs(s_open / s["prev_close"] - 1) * 100 < GAP_PCT),
-            "calm_vix": bool(s["calm"]),
-            "low_cost": cost_pct <= cfg["max_cost_pct"],
-            "not_expiry": not s["expiry"],
-            "not_10_to_11": not 600 <= at_min < 660,
-        }
-        out.append({"symbol": sym, "date": s["date"], "time": "%d:%02d" % divmod(at_min, 60),
-                    "slot": k, "side": side, "entry": entry, "stop": stop, "target": target, "exit": exit_px,
-                    "outcome": outcome, "qty": qty, "risk": risk, "charges": charges, "pnl": pnl,
-                    "cost_pct": cost_pct, "R_gross": round(sign * (exit_px - entry) / risk, 4),
-                    "R": round(pnl / (qty * risk), 4), "filters": filt})
+        out.append({"symbol": sym, "date": s["date"], "time": e["time"], "slot": k, "side": side, "entry": entry,
+                    "stop": e["stop"], "target": e["target"], "exit": exit_px, "outcome": outcome, "qty": qty,
+                    "risk": risk, "charges": charges, "pnl": pnl, "cost_pct": e["cost_pct"],
+                    "R_gross": round(sign * (exit_px - entry) / risk, 4), "R": round(pnl / (qty * risk), 4),
+                    "filters": e["filters"]})
     return out
 
 
