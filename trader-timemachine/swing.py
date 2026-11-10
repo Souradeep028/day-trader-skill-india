@@ -549,7 +549,7 @@ def main(argv=None):
             except SwingError as e:
                 fails[s] = str(e)
         idx = charts.pop(INDEX, None)
-        today = a.today or (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).date().isoformat()
+        today = a.today or (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(hours=5, minutes=30)).date().isoformat()
         doc = swing_report(charts, idx, {"risk": a.risk, "capital": a.capital, "positions": a.positions,
                                          "tax_pct": a.tax_pct}, today)
         doc["failed"].update({k: v for k, v in fails.items() if k != INDEX})

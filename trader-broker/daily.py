@@ -275,7 +275,7 @@ def main(argv=None):
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args(argv)
     try:
-        day = a.date or (datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)).date().isoformat()
+        day = a.date or (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(hours=5, minutes=30)).date().isoformat()
         d = datetime.date.fromisoformat(day)
         ok, why = check.trading_day(d)
         if not ok:
