@@ -241,6 +241,16 @@ def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None):
     if test is not None and paper is not None:
         L.append("- Paper trades since the start (the autopilot's and yours): %d, average %s R. %s" % (
             paper["trades"], "%+.2f" % paper["avg_R"] if paper["avg_R"] is not None else "n/a", paper["verdict"]))
+        sl = paper.get("slippage")
+        if sl:
+            L.append("- Entry slippage: %+.2f a share, %+.3f R a trade on average (%s over %d trades): what acting a "
+                     "little after the signal costs." % (sl["per_share"], sl["R"], ticket._money(sl["rupees"]),
+                                                         sl["trades"]))
+        m = paper.get("matched") or {}
+        if fw and fw.get("avg_R") is not None and paper.get("avg_R") is not None:
+            L.append("- Execution gap: paper %+.2f R a trade against the shadow's %+.2f R (%+.2f)%s." % (
+                paper["avg_R"], fw["avg_R"], paper["avg_R"] - fw["avg_R"],
+                ("; on the %d trades both took, %+.3f R a trade" % (m["trades"], m["gap_R"])) if m.get("trades") else ""))
     L += ["", "## Your trading"]
     if tr is None:
         L.append("No trader-broker log here (trader/state/broker.json): run this report where you trade to see "
@@ -336,6 +346,13 @@ def main(argv=None):
             # live lock does not wait for someone to run forward.py status
             pts, _ = ticket.round_trips(state, test["started"], day, paper=True, rates=cfg.get("charges"))
             paper_res = forward.evaluate(test, pts)
+            paper_res["slippage"] = ticket.entry_slippage(state, pts)
+            sh_trades = {(t["date"], t["symbol"]): t for d_ in (test.get("shadow") or {}).get("sessions", {}).values()
+                         for t in d_}
+            pairs = [(t["R"], sh_trades[(t["date"], t["symbol"])]["R"]) for t in pts
+                     if t.get("R") is not None and (t["date"], t["symbol"]) in sh_trades]
+            paper_res["matched"] = {"trades": len(pairs), "gap_R": round(sum(p_ - s_ for p_, s_ in pairs) / len(pairs), 3)
+                                    if pairs else None}
             forward.record(test, "paper", paper_res, day)
             if not a.no_write:
                 forward.write(a.forward, test)

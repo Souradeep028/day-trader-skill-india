@@ -676,6 +676,24 @@ def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
     return trades, still_open
 
 
+def entry_slippage(state, trades):
+    """The autopilot's entry slippage on these round trips: how much worse each fill was than its signal, from
+    the paper positions it recorded. {"trades", "per_share", "R", "rupees"} or None when there is none.
+    R is the slippage over the risk a share at the signal (signal to stop): what the delay cost in R."""
+    keys = {(t["date"], t["symbol"]) for t in trades}
+    got = []
+    for leg in (state or {}).get("paper_legs", []):
+        if leg.get("auto") and (leg.get("date"), leg.get("symbol")) in keys and leg.get("signal") is not None:
+            risk = abs(float(leg["signal"]) - float(leg["stop"]))
+            sl = float(leg.get("slippage") or 0)
+            got.append((sl, sl / risk if risk else 0.0, sl * float(leg.get("qty") or 0)))
+    if not got:
+        return None
+    n = len(got)
+    return {"trades": n, "per_share": round(sum(g[0] for g in got) / n, 2), "R": round(sum(g[1] for g in got) / n, 3),
+            "rupees": round(sum(g[2] for g in got), 2)}
+
+
 def journal_summary(trades):
     if not trades:
         return {"trades": 0}
@@ -708,7 +726,8 @@ def cmd_journal(a):
     trades, still_open = round_trips(state, a.date_from, a.date_to, paper, cfg.get("charges"))
     s = journal_summary(trades)
     if a.json:
-        print(json.dumps({"summary": s, "trades": trades, "open": still_open}, indent=2))
+        print(json.dumps({"summary": s, "trades": trades, "open": still_open,
+                          "entry_slippage": entry_slippage(state, trades)}, indent=2))
         return 0 if trades else 1
     if not trades:
         print("No closed trades%s in %s." % (" in that range" if a.date_from or a.date_to else "", a.state))
@@ -726,6 +745,11 @@ def cmd_journal(a):
         ("%+.2f" % s["avg_R"]) if s["avg_R"] is not None else "n/a (no stop recorded)"))
     print("Best %s, worst %s, longest run of losing trades %d." % (_signed(s["best"]), _signed(s["worst"]),
                                                                   s["longest_losing_streak"]))
+    slip = entry_slippage(state, trades)
+    if slip:
+        print("Entry slippage (the autopilot's fills against their signals): %+.2f a share, %+.3f R a trade on "
+              "average, %s over %d trade%s." % (slip["per_share"], slip["R"], _money(slip["rupees"]), slip["trades"],
+                                                "" if slip["trades"] == 1 else "s"))
     for o in still_open:
         print("Still open: %s %s on %s (not counted)." % (_str_num(o["qty"]), o["symbol"], o["date"]))
     if s["trades"] < 30:

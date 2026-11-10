@@ -118,6 +118,10 @@ measures R from the stop overhead.
   win rate, net P&L, average R, best and worst trade and the longest run of
   losses. `--paper` or `--live` keeps them apart, `--from` and `--to` pick
   dates. Under 30 trades it says the sample is too small to judge.
+- For the autopilot's paper trades it also prints the entry slippage: how
+  far each fill was from its signal price, on average per share and in R,
+  and in rupees in all (in `--json` as `entry_slippage`). That is the cost of
+  acting a little after the signal, and a live account pays at least that.
 - Review it every week. Go live only if the paper journal holds up over a
   month or two, and stop and look again whenever the losing runs get longer.
 - `ticket.py tax --fy FY27` covers India's financial year (April 2026 to
@@ -178,7 +182,8 @@ would be in the queue, an SL-M that fills more than a tick past the stop in a
 fast fall, a stock locked at its price band, and orders the broker rejects
 (a stock not allowed for MIS, a freeze quantity). Kite's live quotes would
 close most of these. Paper results are the upper end of what live trading
-gets: read the journal's slippage, and expect a little worse.
+gets: read the journal's slippage and the daily report's execution gap,
+and expect a little worse.
 
 It refuses to run with `"paper": false`. A live order always needs the
 user's own yes in the chat, one order at a time, and Kite's Allow once card.
@@ -242,7 +247,11 @@ python3 "${CLAUDE_SKILL_DIR}/daily.py" --date 2026-11-11 --no-write
    watchlist rose and fell, the biggest movers.
 2. **Forward test**: the frozen rule's shadow trades for the day (and any
    session since the start not yet replayed), the running totals and the
-   verdict, saved to trader/forward.json for the live lock.
+   verdict, saved to trader/forward.json for the live lock. Under the
+   paper verdict: the entry slippage (per share, in R and in rupees), and
+   the execution gap: the paper trades' average R against the shadow's, and
+   on the trades both took, how much the paper fills gave up. A gap that
+   grows means the backtest's fills are too kind.
 3. **Your trading**: the day's round trips, paper and live apart, P&L after
    charges and R, any position still open after the close (it should not
    be), the losing streak, the week's and month's realised P&L against their

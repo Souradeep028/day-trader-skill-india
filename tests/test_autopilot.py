@@ -365,5 +365,34 @@ class Accuracy(unittest.TestCase):
             shutil.rmtree(d)
 
 
+class Reporting(unittest.TestCase):
+    """The late 9:45 fill (1164.10 against the 1160.60 signal, 32 shares) in the journal and the daily report."""
+    setUp, tearDown, pass_at = Hardening.setUp, Hardening.tearDown, Hardening.pass_at
+
+    def test_slippage_and_the_execution_gap(self):
+        self.pass_at("09:45")
+        self.pass_at("15:11")
+        with open(self.p["state"]) as fh:
+            st = json.load(fh)
+        trades, _ = ticket.round_trips(st, DAY, DAY, paper=True)
+        # 3.50 a share worse than the signal; the risk at the signal was 1160.60 - 1149.80 = 10.80: 0.324 R;
+        # 32 shares x 3.50 = 112
+        self.assertEqual(ticket.entry_slippage(st, trades), {"trades": 1, "per_share": 3.5, "R": 0.324, "rupees": 112.0})
+        code, out, _ = quiet(ticket.main, ["journal", "--paper", "--state", self.p["state"], "--config", self.p["config"]])
+        self.assertIn("Entry slippage (the autopilot's fills against their signals): +3.50 a share, +0.324 R a trade "
+                      "on average, ₹112 over 1 trade.", out)
+        daily = load("trader-broker", "daily")
+        code, out, err = quiet(daily.main, ["--date", DAY, "--offline", EDGE, "--watchlist", self.wl, "--forward",
+                                            self.p["forward"], "--state", self.p["state"], "--config", self.p["config"],
+                                            "--heartbeat", self.p["heartbeat"], "--out", os.path.join(self.d, "d.md"),
+                                            "--sip", os.path.join(self.d, "none"), "--events",
+                                            os.path.join(self.d, "none"), "--surveillance", self.p["surveillance"]])
+        self.assertEqual(code, 0, err)
+        self.assertIn("- Entry slippage: +3.50 a share, +0.324 R a trade on average (₹112 over 1 trades)", out)
+        # the shadow took the same INFY trade at 1160.60: the paper one, five minutes later, gave some of it back
+        self.assertIn("- Execution gap: paper ", out)
+        self.assertIn("on the 1 trades both took", out)
+
+
 if __name__ == "__main__":
     unittest.main()
