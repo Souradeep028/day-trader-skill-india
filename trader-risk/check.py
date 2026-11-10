@@ -273,17 +273,29 @@ def _shift(t, hours):
     return dt.time()
 
 
+def calendar_unknown(d):
+    """Why a new entry on day d is refused for want of a holiday list, or None. Fails closed: a day in a year
+    the pack has no NSE holiday list for may be a holiday that the weekday test calls a session."""
+    if d.year in CALENDAR_YEARS:
+        return None
+    return ("the NSE holiday list covers %s only, so %s may be a holiday: no new entries until %d's list is "
+            "added (nseindia.com, Resources, Exchange communication, Holidays: copy it into NSE_HOLIDAYS in "
+            "trader-alerts, trader-entry, trader-exit, trader-risk and trader-scanner, and %d into CALENDAR_YEARS)"
+            % (" and ".join(map(str, CALENDAR_YEARS)), d.isoformat(), d.year, d.year))
+
+
 def window_check(now_ist, c):
-    """Reasons an entry cannot be placed now (IST time). Empty when the window is off."""
+    """Reasons an entry cannot be placed now (IST time). Empty when the window is off, except a day the
+    holiday list does not cover, which is refused either way."""
+    d, t = now_ist.date(), now_ist.time().replace(second=0, microsecond=0)
+    unknown = calendar_unknown(d)
+    if unknown:
+        return ["window: " + unknown], []
     before = hhmm(c.get("no_entries_before"), "no_entries_before")
     after = hhmm(c.get("no_entries_after"), "no_entries_after")
     if before is None and after is None:
         return [], []
     warns = []
-    d, t = now_ist.date(), now_ist.time().replace(second=0, microsecond=0)
-    if d.year not in CALENDAR_YEARS:
-        warns.append("the holiday list covers %s only: check nseindia.com for %s"
-                     % (" and ".join(map(str, CALENDAR_YEARS)), d.isoformat()))
     ok, why = trading_day(d)
     stamp = now_ist.strftime("%a %Y-%m-%d %H:%M")
     if not ok:

@@ -73,7 +73,11 @@ def run_checks(now_utc, cfg, test, state, portfolio, events_doc, surveillance_do
         doc["checks"].append({"check": "calendar", "ok": False,
                               "detail": ("a special session (%s): not traded" % special) if special else why})
         return doc
-    add("calendar", True, "NSE session 9:15 to 15:30" + (", Nifty's weekly expiry" if check.expiry_day(d) else ""))
+    unknown = check.calendar_unknown(d)
+    if unknown:
+        add("calendar", False, unknown)
+    else:
+        add("calendar", True, "NSE session 9:15 to 15:30" + (", Nifty's weekly expiry" if check.expiry_day(d) else ""))
     c = dict(check.DEFAULTS)
     c.update(check.inr_keys(cfg or {}))
     if cfg is None:

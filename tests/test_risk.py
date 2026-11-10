@@ -271,7 +271,12 @@ class DayTradeChecks(unittest.TestCase):
             self.assertEqual(verdicts(self.one(infy(), now=now)), ["PASS"], now)
         res = self.one(infy(), now="2026-11-07 10:15", no_entries_before=None, no_entries_after=None)
         self.assertEqual(verdicts(res), ["PASS"])
-        self.assertIn("check nseindia.com", " ".join(self.one(infy(), now="2027-01-04 10:00")["warnings"]))
+        # a year with no NSE holiday list fails closed: no new entries, with the window on or off
+        for over in ({}, {"no_entries_before": None, "no_entries_after": None}):
+            res = self.one(infy(), now="2027-01-04 10:00", **over)
+            self.assertEqual(verdicts(res), ["BLOCK"], over)
+            self.assertIn("window: the NSE holiday list covers 2026 only, so 2027-01-04 may be a holiday",
+                          reasons(res))
         with self.assertRaises(check.RiskError):
             self.one(infy(), no_entries_before="9.30am")
 

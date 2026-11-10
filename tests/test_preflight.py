@@ -1,6 +1,7 @@
 """trader-broker's preflight.py, and the autopilot's use of it. Nifty 50's real 5-minute bars from the edge
 report's fixtures (to 6 November 2026)."""
 
+import datetime
 import io
 import json
 import os
@@ -72,6 +73,22 @@ class Preflight(unittest.TestCase):
         self.assertEqual((code, doc["closed"], doc["go"]), (0, True, False))
         code, doc, _ = self.pre("2026-11-08 09:00")
         self.assertIn("a special session (Diwali Muhurat trading", doc["checks"][0]["detail"])
+
+    def test_a_year_without_a_holiday_list_is_no_go(self):
+        # Tuesday 26 January 2027 is Republic Day, a weekday: without 2027's list the pack cannot tell
+        code, doc, _ = self.pre("2027-01-26 09:00")
+        self.assertEqual(code, 1)
+        self.assertFalse(doc["go"])
+        self.assertIn("the NSE holiday list covers 2026 only, so 2027-01-26 may be a holiday: no new entries until "
+                      "2027's list is added", self.failed(doc)["calendar"])
+        # and trader-risk refuses the entry by itself, whatever the window says; exits are never refused
+        check = load("trader-risk", "check")
+        ist = datetime.datetime(2027, 1, 26, 10, 0)
+        for cfg in ({"no_entries_before": "09:45", "no_entries_after": "14:30"}, {}):
+            reasons, _ = check.window_check(ist, cfg)
+            self.assertEqual(len(reasons), 1)
+            self.assertIn("window: the NSE holiday list covers 2026 only", reasons[0])
+        self.assertEqual(check.window_check(datetime.datetime(2026, 12, 31, 10, 0), {"no_entries_before": "09:45"}), ([], []))
 
     def test_no_go_reasons(self):
         os.remove(self.p["forward"])

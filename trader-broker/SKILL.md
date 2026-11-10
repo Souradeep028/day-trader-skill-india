@@ -141,7 +141,7 @@ python3 "${CLAUDE_SKILL_DIR}/preflight.py"          # before 9:15; the morning b
 
 | check | NO-GO when |
 | --- | --- |
-| calendar | (not a fault) a weekend, an NSE holiday or a special session like Muhurat trading |
+| calendar | (not a fault) a weekend, an NSE holiday or a special session like Muhurat trading; (a fault) a date in a year the NSE holiday list does not cover yet |
 | config | trader/config.json does not read or has no budget; a live account's lock status is reported |
 | rule | no frozen rule in trader/forward.json, a setup edge.py does not know, or a short without `allow_short` |
 | data | Yahoo sends no Nifty 50 bars, or its last session is not the previous trading day |

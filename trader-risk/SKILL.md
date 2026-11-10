@@ -125,6 +125,10 @@ How the numbers work:
   saving), never from the computer's clock zone. Weekends and NSE holidays
   (the 2026 list) are closed, and so is anything outside 9:15 to 15:30. Set
   both `no_entries_*` to null to switch the window off.
+- **A year with no holiday list** blocks every new entry, window on or off:
+  a weekday the pack has no list for may be a holiday, so it fails closed
+  until next year's list is added (NSE publishes it in December). Exits are
+  never blocked.
 - **Price bands**: a stock at its band can lock, with no sellers above it (or
   buyers below it). F&O stocks have no fixed band (null in bands.json) and
   are not checked; a stock missing from bands.json is a warning. A stop under
@@ -154,7 +158,7 @@ How the numbers work:
 Warnings do not block, but say them to the user: a LIVE account, a number
 sent as a number instead of a string, a stop that lives only in the plan and
 not at the broker, a price too old to use, a delivery (CNC) product, borrowed
-money, a holiday list that does not cover the date.
+money.
 
 ## Steps
 

@@ -289,7 +289,9 @@ What still needs you, and how often:
   dates of the stocks you trade (`results.py event`); the SIP purchase, or
   set up the broker's own ETF SIP and record it.
 - **Yearly, each December:** next year's NSE holidays, and a look at the
-  charges; the risk check and the reports remind you.
+  charges; the risk check and the reports remind you. Miss the holidays and
+  nothing trades from 1 January: the pre-flight says NO-GO and the risk
+  check refuses every new entry until the list is in.
 
 ## How it keeps intraday losses small
 
