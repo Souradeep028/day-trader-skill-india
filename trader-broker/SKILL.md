@@ -129,6 +129,32 @@ measures R from the stop overhead.
   business income, filed on ITR-3, and its losses only set off against
   speculative income. Check it against the broker's tax P&L and a CA.
 
+## The daily report (daily.py)
+
+One page after the close, every trading day:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/daily.py"                 # today, after 15:30 IST -> trader/daily/<date>.md
+python3 "${CLAUDE_SKILL_DIR}/daily.py" --date 2026-11-11 --no-write
+```
+
+1. **The market**: Nifty 50 and India VIX on the day, how many of the
+   watchlist rose and fell, the biggest movers.
+2. **Forward test**: the frozen rule's shadow trades for the day (and any
+   session since the start not yet replayed), the running totals and the
+   verdict, saved to trader/forward.json for the live lock.
+3. **Your trading**: the day's round trips, paper and live apart, P&L after
+   charges and R, any position still open after the close (it should not
+   be), the losing streak, the week's and month's realised P&L against their
+   limits, the drawdown, and whether a live account is locked, ramping or
+   stopped.
+4. **The core**: the SIP's value and XIRR (trader-budget's sip.py).
+5. **Tomorrow**: the next session, Nifty's weekly expiry, results, ex-dates
+   and market events, and upkeep that is due.
+
+Run it where you trade to see parts 3 and 4: a scheduled task in the cloud
+has the market and the forward test, but not your own log.
+
 ## The forward test: prove a rule on trades after it
 
 A backtest picks the best of many tries, so it flatters. `forward.py` in

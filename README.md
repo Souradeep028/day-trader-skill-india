@@ -166,6 +166,7 @@ python3 trader-broker/ticket.py paper-check                            # paper: 
 python3 trader-broker/ticket.py reconcile --paper                      # no position without its stop
 python3 trader-broker/ticket.py journal --paper                        # win rate, R, P&L after charges
 python3 trader-broker/forward.py start --rule "orb30 short tight 2R low_cost+with_nifty"  # freeze a rule
+python3 trader-broker/daily.py                                         # the day's report: market, forward test, you, tomorrow
 python3 trader-broker/forward.py shadow                                # replay the rule on today's bars, every signal
 python3 trader-broker/forward.py status                                # the forward test's verdict
 python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
@@ -352,7 +353,7 @@ trader-exit/        SKILL.md, exit.py
 trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, sip.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, forward.py, claude_desktop_config.example.json
+trader-broker/      SKILL.md, ticket.py, forward.py, daily.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py
 trader-pelosi/      SKILL.md, ptr.py
