@@ -350,6 +350,22 @@ liquid fund at 5.75 %, +6.3 % a year against +12.2 %. None of the 25 windows
 beat holding. It falls less (a worst fall of 20 % against 36 %), which is
 not a reason on its own. Keep the SIP.
 
+## The bar archive: past Yahoo's 60 days
+
+Yahoo keeps 5-minute bars for 60 days and 1-minute bars for about a week, so
+every intraday test here sees only that much. `archive.py` saves each
+finished session once (after 15:30), one small file a session in
+trader/bars/<interval>/, and exports them back as Yahoo-style files that
+edge.py and the rest read with `--offline`:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/archive.py" save --watchlist trader/nifty50.txt                 # 5-minute bars, after the close
+python3 "${CLAUDE_SKILL_DIR}/archive.py" save --watchlist trader/nifty50.txt --interval 1m   # 1-minute bars
+python3 "${CLAUDE_SKILL_DIR}/archive.py" export --to /tmp/bars5 && python3 "${CLAUDE_SKILL_DIR}/edge.py" run --offline /tmp/bars5 --watchlist trader/nifty50.txt
+```
+
+Run it every trading day: a session Yahoo has dropped cannot be fetched again.
+
 ## The factor rotation report: momentum and low volatility
 
 `rotation.py` tests the two factors with the most evidence behind them,

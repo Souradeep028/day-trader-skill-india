@@ -159,6 +159,7 @@ python3 trader-timemachine/swing.py run --watchlist trader/nifty50.txt # multi-d
 python3 trader-timemachine/rotation.py run --watchlist trader/nifty100.txt   # momentum and low-vol, vs real funds
 python3 trader-timemachine/openclose.py run --watchlist trader/nifty50.txt   # day trades on 10 years of daily bars
 python3 trader-timemachine/tom.py run                                  # the turn of the month vs holding the index
+python3 trader-timemachine/archive.py save --watchlist trader/nifty50.txt   # keep the 5-minute bars Yahoo forgets
 python3 trader-budget/sip.py status                                    # the index-fund core, XIRR, trading beside it
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
