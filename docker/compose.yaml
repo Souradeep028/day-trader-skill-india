@@ -1,0 +1,16 @@
+# From the repo root:  docker compose -f docker/compose.yaml up -d --build
+# TRADING_DIR is your trading folder on this machine (default ~/trading); it is mounted at /data.
+services:
+  trader:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: day-trader-india
+    container_name: day-trader
+    restart: unless-stopped
+    init: true
+    user: "${TRADER_UID:-1000}:${TRADER_GID:-1000}"
+    volumes:
+      - ${TRADING_DIR:-${HOME}/trading}:/data
+    environment:
+      TZ: Asia/Kolkata

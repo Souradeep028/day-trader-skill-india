@@ -40,7 +40,7 @@ class Repo(unittest.TestCase):
 
     def test_root_matches_the_reel(self):
         root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests", "trader"] + SKILLS))
+        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "docker", "tests", "trader"] + SKILLS))
         # trader/ ships NSE's lists only: personal config and state stay out of git
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "trader"))), ["banknifty.txt", "nifty100.txt", "nifty50.txt", "sectors.json"])
 

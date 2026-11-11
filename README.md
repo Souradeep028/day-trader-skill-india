@@ -300,6 +300,34 @@ paper all day on a GO only (every risk check applied, stops and targets managed,
 verdict updated for the live lock. Set `"allow_short": true` in
 trader/config.json for a short rule like this one.
 
+### Run it in Docker
+
+One container runs the whole day by itself: the morning brief at 8:40, a
+paper autopilot pass a minute after every 5-minute bar from 9:16 to 15:31,
+today's bars saved at 15:45, and the daily report and trade audit page at
+15:50, all in India time. Your trading folder stays on your machine, mounted
+into the container, so it survives rebuilds and nothing personal goes into
+the image. Paper only: nothing in it can place a live order.
+
+```bash
+mkdir -p ~/trading                                            # your trading folder
+docker compose -f docker/compose.yaml run --rm trader setup   # the lists and a paper config, once
+docker compose -f docker/compose.yaml up -d --build           # start it; it restarts with Docker
+docker compose -f docker/compose.yaml logs -f                 # what it ran
+docker compose -f docker/compose.yaml run --rm trader plan    # what is due now, and when it wakes next
+docker compose -f docker/compose.yaml run --rm trader now daily   # one job right away
+```
+
+Freeze a rule first (`forward.py start`, run in the container with
+`docker compose -f docker/compose.yaml run --rm --entrypoint python3 trader /app/trader-broker/forward.py start ...`,
+or on your machine in ~/trading). `TRADING_DIR` picks another folder; on
+Linux set `TRADER_UID=$(id -u) TRADER_GID=$(id -g)` so the files are yours.
+Each job writes to trader/logs/, and trader/state/scheduler.json says what
+ran last; the container reports unhealthy if the scheduler stops checking
+in. A container that starts late catches up: the passes from then on, and
+the evening jobs that day. The computer still has to be awake from 9:15 to
+15:30: Docker sleeps with it.
+
 **Without cron** (a Claude Code cloud session, a laptop terminal): `day.sh`
 runs the same autopilot passes for a stretch of the day and stops at the
 time you give it (only one runs at a time), so a scheduled task can start it

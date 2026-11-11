@@ -239,6 +239,21 @@ Built to run unattended:
   the last one, the failures, and whether it stopped before the flat-by;
   the next morning's pre-flight repeats it.
 
+## The whole day in one process (scheduler.py, Docker)
+
+`scheduler.py run` does what the README's crontab does, in one long-running
+process: the morning brief at 8:40, an autopilot pass at 9:16, 9:21 ... 15:31
+(the pre-flight first if today's is missing), the bars saved at 15:45, the
+daily report and the audit page at 15:50, in India time, weekdays. It is the
+command of the image in docker/ (the trading folder mounted at /data). A late
+start catches up on that day's evening jobs; missed passes are not replayed.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scheduler.py" setup        # a new trading folder: the lists and a paper config
+python3 "${CLAUDE_SKILL_DIR}/scheduler.py" plan         # what is due now and the next wake
+python3 "${CLAUDE_SKILL_DIR}/scheduler.py" now daily    # one job right away
+```
+
 ## Without cron: the day runner (day.sh)
 
 Where cron is not an option (a Claude Code cloud session, a laptop
