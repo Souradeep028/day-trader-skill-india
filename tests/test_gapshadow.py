@@ -82,6 +82,24 @@ class GapShadow(unittest.TestCase):
         self.assertIn("## Gap-up shadow test", out)
         self.assertIn("- Today: INFY.NS opened +2.9 %, short at 1187.00, out at 15:10, +3.09 R (₹1,362).", out)
         self.assertIn("- Since the start: 2 trades", out)
+        self.assertIn("- profit factor ", out)
+
+
+class Performance(unittest.TestCase):
+    def test_worked_by_hand(self):
+        ticket = load("trader-broker", "ticket")
+        nets = [300, -100, -200, 500, -100]
+        p = ticket.performance([{"net": n} for n in nets], 100000)
+        # won 800, lost 400: profit factor 2.00; the average win 400 against the average loss 133.33: payoff 3.00;
+        # 400 net over 5 trades: 80 a trade; the running net 300, 200, 0, 500, 400 fell 300 from its high of 300
+        self.assertEqual(p, {"trades": 5, "profit_factor": 2.0, "payoff": 3.0, "expectancy": 80.0,
+                             "max_drawdown": 300.0, "max_drawdown_pct": 0.3})
+        self.assertEqual(ticket.performance_text(p), "profit factor 2.00, payoff 3.00, expectancy +₹80 a trade, "
+                                                     "worst fall ₹300 (0.30 % of the budget)")
+        none_lost = ticket.performance([{"net": 10}], None)
+        self.assertEqual((none_lost["profit_factor"], none_lost["payoff"], none_lost["max_drawdown_pct"]),
+                         (None, None, None))
+        self.assertIn("profit factor n/a (no losing trade)", ticket.performance_text(none_lost))
 
 
 if __name__ == "__main__":

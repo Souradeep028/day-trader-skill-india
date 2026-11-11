@@ -165,7 +165,8 @@ def evaluate(test, trades):
             "net": round(sum(t["net"] for t in trades), 2), "expected": exp, "floor": floor,
             "signals": {"taken": len(taken), "skipped": len(skipped),
                         "skip_reasons": sorted({s.get("reason") or "no reason" for s in skipped})},
-            "off_plan": off, "state": state, "verdict": verdict}
+            "off_plan": off, "state": state, "verdict": verdict,
+            "performance": ticket.performance([t for t in trades if t.get("net") is not None])}
 
 
 def rule_text(test):

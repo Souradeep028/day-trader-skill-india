@@ -118,6 +118,11 @@ measures R from the stop overhead.
   win rate, net P&L, average R, best and worst trade and the longest run of
   losses. `--paper` or `--live` keeps them apart, `--from` and `--to` pick
   dates. Under 30 trades it says the sample is too small to judge.
+- It also prints the profit factor (rupees won / rupees lost), the payoff
+  ratio (the average win / the average loss), the expectancy (the average net
+  a trade) and the worst fall of the running net, in rupees and as a % of the
+  budget. The daily report shows the same for the shadow, the paper trades
+  and the gap-up shadow test.
 - For the autopilot's paper trades it also prints the entry slippage: how
   far each fill was from its signal price, on average per share and in R,
   and in rupees in all (in `--json` as `entry_slippage`). That is the cost of

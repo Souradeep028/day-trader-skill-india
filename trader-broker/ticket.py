@@ -694,7 +694,38 @@ def entry_slippage(state, trades):
             "rupees": round(sum(g[2] for g in got), 2)}
 
 
-def journal_summary(trades):
+def performance(trades, capital=None):
+    """Profit factor (rupees won / rupees lost), payoff ratio (the average win / the average loss), expectancy (the
+    average net a trade) and the worst fall of the running net from its high, in rupees and as a % of `capital`.
+    trades: in time order, each with "net" (after charges). None where a number cannot be worked out."""
+    nets = [float(t["net"]) for t in trades]
+    if not nets:
+        return {"trades": 0}
+    won = [n for n in nets if n > 0]
+    lost = [-n for n in nets if n <= 0]
+    cum = peak = dd = 0.0
+    for n in nets:
+        cum += n
+        peak = max(peak, cum)
+        dd = max(dd, peak - cum)
+    return {"trades": len(nets),
+            "profit_factor": round(sum(won) / sum(lost), 2) if sum(lost) > 0 else None,
+            "payoff": round((sum(won) / len(won)) / (sum(lost) / len(lost)), 2) if won and lost and sum(lost) > 0 else None,
+            "expectancy": round(sum(nets) / len(nets), 2), "max_drawdown": round(dd, 2),
+            "max_drawdown_pct": round(100.0 * dd / capital, 2) if capital else None}
+
+
+def performance_text(p):
+    """One line for the reports."""
+    if not p or not p.get("trades"):
+        return ""
+    pf = "n/a (no losing trade)" if p["profit_factor"] is None else "%.2f" % p["profit_factor"]
+    return "profit factor %s, payoff %s, expectancy %s a trade, worst fall %s%s" % (
+        pf, "n/a" if p["payoff"] is None else "%.2f" % p["payoff"], _signed(p["expectancy"]), _money(p["max_drawdown"]),
+        (" (%.2f %% of the budget)" % p["max_drawdown_pct"]) if p.get("max_drawdown_pct") is not None else "")
+
+
+def journal_summary(trades, capital=None):
     if not trades:
         return {"trades": 0}
     nets = [t["net"] for t in trades]
@@ -712,7 +743,8 @@ def journal_summary(trades):
             "net": round(sum(nets), 2), "gross": round(sum(t["gross"] for t in trades), 2),
             "charges": round(sum(t["charges"]["total"] for t in trades), 2),
             "avg_R": round(sum(rs) / len(rs), 3) if rs else None, "best": max(nets), "worst": min(nets),
-            "longest_losing_streak": worst, "by_day": by_day, "by_symbol": by_sym}
+            "longest_losing_streak": worst, "by_day": by_day, "by_symbol": by_sym,
+            "performance": performance(trades, capital)}
 
 
 def _signed(x):
@@ -724,7 +756,7 @@ def cmd_journal(a):
     state = load_state(a.state)
     paper = True if a.paper else False if a.live else None
     trades, still_open = round_trips(state, a.date_from, a.date_to, paper, cfg.get("charges"))
-    s = journal_summary(trades)
+    s = journal_summary(trades, cfg.get("budget"))
     if a.json:
         print(json.dumps({"summary": s, "trades": trades, "open": still_open,
                           "entry_slippage": entry_slippage(state, trades)}, indent=2))
@@ -745,6 +777,7 @@ def cmd_journal(a):
         ("%+.2f" % s["avg_R"]) if s["avg_R"] is not None else "n/a (no stop recorded)"))
     print("Best %s, worst %s, longest run of losing trades %d." % (_signed(s["best"]), _signed(s["worst"]),
                                                                   s["longest_losing_streak"]))
+    print(performance_text(s["performance"])[:1].upper() + performance_text(s["performance"])[1:] + ".")
     slip = entry_slippage(state, trades)
     if slip:
         print("Entry slippage (the autopilot's fills against their signals): %+.2f a share, %+.3f R a trade on "

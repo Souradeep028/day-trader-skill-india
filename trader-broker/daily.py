@@ -240,9 +240,13 @@ def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None, gap=None):
             len(test["shadow"]["sessions"]), fw["trades"], "%+.2f" % fw["avg_R"] if fw["avg_R"] is not None else "n/a",
             fw["total_R"], fw["worst_drawdown_R"]))
         L.append("- " + fw["verdict"])
+        if fw.get("performance", {}).get("trades"):
+            L.append("- Shadow: " + ticket.performance_text(fw["performance"]) + ".")
     if test is not None and paper is not None:
         L.append("- Paper trades since the start (the autopilot's and yours): %d, average %s R. %s" % (
             paper["trades"], "%+.2f" % paper["avg_R"] if paper["avg_R"] is not None else "n/a", paper["verdict"]))
+        if paper.get("performance", {}).get("trades"):
+            L.append("- Paper: " + ticket.performance_text(paper["performance"]) + ".")
         sl = paper.get("slippage")
         if sl:
             L.append("- Entry slippage: %+.2f a share, %+.3f R a trade on average (%s over %d trades): what acting a "

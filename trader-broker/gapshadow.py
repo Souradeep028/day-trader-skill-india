@@ -144,6 +144,8 @@ def lines(test, res, today):
     L.append("- Since the start: %d trades, %s R a trade, %s R in all. %s" % (
         res["trades"], ("%+.2f" % res["avg_R"]) if res["avg_R"] is not None else "n/a", "%+.2f" % res["total_R"],
         res["verdict"]))
+    if res.get("performance", {}).get("trades"):
+        L.append("- " + forward.ticket.performance_text(res["performance"]) + ".")
     return L
 
 
