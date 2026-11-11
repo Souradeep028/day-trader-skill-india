@@ -1,0 +1,28 @@
+{
+  "created_by": "trader-broker gapshadow.py",
+  "rule": {
+    "kind": "openclose",
+    "setup": "gap_up_fade2",
+    "stop": "pct1",
+    "filter": "none",
+    "entry": "auction",
+    "per_day": 3,
+    "pick": "the biggest gaps"
+  },
+  "filter": "none",
+  "started": "2026-11-11",
+  "account": "shadow",
+  "expected": {
+    "avg_R": 0.283,
+    "low": 0.147,
+    "source": "openclose.py --auction, Nifty 50, 2016-12 to 2026-11"
+  },
+  "stop_rules": {
+    "min_trades": 40,
+    "max_drawdown_R": 8.0
+  },
+  "signals": [],
+  "shadow": {
+    "sessions": {}
+  }
+}
