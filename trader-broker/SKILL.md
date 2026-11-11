@@ -239,6 +239,33 @@ Built to run unattended:
   the last one, the failures, and whether it stopped before the flat-by;
   the next morning's pre-flight repeats it.
 
+## Without cron: the day runner (day.sh)
+
+Where cron is not an option (a Claude Code cloud session, a laptop
+terminal), `day.sh` runs the autopilot for one stretch of the day from the
+trading folder: the pre-flight if today's is missing, nothing before the
+first bar closes (9:16), then a paper pass a minute after each 5-minute bar,
+until the India time given. Only one runs at a time (trader/state/day.lock).
+
+```bash
+cd ~/trading && "${CLAUDE_SKILL_DIR}/day.sh" 11:00
+```
+
+## The trade audit page (audit.py)
+
+Every paper and shadow trade on its own 5-minute chart: the entry, stop,
+target and exit marked, and a cost card (gross, each charge, net), with a
+summary for each test and filters. Run it after the daily report and
+trader-timemachine's `archive.py save` (it draws from the saved bars); it
+writes one self-contained page, trader/audit/index.html. `--replay` also
+works out both frozen rules on the saved sessions before their freeze, shown
+apart as context, never as part of a test.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/audit.py"
+python3 "${CLAUDE_SKILL_DIR}/audit.py" --replay
+```
+
 ## The gap-up shadow test (gapshadow.py)
 
 trader-timemachine's `openclose.py` found one rule that passed on ten years

@@ -3,3 +3,6 @@ trader/config.json
 trader/state/
 trader/*.json
 __pycache__/
+trader/bars/
+trader/audit/
+trader/daily/

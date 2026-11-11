@@ -173,6 +173,8 @@ python3 trader-broker/daily.py                                         # the day
 python3 trader-broker/forward.py shadow                                # replay the rule on today's bars, every signal
 python3 trader-broker/forward.py status                                # the forward test's verdict
 python3 trader-broker/gapshadow.py start                               # freeze the gap-up short as a shadow test
+python3 trader-broker/audit.py                                         # every paper and shadow trade on its chart, with costs
+trader-broker/day.sh 11:00                                             # the autopilot for a stretch of the day, without cron
 python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
 python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by 15:10
 python3 trader-alerts/alerts.py check                                  # rings what hit, once
@@ -297,6 +299,21 @@ paper all day on a GO only (every risk check applied, stops and targets managed,
 15:10), and the daily report after the close, with the forward test's
 verdict updated for the live lock. Set `"allow_short": true` in
 trader/config.json for a short rule like this one.
+
+**Without cron** (a Claude Code cloud session, a laptop terminal): `day.sh`
+runs the same autopilot passes for a stretch of the day and stops at the
+time you give it (only one runs at a time), so a scheduled task can start it
+each morning and chain the stretches:
+
+```bash
+cd ~/trading && /path/to/trader-broker/day.sh 11:00          # pre-flight, then a pass every 5 minutes until 11:00
+python3 /path/to/trader-timemachine/archive.py save          # after the close: keep the day's 5-minute bars
+python3 /path/to/trader-broker/audit.py                      # the trade audit page: trader/audit/index.html
+```
+
+The trading folder (config, the frozen tests, the broker log, the saved bars,
+the reports) is your own data: keep it out of the code. One way is its own
+git branch, so a new machine can pick the run up where it stopped.
 
 What still needs you, and how often:
 
