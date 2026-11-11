@@ -1,0 +1,52 @@
+{
+  "date": "2026-11-11",
+  "checked_at": "2026-11-11 06:44",
+  "go": true,
+  "closed": false,
+  "checks": [
+    {
+      "check": "calendar",
+      "ok": true,
+      "detail": "NSE session 9:15 to 15:30"
+    },
+    {
+      "check": "config",
+      "ok": true,
+      "detail": "paper account, \u20b91,00,000 budget, \u20b9500 max loss a trade"
+    },
+    {
+      "check": "rule",
+      "ok": true,
+      "detail": "orb30 short tight 2R low_cost+with_nifty"
+    },
+    {
+      "check": "data",
+      "ok": true,
+      "detail": "Yahoo has Nifty 50 to 2026-11-09"
+    },
+    {
+      "check": "files",
+      "ok": true,
+      "detail": "trader/state is writable"
+    },
+    {
+      "check": "leftovers",
+      "ok": true,
+      "detail": "nothing carried over"
+    },
+    {
+      "check": "limits",
+      "ok": true,
+      "detail": "week \u20b93,000 of \u20b93,000 left, month \u20b96,000 of \u20b96,000 left"
+    },
+    {
+      "check": "events",
+      "ok": true,
+      "detail": "no market event today"
+    }
+  ],
+  "no_go": [],
+  "notes": [
+    "no ASM/GSM lists (trader/surveillance.json): scan.py surveillance"
+  ]
+}

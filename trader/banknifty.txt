@@ -1,0 +1,16 @@
+# Nifty Bank, the 14 banks in it: NSE's ind_niftybanklist.csv of 9 November 2026
+# (nsearchives.nseindia.com/content/indices/). NSE rebalances the index twice a year.
+AUBANK.NS
+AXISBANK.NS
+BANKBARODA.NS
+CANBK.NS
+FEDERALBNK.NS
+HDFCBANK.NS
+ICICIBANK.NS
+IDFCFIRSTB.NS
+INDUSINDBK.NS
+KOTAKBANK.NS
+PNB.NS
+SBIN.NS
+UNIONBANK.NS
+YESBANK.NS

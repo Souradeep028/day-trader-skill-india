@@ -1,0 +1,22 @@
+{
+  "created_by": "trader-broker forward.py",
+  "rule": {
+    "setup": "orb30",
+    "side": "short",
+    "stop": "tight",
+    "target_r": 2.0
+  },
+  "filter": "low_cost+with_nifty",
+  "started": "2026-11-10",
+  "account": "paper",
+  "expected": {
+    "avg_R": 0.076,
+    "low": -0.145,
+    "source": "given by hand"
+  },
+  "stop_rules": {
+    "min_trades": 40,
+    "max_drawdown_R": 8.0
+  },
+  "signals": []
+}
