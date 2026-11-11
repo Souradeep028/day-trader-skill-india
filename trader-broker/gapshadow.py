@@ -94,12 +94,15 @@ def session_trades(day, daily, five, cfg=None):
     out = []
     for gap, sym, b, sess in sorted(cands, key=lambda x: (-x[0], x[1]))[:RULE["per_day"]]:
         d = {"date": day, "o": b[1], "h": b[2], "l": b[3], "c": b[4], "gap": gap, "atr": None}
-        path = [sess[k] for k in sorted(sess) if k <= openclose.FLAT_SLOT]
-        t = openclose.one_trade(d, False, RULE["stop"], c, path=path)
+        slots = [k for k in sorted(sess) if k <= openclose.FLAT_SLOT]
+        info = {}
+        t = openclose.one_trade(d, False, RULE["stop"], c, path=[sess[k] for k in slots], detail=info)
         if t is None:
             continue
         R, pnl, ret, stopped = t
-        out.append({"date": day, "symbol": sym, "gap_pct": round(gap, 2), "entry_open": b[1],
+        out.append({"date": day, "symbol": sym, "side": "short", "gap_pct": round(gap, 2), "entry_open": b[1],
+                    "entry": info["entry"], "stop": info["stop"], "exit": info["exit"], "qty": info["qty"],
+                    "charges": info["charges"], "entry_slot": 0, "exit_slot": slots[info["exit_index"]],
                     "outcome": "stop" if stopped else "flat", "net": pnl, "R": R})
     return out
 

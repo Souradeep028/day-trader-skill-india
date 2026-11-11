@@ -158,9 +158,10 @@ def adj_for(cfg, gap_pct, which):
     return a.get(bucket(gap_pct), a.get("all", 0.0)) if isinstance(a, dict) else float(a)
 
 
-def one_trade(day, long, stop_rule, cfg, path=None, raw_open=False):
+def one_trade(day, long, stop_rule, cfg, path=None, raw_open=False, detail=None):
     """(R, pnl, ret_pct, stopped) or None. path: the day's 5-minute bars to the flat-by, for the check; with
-    raw_open the entry is the price given (a 5-minute bar's open), not adjusted."""
+    raw_open the entry is the price given (a 5-minute bar's open), not adjusted. detail: a dict to fill with the
+    entry, stop, exit, qty, charges and (with a path) the index in it of the bar the trade ended on."""
     tick = edge.tick_for(day["o"])
     slip = cfg["slippage_ticks"] * tick
     oa = 0.0 if raw_open else adj_for(cfg, day["gap"], "open")
@@ -178,13 +179,15 @@ def one_trade(day, long, stop_rule, cfg, path=None, raw_open=False):
         hit = day["l"] <= stop if long else day["h"] >= stop
         out = None
     else:
-        hit, out = False, None
-        for b in path:
+        hit, out, at = False, None, len(path) - 1
+        for k, b in enumerate(path):
             if (b[2] <= stop) if long else (b[1] >= stop):
-                hit = True
+                hit, at = True, k
                 break
         if not hit:
             out = path[-1][3]
+        if detail is not None:
+            detail["exit_index"] = at
     if hit:
         x = stop - slip if long else stop + slip
     else:
@@ -194,6 +197,8 @@ def one_trade(day, long, stop_rule, cfg, path=None, raw_open=False):
     buy, sell = (entry, x) if long else (x, entry)
     charges = edge.round_trip(qty, buy, sell, cfg.get("charges"))
     pnl = qty * (sell - buy) - charges
+    if detail is not None:
+        detail.update({"entry": entry, "stop": stop, "exit": round(x, 2), "qty": qty, "charges": charges})
     return (round(pnl / (qty * risk), 4), round(pnl, 2), round(100.0 * pnl / (qty * entry), 4), hit)
 
 
