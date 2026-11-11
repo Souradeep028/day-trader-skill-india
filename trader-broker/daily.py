@@ -41,6 +41,8 @@ import ticket  # noqa: E402
 import forward  # noqa: E402  (imports trader-timemachine's edge.py)
 import check  # noqa: E402  (trader-risk: the calendar, the limits, the live lock)
 import sip  # noqa: E402  (trader-budget: the index-fund core)
+import gapshadow  # noqa: E402  (the gap-up shadow test, when one is frozen)
+import swing  # noqa: E402  (trader-timemachine: daily bars)
 
 edge = forward.edge
 MOVERS = 3
@@ -208,7 +210,7 @@ def tomorrow_part(day, events_doc, surveillance_doc):
     return out
 
 
-def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None):
+def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None, gap=None):
     d = datetime.date.fromisoformat(day)
     L = ["# Daily report: %s" % d.strftime("%A %d %B %Y").replace(" 0", " "), "", "## The market"]
     if mk["nifty"]:
@@ -251,6 +253,8 @@ def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None):
             L.append("- Execution gap: paper %+.2f R a trade against the shadow's %+.2f R (%+.2f)%s." % (
                 paper["avg_R"], fw["avg_R"], paper["avg_R"] - fw["avg_R"],
                 ("; on the %d trades both took, %+.3f R a trade" % (m["trades"], m["gap_R"])) if m.get("trades") else ""))
+    if gap:
+        L += ["", "## Gap-up shadow test"] + gap
     L += ["", "## Your trading"]
     if tr is None:
         L.append("No trader-broker log here (trader/state/broker.json): run this report where you trade to see "
@@ -305,6 +309,8 @@ def main(argv=None):
     ap.add_argument("--events", default="trader/events.json")
     ap.add_argument("--surveillance", default="trader/surveillance.json")
     ap.add_argument("--out", help="default trader/daily/<date>.md")
+    ap.add_argument("--gap-forward", default=gapshadow.FILE, help="the gap-up shadow test (gapshadow.py start)")
+    ap.add_argument("--offline-daily", metavar="DIR", help="<SYMBOL>.json(.gz) daily charts for the gap-up test")
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args(argv)
     try:
@@ -370,7 +376,25 @@ def main(argv=None):
                 core = None
         tm = tomorrow_part(day, forward.read(a.events, "events", required=False),
                            forward.read(a.surveillance, "surveillance", required=False))
-        lines = report(day, mk, fw, fw_today, test, tr, core, tm, paper_res)
+        gap = None
+        gtest = forward.read(a.gap_forward, "gap-up shadow test", required=False)
+        if gtest:
+            daily_t = {}
+            for i, s in enumerate(syms):
+                try:
+                    if a.offline_daily:
+                        daily_t[s] = swing.read_offline(a.offline_daily, s)
+                    elif not a.offline:
+                        if i:
+                            edge._sleep(swing.PAUSE)
+                        daily_t[s] = gapshadow.fetch_daily(s)
+                except (gapshadow.GapError, swing.SwingError):
+                    continue
+            gres = gapshadow.update(gtest, daily_t, charts, day)
+            gap = gapshadow.lines(gtest, gres, day)
+            if not a.no_write:
+                forward.write(a.gap_forward, gtest)
+        lines = report(day, mk, fw, fw_today, test, tr, core, tm, paper_res, gap)
     except (DailyError, forward.ForwardError, edge.EdgeError, ticket.TicketError) as e:
         print("daily.py: %s" % e, file=sys.stderr)
         return 1

@@ -234,6 +234,28 @@ Built to run unattended:
   the last one, the failures, and whether it stopped before the flat-by;
   the next morning's pre-flight repeats it.
 
+## The gap-up shadow test (gapshadow.py)
+
+trader-timemachine's `openclose.py` found one rule that passed on ten years
+of daily bars, but only for entries in NSE's pre-open auction: short a Nifty
+50 stock that opened 2 % or more up, a 1 % stop, out at 15:10. It had faded
+in the later years, and a rule picked from 200 flatters itself, so
+`gapshadow.py` freezes it and judges it only on sessions after the freeze,
+by forward.py's rules (40 trades, an 8 R drawdown stop, the backtest's low
+end +0.147 R). Nothing is traded: it needs pre-open orders and prices. After
+the close it works out what the rule would have done from Yahoo's daily bar
+(the official open is the auction price) and the day's 5-minute bars (the
+stop and the 15:10 exit), the 3 biggest gaps a day.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" start       # freeze it today: trader/forward-gap.json
+python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" shadow      # replay every session since, after the close
+python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" status
+```
+
+The daily report replays it and adds a "Gap-up shadow test" section when
+trader/forward-gap.json exists.
+
 ## The daily report (daily.py)
 
 One page after the close, every trading day:

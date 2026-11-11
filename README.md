@@ -171,6 +171,7 @@ python3 trader-broker/forward.py start --rule "orb30 short tight 2R low_cost+wit
 python3 trader-broker/daily.py                                         # the day's report: market, forward test, you, tomorrow
 python3 trader-broker/forward.py shadow                                # replay the rule on today's bars, every signal
 python3 trader-broker/forward.py status                                # the forward test's verdict
+python3 trader-broker/gapshadow.py start                               # freeze the gap-up short as a shadow test
 python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
 python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by 15:10
 python3 trader-alerts/alerts.py check                                  # rings what hit, once
