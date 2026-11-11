@@ -9,9 +9,14 @@ CODE=${CODE:-/home/user/day-trader-skill}
 UNTIL=${1:?until HH:MM (IST)}
 LOG=trader/autopilot.log
 now_ist() { TZ=Asia/Kolkata date +%H:%M; }
+mkdir -p trader/state
+exec 9>trader/state/day.lock
+if ! flock -n 9; then echo "day.sh: another stretch is already running; not starting a second one"; exit 0; fi
 if [ ! -f trader/state/preflight.json ] || ! grep -q "\"date\": \"$(TZ=Asia/Kolkata date +%F)\"" trader/state/preflight.json; then
   python3 "$CODE/trader-broker/preflight.py" >> "$LOG" 2>&1
 fi
+# no passes before the first 5-minute bar has closed (a pass before the open still counts in the heartbeat)
+while [ "$(now_ist)" \< "09:16" ] && [ "$(now_ist)" \< "$UNTIL" ]; do sleep 20; done
 while [ "$(now_ist)" \< "$UNTIL" ]; do
   # sleep to the next minute that is 1 past a multiple of 5 (09:16, 09:21, ...), at second 5
   s=$(TZ=Asia/Kolkata date +%s); m=$(( (s / 60) % 5 )); sec=$(( s % 60 ))
