@@ -42,6 +42,7 @@ import argparse
 import datetime
 import json
 import os
+import statistics
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,6 +77,7 @@ SETTLE = 60         # seconds after a bar's close before its prices count, when 
 SPIKE = 0.08        # a 5-minute bar 8 % or more away from the bar before is a bad print until confirmed
 BACK = 0.02         # ... and is one when the next bar is back within 2 % of the bar before it
 PROBLEMS = []       # this pass's warnings, for the heartbeat
+LAG = {}            # this pass's data lag (seconds behind the clock of Yahoo's last trade), for the heartbeat
 
 
 def clean_bars(bars, n):
@@ -270,6 +272,10 @@ def one_pass(a, now_utc):
                 break
             except edge.EdgeError:
                 continue
+    if not a.offline and datetime.time(9, 15) <= now_ist.time() < datetime.time(15, 30):
+        ls = [x for x in (lag_seconds(t, now_utc) for s_, t in charts.items() if s_ != edge.VIX) if x is not None]
+        if ls:
+            LAG.update(median=int(round(statistics.median(ls))), worst=int(round(max(ls))), symbols=len(ls))
     mins = {}
     for s_ in sorted({l["symbol"] for l in state.get("paper_legs", []) if l.get("auto") and l.get("status") == "open"}):
         try:
@@ -504,9 +510,10 @@ def main(argv=None):
     hb_path = a.heartbeat or os.path.join(os.path.dirname(a.state) or ".", "autopilot.json")
     try:
         del PROBLEMS[:]
+        LAG.clear()
         for line in one_pass(a, now):
             print(line)
-        heartbeat(hb_path, now, None, list(PROBLEMS))
+        heartbeat(hb_path, now, None, list(PROBLEMS), dict(LAG))
     except (AutopilotError, forward.ForwardError, ticket.TicketError, edge.EdgeError, check.RiskError) as e:
         heartbeat(hb_path, now, str(e))
         print("autopilot.py: %s" % e, file=sys.stderr)
@@ -552,9 +559,10 @@ def release(lock):
         os.close(lock)
 
 
-def heartbeat(path, now_utc, error, warnings=()):
-    """Each pass leaves a mark: the day's passes, the last one, the last good one and the day's errors. The daily
-    report and the pre-flight read it, so a stopped autopilot does not go unnoticed."""
+def heartbeat(path, now_utc, error, warnings=(), lag=None):
+    """Each pass leaves a mark: the day's passes, the last one, the last good one, the day's errors and how far
+    behind Yahoo's data was ([time, median s, worst s] a pass). The daily report and the pre-flight read it, so a
+    stopped autopilot or a lagging feed does not go unnoticed."""
     ist = check.to_ist(now_utc)
     day = ist.date().isoformat()
     hb = forward.read(path, "heartbeat", required=False) or {}
@@ -562,6 +570,8 @@ def heartbeat(path, now_utc, error, warnings=()):
         hb = {"date": day, "passes": 0, "errors": []}
     hb["passes"] = hb.get("passes", 0) + 1
     hb["last_pass"] = ist.strftime("%H:%M")
+    if lag and lag.get("median") is not None:
+        hb.setdefault("lag", []).append([ist.strftime("%H:%M"), lag["median"], lag["worst"]])
     for w in warnings:
         hb.setdefault("errors", []).append({"at": ist.strftime("%H:%M"), "error": w[:300]})
     if error:

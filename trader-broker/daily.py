@@ -176,6 +176,13 @@ def autopilot_part(hb, day, flat_by="15:10"):
                                                        (", %d failed (the last at %s: %s)" % (len(errs), errs[-1]["at"],
                                                                                               errs[-1]["error"]))
                                                        if errs else "")
+    lag = hb.get("lag") or []
+    if lag:
+        meds = sorted(x[1] for x in lag)
+        over = sum(1 for x in lag if x[1] > 180)
+        line += " Yahoo's data lag: %d s typical over %d passes, %d s at worst%s." % (
+            meds[len(meds) // 2], len(lag), max(x[2] for x in lag),
+            ("; %d pass%s over the 3-minute limit (no entries then)" % (over, "" if over == 1 else "es")) if over else "")
     if (hb.get("last_pass") or "00:00") < flat_by:
         line += " It stopped before the %s flat-by: open positions were not managed after %s." % (flat_by,
                                                                                                 hb.get("last_pass"))
@@ -240,6 +247,8 @@ def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None, gap=None):
             len(test["shadow"]["sessions"]), fw["trades"], "%+.2f" % fw["avg_R"] if fw["avg_R"] is not None else "n/a",
             fw["total_R"], fw["worst_drawdown_R"]))
         L.append("- " + fw["verdict"])
+        if forward.code_text(test):
+            L.append("- " + forward.code_text(test))
         if fw.get("performance", {}).get("trades"):
             L.append("- Shadow: " + ticket.performance_text(fw["performance"]) + ".")
     if test is not None and paper is not None:
@@ -343,6 +352,9 @@ def main(argv=None):
             raise DailyError("no market data for %s" % day)
         mk = market(charts, idx, vix, day)
         test = forward.read(a.forward, "forward test", required=False)
+        version = forward.code_version()
+        if test:
+            forward.note_code(test, version, day)
         fw, fw_today = (None, [])
         if test:
             fw, fw_today = forward_part(test, charts, idx, vix, day, cfg)
@@ -383,6 +395,7 @@ def main(argv=None):
         gap = None
         gtest = forward.read(a.gap_forward, "gap-up shadow test", required=False)
         if gtest:
+            forward.note_code(gtest, version, day)
             daily_t = {}
             for i, s in enumerate(syms):
                 try:
@@ -395,7 +408,7 @@ def main(argv=None):
                 except (gapshadow.GapError, swing.SwingError):
                     continue
             gres = gapshadow.update(gtest, daily_t, charts, day)
-            gap = gapshadow.lines(gtest, gres, day)
+            gap = gapshadow.lines(gtest, gres, day) + ["- " + forward.code_text(gtest)]
             if not a.no_write:
                 forward.write(a.gap_forward, gtest)
         lines = report(day, mk, fw, fw_today, test, tr, core, tm, paper_res, gap)

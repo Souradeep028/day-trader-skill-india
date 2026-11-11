@@ -322,9 +322,23 @@ Freeze a rule first (`forward.py start`, run in the container with
 `docker compose -f docker/compose.yaml run --rm --entrypoint python3 trader /app/trader-broker/forward.py start ...`,
 or on your machine in ~/trading). `TRADING_DIR` picks another folder; on
 Linux set `TRADER_UID=$(id -u) TRADER_GID=$(id -g)` so the files are yours.
-Each job writes to trader/logs/, and trader/state/scheduler.json says what
-ran last; the container reports unhealthy if the scheduler stops checking
-in. A container that starts late catches up: the passes from then on, and
+Each job writes to trader/logs/ (rotated at 5 MB), and
+trader/state/scheduler.json says what ran last and on which code; the
+container reports unhealthy if the scheduler stops checking in. Every step
+has its own time limit (a pass 4 minutes, under the 5 between passes), so a
+stuck download never holds up the next pass. The image only builds when the
+whole test suite passes inside it, so broken code never reaches the daily
+run. For alerts on your phone, set `NOTIFY_URL` to an ntfy.sh topic URL only
+you know (`NOTIFY_URL=https://ntfy.sh/<topic> docker compose ... up -d`): one
+line on a NO-GO morning, on a failed job, and after the daily report; that
+service then sees those lines. Off by default. Back up the trading folder
+like any folder you care about: it is the only copy of the run.
+
+Every daily report fingerprints the code (each tool in the trader-* folders)
+and the forward tests record it: if you rebuild with changed code during a
+test, the report says from which day, because a change to fills, sizing or
+limits mid-test makes the days before and after hard to compare. Rebuild
+between tests, not during one. A container that starts late catches up: the passes from then on, and
 the evening jobs that day. The computer still has to be awake from 9:15 to
 15:30: Docker sleeps with it.
 

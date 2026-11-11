@@ -12,7 +12,13 @@ India time whatever the machine's clock zone:
 
 A container that starts late catches up: the passes from now on, and the evening jobs if they have not run
 today. Weekends are skipped here; the tools themselves skip NSE holidays. Paper only: nothing here can place
-a live order. Each job's output goes to trader/logs/<job>.log; trader/state/scheduler.json says what ran.
+a live order. Each job's output goes to trader/logs/<job>.log (rotated at 5 MB); trader/state/scheduler.json
+says what ran, on which code. Each step has its own time limit (a pass 4 minutes, under the 5 between passes),
+so a stuck download cannot hold up the next pass; the tools write their files atomically, so a stopped step
+leaves no half-written file.
+
+Alerts (off unless NOTIFY_URL is set, e.g. an ntfy.sh topic URL only you know): one line on a NO-GO morning,
+on a job that failed, and after the daily report. Whatever service the URL points at receives those lines.
 
     python3 scheduler.py run                  # forever (the container's command)
     python3 scheduler.py setup                # a new trading folder: the lists, and a config from the example
@@ -22,6 +28,7 @@ a live order. Each job's output goes to trader/logs/<job>.log; trader/state/sche
 
 import argparse
 import datetime
+import urllib.request
 import json
 import os
 import shutil
@@ -48,6 +55,8 @@ JOBS = {
                 tool("trader-timemachine", "archive.py") + ["save", "--interval", "1m"]],
     "daily": [tool("trader-broker", "daily.py"), tool("trader-broker", "audit.py")],
 }
+TIMEOUT = {"morning": 900, "preflight": 180, "pass": 240, "archive": 900, "daily": 1200}   # seconds a step
+LOG_MAX = 5 * 1024 * 1024
 MORNING = datetime.time(8, 40)
 FIRST_PASS = datetime.time(9, 16)
 LAST_PASS = datetime.time(15, 31)
@@ -107,22 +116,93 @@ def preflight_today(today):
         return False
 
 
+def notify(text, url=None):
+    """One line to NOTIFY_URL (an HTTP POST of plain text, as ntfy.sh takes it). Never raises: an alert that
+    cannot be sent must not stop the trading day."""
+    url = url if url is not None else os.environ.get("NOTIFY_URL", "")
+    if not url:
+        return False
+    try:
+        req = urllib.request.Request(url, data=text.encode("utf-8")[:1000], method="POST",
+                                     headers={"Title": "day-trader", "Content-Type": "text/plain; charset=utf-8"})
+        with urllib.request.urlopen(req, timeout=10):
+            return True
+    except Exception:  # noqa: BLE001  (any failure to alert is only logged by the caller's absence of a send)
+        return False
+
+
+def summary_line(today):
+    """The daily report's one-line gist for an alert: the forward test's 'So far' and verdict lines."""
+    p = os.path.join("trader", "daily", "%s.md" % today)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            lines = [ln[2:] for ln in fh.read().splitlines() if ln.startswith("- So far") or ln.startswith("- Paper")]
+    except OSError:
+        return "Daily report: not written today (see trader/logs/daily.log)."
+    return "Daily report %s. %s" % (today, " ".join(lines)[:600])
+
+
+def rotate(path):
+    try:
+        if os.path.getsize(path) > LOG_MAX:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+
+
 def run_job(job, now):
     os.makedirs(LOGS, exist_ok=True)
     codes = []
-    with open(os.path.join(LOGS, "%s.log" % ("autopilot" if job == "pass" else job)), "a", encoding="utf-8") as log:
+    path = os.path.join(LOGS, "%s.log" % ("autopilot" if job == "pass" else job))
+    rotate(path)
+    with open(path, "a", encoding="utf-8") as log:
         log.write("== %s IST %s\n" % (now.strftime("%Y-%m-%d %H:%M:%S"), job))
         log.flush()
-        steps = list(JOBS[job])
+        steps = [(job, argv) for argv in JOBS[job]]
         if job == "pass" and not preflight_today(now.date().isoformat()):
-            steps = JOBS["preflight"] + steps
-        for argv in steps:
+            steps = [("preflight", argv) for argv in JOBS["preflight"]] + steps
+        for name, argv in steps:
             try:
-                codes.append(subprocess.call(argv, stdout=log, stderr=subprocess.STDOUT, timeout=1200))
+                codes.append(subprocess.call(argv, stdout=log, stderr=subprocess.STDOUT, timeout=TIMEOUT[name]))
             except subprocess.TimeoutExpired:
-                log.write("timed out after 20 minutes\n")
+                log.write("stopped: over the %d-second limit for %s\n" % (TIMEOUT[name], name))
                 codes.append(124)
     return codes
+
+
+def code_version():
+    sys.path.insert(0, HERE)
+    try:
+        import forward
+        return forward.code_version(CODE)
+    except Exception:  # noqa: BLE001  (a fingerprint is a nicety, never a reason to stop)
+        return None
+
+
+def alerts(job, codes, now, done):
+    """At most one alert of each kind a day: a failed job, a NO-GO morning, the evening's summary."""
+    today = now.date().isoformat()
+    sent = done.setdefault("alerted", {})
+    if sent.get("date") != today:
+        sent.clear()
+        sent["date"] = today
+    if any(codes) and job != "pass" and not sent.get("fail_" + job):
+        sent["fail_" + job] = notify("%s %s: the %s job failed (exit %s): see trader/logs/%s.log"
+                                     % (today, now.strftime("%H:%M"), job, codes, job)) or True
+    if any(codes) and job == "pass" and not sent.get("fail_pass"):
+        sent["fail_pass"] = notify("%s %s: an autopilot pass failed (exit %s): see trader/logs/autopilot.log"
+                                   % (today, now.strftime("%H:%M"), codes)) or True
+    if job in ("morning", "pass") and not sent.get("nogo"):
+        try:
+            with open(os.path.join("trader", "state", "preflight.json"), encoding="utf-8") as fh:
+                pre = json.load(fh)
+        except (OSError, ValueError):
+            pre = {}
+        if pre.get("date") == today and not pre.get("go") and not pre.get("closed"):
+            sent["nogo"] = notify("%s: pre-flight NO-GO, no new paper trades today: %s"
+                                  % (today, "; ".join(pre.get("no_go") or [])[:400])) or True
+    if job == "daily" and not sent.get("daily"):
+        sent["daily"] = notify(summary_line(today)) or True
 
 
 def read_state():
@@ -155,7 +235,9 @@ def loop(once=False):
                 done[job] = now.date().isoformat()
             st.setdefault("last", {})[job] = {"at": now.strftime("%Y-%m-%d %H:%M"), "exit_codes": codes}
             print("%s IST %s: exit %s" % (now.strftime("%H:%M"), job, codes), flush=True)
+            alerts(job, codes, now, done)
         st["alive"] = ist_now().strftime("%Y-%m-%d %H:%M:%S")
+        st["code"] = code_version()
         st["next"] = wake.strftime("%Y-%m-%d %H:%M")
         write_state(st)
         if once:
@@ -194,8 +276,9 @@ def main(argv=None):
     p.add_argument("--now", help="pretend it is this IST time, YYYY-MM-DD HH:MM")
     a = ap.parse_args(argv)
     if a.cmd == "run":
-        print("scheduler: trading folder %s, code %s, India time %s" % (os.getcwd(), CODE,
-                                                                     ist_now().strftime("%Y-%m-%d %H:%M")), flush=True)
+        print("scheduler: trading folder %s, code %s (%s), India time %s, alerts %s" % (
+            os.getcwd(), CODE, code_version(), ist_now().strftime("%Y-%m-%d %H:%M"),
+            "on" if os.environ.get("NOTIFY_URL") else "off"), flush=True)
         return loop(a.once)
     if a.cmd == "setup":
         return setup()

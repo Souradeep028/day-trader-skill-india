@@ -2,12 +2,22 @@
 #   docker compose -f docker/compose.yaml up -d --build      (from the repo root; see the README, "Run it in Docker")
 # The code is baked into the image; your trading folder (config, frozen tests, broker log, saved bars, reports)
 # is mounted at /data from your machine, so it survives rebuilds and stays yours. Standard library only.
-FROM python:3.12.8-slim-bookworm
+# The image only builds when the whole test suite passes on it (GitHub's CI is not running): broken code
+# never reaches the daily run.
+FROM python:3.12.8-slim-bookworm AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Kolkata
 
+# the gate: the repo as it is, tests included, run offline on the recorded fixtures
+FROM base AS test
+WORKDIR /repo
+COPY . .
+RUN python3 -m unittest discover -s tests -q && touch /tmp/tests-passed
+
+FROM base AS run
+COPY --from=test /tmp/tests-passed /tmp/tests-passed
 WORKDIR /app
 COPY .claude-plugin/ .claude-plugin/
 COPY trader/ trader/

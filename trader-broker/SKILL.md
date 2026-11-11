@@ -247,6 +247,10 @@ process: the morning brief at 8:40, an autopilot pass at 9:16, 9:21 ... 15:31
 daily report and the audit page at 15:50, in India time, weekdays. It is the
 command of the image in docker/ (the trading folder mounted at /data). A late
 start catches up on that day's evening jobs; missed passes are not replayed.
+Each step has its own time limit (a pass 4 minutes); logs rotate at 5 MB;
+`NOTIFY_URL` (optional, ntfy-style) gets one line on a NO-GO, a failed job
+and the evening summary. The daily report records the code's fingerprint in
+each forward test and says when it changed mid-test.
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scheduler.py" setup        # a new trading folder: the lists and a paper config

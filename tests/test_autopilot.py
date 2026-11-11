@@ -394,5 +394,25 @@ class Reporting(unittest.TestCase):
         self.assertIn("on the 1 trades both took", out)
 
 
+class DataLag(unittest.TestCase):
+    def test_the_heartbeat_keeps_the_lag_and_the_report_says_it(self):
+        import datetime as _dt
+        import tempfile as _tf
+        ap, daily = load("trader-broker", "autopilot"), load("trader-broker", "daily")
+        d = _tf.mkdtemp()
+        p = os.path.join(d, "hb.json")
+        t = _dt.datetime(2026, 11, 11, 4, 0)                                   # 9:30 IST
+        ap.heartbeat(p, t, None, [], {"median": 40, "worst": 70, "symbols": 51})
+        ap.heartbeat(p, t + _dt.timedelta(minutes=5), None, [], {"median": 200, "worst": 260, "symbols": 51})
+        ap.heartbeat(p, t + _dt.timedelta(minutes=10), None, [], {"median": 50, "worst": 90, "symbols": 51})
+        with open(p) as fh:
+            hb = json.load(fh)
+        self.assertEqual(hb["lag"], [["09:30", 40, 70], ["09:35", 200, 260], ["09:40", 50, 90]])
+        line = daily.autopilot_part(hb, "2026-11-11")
+        self.assertIn("Yahoo's data lag: 50 s typical over 3 passes, 260 s at worst; 1 pass over the 3-minute limit "
+                      "(no entries then).", line)
+        shutil.rmtree(d)
+
+
 if __name__ == "__main__":
     unittest.main()

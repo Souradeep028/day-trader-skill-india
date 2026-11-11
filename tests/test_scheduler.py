@@ -92,6 +92,82 @@ class Jobs(unittest.TestCase):
         self.assertEqual((st["done"]["morning"], st["next"]), ("2026-11-11", "2026-11-11 09:16"))
 
 
+class Hardening(unittest.TestCase):
+    def setUp(self):
+        self.old, self.d = os.getcwd(), tempfile.mkdtemp()
+        os.chdir(self.d)
+        self.jobs, self.timeout, self.notify = dict(sch.JOBS), dict(sch.TIMEOUT), sch.notify
+
+    def tearDown(self):
+        sch.JOBS.clear()
+        sch.JOBS.update(self.jobs)
+        sch.TIMEOUT.clear()
+        sch.TIMEOUT.update(self.timeout)
+        sch.notify = self.notify
+        os.chdir(self.old)
+        shutil.rmtree(self.d)
+
+    def test_a_stuck_step_is_stopped_at_its_own_limit(self):
+        sch.JOBS["archive"] = [[sys.executable, "-c", "import time; time.sleep(30)"]]
+        sch.TIMEOUT["archive"] = 1
+        self.assertEqual(sch.run_job("archive", DT(2026, 11, 11, 15, 45)), [124])
+        with open("trader/logs/archive.log") as fh:
+            self.assertIn("stopped: over the 1-second limit for archive", fh.read())
+        self.assertLess(sch.TIMEOUT.get("pass", self.timeout["pass"]), 300)   # a pass ends before the next is due
+        self.assertLess(self.timeout["pass"], 300)
+
+    def test_logs_rotate(self):
+        os.makedirs("trader/logs")
+        with open("trader/logs/morning.log", "w") as fh:
+            fh.write("x" * (sch.LOG_MAX + 1))
+        sch.JOBS["morning"] = [[sys.executable, "-c", "pass"]]
+        sch.run_job("morning", DT(2026, 11, 11, 8, 40))
+        self.assertTrue(os.path.exists("trader/logs/morning.log.1"))
+        self.assertLess(os.path.getsize("trader/logs/morning.log"), 1000)
+
+    def test_alerts_once_a_day_each(self):
+        got = []
+        sch.notify = lambda text, url=None: got.append(text) or True
+        done, now = {}, DT(2026, 11, 11, 15, 50)
+        sch.alerts("archive", [1], now, done)
+        sch.alerts("archive", [1], now, done)
+        os.makedirs("trader/state")
+        with open("trader/state/preflight.json", "w") as fh:
+            fh.write('{"date": "2026-11-11", "go": false, "closed": false, "no_go": ["data: Yahoo is a session behind"]}')
+        sch.alerts("morning", [0], DT(2026, 11, 11, 8, 40), done)
+        sch.alerts("pass", [0], DT(2026, 11, 11, 9, 16), done)
+        sch.alerts("daily", [0], now, done)
+        self.assertEqual(len(got), 3, got)
+        self.assertIn("the archive job failed (exit [1])", got[0])
+        self.assertIn("pre-flight NO-GO, no new paper trades today: data: Yahoo is a session behind", got[1])
+        self.assertIn("Daily report: not written today", got[2])
+        # a new day starts the count again
+        sch.alerts("archive", [1], DT(2026, 11, 12, 15, 45), done)
+        self.assertEqual(len(got), 4)
+
+    def test_notify_posts_plain_text_and_never_raises(self):
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append(self.rfile.read(int(self.headers["Content-Length"])).decode("utf-8"))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.handle_request, daemon=True).start()
+        self.assertTrue(self.notify("NO-GO today", "http://127.0.0.1:%d/topic" % srv.server_address[1]))
+        srv.server_close()
+        self.assertEqual(seen, ["NO-GO today"])
+        self.assertFalse(self.notify("x", ""))                                # off without a URL
+        self.assertFalse(self.notify("x", "http://127.0.0.1:9/nothing-here"))  # a dead URL is not an error
+
+
 class DockerFiles(unittest.TestCase):
     def test_the_image_runs_the_scheduler_on_a_mounted_folder(self):
         with open(os.path.join(ROOT, "docker", "Dockerfile")) as fh:
@@ -108,6 +184,10 @@ class DockerFiles(unittest.TestCase):
         with open(os.path.join(ROOT, "docker", "Dockerfile.dockerignore")) as fh:
             ig = fh.read()
         self.assertIn("trader/config.json", ig)                              # personal settings stay out
+        # the image builds only when the test suite passes on it
+        self.assertIn("RUN python3 -m unittest discover -s tests", df)
+        self.assertIn("COPY --from=test /tmp/tests-passed", df)
+        self.assertNotIn("\ntests\n", "\n" + ig)
 
 
 if __name__ == "__main__":

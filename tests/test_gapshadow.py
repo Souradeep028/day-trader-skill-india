@@ -85,6 +85,36 @@ class GapShadow(unittest.TestCase):
         self.assertIn("- profit factor ", out)
 
 
+class CodeVersion(unittest.TestCase):
+    def test_a_fingerprint_that_changes_with_the_code(self):
+        import shutil
+        import tempfile
+        forward = load("trader-broker", "forward")
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, "trader-x"))
+            with open(os.path.join(d, "trader-x", "a.py"), "w") as fh:
+                fh.write("A = 1\n")
+            v1 = forward.code_version(d)
+            self.assertEqual(v1, forward.code_version(d))
+            with open(os.path.join(d, "trader-x", "notes.md"), "w") as fh:
+                fh.write("docs do not count\n")
+            self.assertEqual(v1, forward.code_version(d))
+            with open(os.path.join(d, "trader-x", "a.py"), "w") as fh:
+                fh.write("A = 2\n")
+            v2 = forward.code_version(d)
+            self.assertNotEqual(v1, v2)
+        finally:
+            shutil.rmtree(d)
+        test = {}
+        forward.note_code(test, v1, "2026-11-11")
+        forward.note_code(test, v1, "2026-11-12")
+        self.assertEqual(forward.code_text(test), "Code %s, the same on every day since 2026-11-11." % v1)
+        forward.note_code(test, v2, "2026-11-13")
+        self.assertIn("The code changed during the test: %s from 2026-11-11, %s from 2026-11-13." % (v1, v2),
+                      forward.code_text(test))
+
+
 class Performance(unittest.TestCase):
     def test_worked_by_hand(self):
         ticket = load("trader-broker", "ticket")

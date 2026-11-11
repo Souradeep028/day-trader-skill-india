@@ -1,7 +1,6 @@
 **/__pycache__
 **/*.pyc
 .git
-tests
 trader/config.json
 trader/state
 trader/*.json

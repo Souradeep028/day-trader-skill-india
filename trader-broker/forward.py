@@ -111,6 +111,43 @@ def write(path, doc):
     os.replace(tmp, path)
 
 
+def code_version(root=None):
+    """A short fingerprint of the pack's code: every tool (.py, .sh) in every trader-* folder. It changes when any
+    of them does, so a forward test can say whether the same code ran on every day it counts."""
+    import hashlib
+    root = root or os.path.dirname(HERE)
+    h = hashlib.sha256()
+    for d in sorted(os.listdir(root)):
+        folder = os.path.join(root, d)
+        if not d.startswith("trader-") or not os.path.isdir(folder):
+            continue
+        for f in sorted(os.listdir(folder)):
+            if f.endswith((".py", ".sh")):
+                h.update(("%s/%s\n" % (d, f)).encode("utf-8"))
+                with open(os.path.join(folder, f), "rb") as fh:
+                    h.update(fh.read())
+    return h.hexdigest()[:10]
+
+
+def note_code(test, version, day):
+    """Record the code a test ran on: {version: the first day it ran}. -> [(version, first day)] oldest first."""
+    seen = test.setdefault("code", {})
+    if version not in seen:
+        seen[version] = day
+    return sorted(seen.items(), key=lambda kv: (kv[1], kv[0]))
+
+
+def code_text(test):
+    """One line: the code the test has run on since its start."""
+    seen = sorted((test.get("code") or {}).items(), key=lambda kv: (kv[1], kv[0]))
+    if not seen:
+        return ""
+    if len(seen) == 1:
+        return "Code %s, the same on every day since %s." % (seen[0][0], seen[0][1])
+    return ("The code changed during the test: %s. Days on different code may not be comparable: a change to "
+            "fills, sizing or limits mid-test muddies the evidence." % ", ".join("%s from %s" % kv for kv in seen))
+
+
 def evaluate(test, trades):
     """Pure function: the frozen test plus the round trips since its start -> the status document."""
     exp = test["expected"]

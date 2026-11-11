@@ -14,3 +14,4 @@ services:
       - ${TRADING_DIR:-${HOME}/trading}:/data
     environment:
       TZ: Asia/Kolkata
+      NOTIFY_URL: ${NOTIFY_URL:-}       # optional alerts, e.g. https://ntfy.sh/<a topic only you know>
