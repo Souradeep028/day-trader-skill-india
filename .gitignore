@@ -1,3 +1,3 @@
 __pycache__/
 trader/state/*.lock
-ops/audit/.export/
+trader/audit/.export/
