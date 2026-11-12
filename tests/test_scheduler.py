@@ -175,8 +175,13 @@ class DockerFiles(unittest.TestCase):
         self.assertIn('ENTRYPOINT ["python3", "/app/trader-broker/scheduler.py"]', df)
         self.assertIn("WORKDIR /data", df)
         self.assertRegex(df, r"FROM python:\d+\.\d+\.\d+-slim")              # an exact version
-        for s in ("trader-broker", "trader-risk", "trader-scanner", "trader-timemachine", "trader-budget"):
+        for s in ("core", "trader-broker", "trader-risk", "trader-scanner", "trader-timemachine", "trader-budget"):
             self.assertIn("COPY %s/ %s/" % (s, s), df)
+        self.assertIn("/usr/local/bin/trader", df)                           # `trader doctor` in the container
+        with open(os.path.join(ROOT, "docker", "compose.release.yaml")) as fh:
+            rel = fh.read()
+        self.assertIn("image: ghcr.io/souradeep028/day-trader-india:${TRADER_VERSION", rel)   # a pinned release
+        self.assertNotRegex(rel, r"(?m)^\s+build:")
         with open(os.path.join(ROOT, "docker", "compose.yaml")) as fh:
             dc = fh.read()
         self.assertIn(":/data", dc)

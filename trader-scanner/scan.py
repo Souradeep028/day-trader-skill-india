@@ -80,6 +80,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
+    if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
+        sys.path.append(_p)
+import tradercore  # noqa: E402
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Souradeep028/day-trader-skill-india)"
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
@@ -100,26 +105,9 @@ BY_HAND = ("\nNSE's site often turns away scripts. Save the two files from a bro
            "into one folder, then run: scan.py universe --offline <that folder>")
 NOTE = "A scan is a list of charts that match a rule, not a list of stocks to buy."
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays, NSE circular for 2026
-    "2026-01-15": "Municipal Corporation elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
-NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes
-CALENDAR_YEARS = (2026,)
+NSE_HOLIDAYS = tradercore.holidays()  # NSE equity segment trading holidays: core/nse.json, the one copy
+NSE_EARLY_CLOSE = tradercore.early_close()  # NSE has no scheduled early closes
+CALENDAR_YEARS = tradercore.calendar_years()
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)

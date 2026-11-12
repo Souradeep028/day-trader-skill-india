@@ -1,0 +1,38 @@
+{
+  "about": "NSE equity segment calendar and tick sizes. The one copy every skill reads. Update it when NSE publishes next year's holidays (nseindia.com, Resources, Exchange communication, Holidays), then add the year to calendar_years.",
+  "holidays_source": "NSE circular for 2026",
+  "calendar_years": [
+    2026
+  ],
+  "holidays": {
+    "2026-01-15": "Municipal Corporation elections in Maharashtra",
+    "2026-01-26": "Republic Day",
+    "2026-03-03": "Holi",
+    "2026-03-26": "Shri Ram Navami",
+    "2026-03-31": "Shri Mahavir Jayanti",
+    "2026-04-03": "Good Friday",
+    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2026-05-01": "Maharashtra Day",
+    "2026-05-28": "Bakri Id",
+    "2026-06-26": "Muharram",
+    "2026-09-14": "Ganesh Chaturthi",
+    "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-10-20": "Dussehra",
+    "2026-11-10": "Diwali Balipratipada",
+    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
+    "2026-12-25": "Christmas"
+  },
+  "early_close": {},
+  "special_sessions": {
+    "2026-11-08": "Diwali Muhurat trading, a short Sunday session"
+  },
+  "ticks": [
+    [250, "0.01"],
+    [1000, "0.05"],
+    [5000, "0.10"],
+    [10000, "0.50"],
+    [20000, "1.00"]
+  ],
+  "ticks_source": "NSE CMTR/67133, from 15 April 2025: [price below, tick]; top_tick above the last band",
+  "top_tick": "5.00"
+}

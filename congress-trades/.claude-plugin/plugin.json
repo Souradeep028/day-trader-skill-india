@@ -1,0 +1,14 @@
+{
+  "name": "congress-trades",
+  "description": "The Pelosi Tracker: US Congress members' stock-trade disclosures (STOCK Act PTRs), read as soon as they are filed. US stocks only; kept apart from the NSE day-trading pack.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Souradeep028",
+    "url": "https://github.com/Souradeep028"
+  },
+  "homepage": "https://github.com/Souradeep028/day-trader-skill-india",
+  "repository": "https://github.com/Souradeep028/day-trader-skill-india",
+  "license": "MIT",
+  "keywords": ["claude-code", "claude-skills", "stock-act", "congress", "us-stocks"],
+  "skills": "./"
+}

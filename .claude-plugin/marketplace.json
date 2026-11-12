@@ -9,9 +9,18 @@
   "plugins": [
     {
       "name": "day-trader-skill-india",
-      "description": "Eleven Claude skills for day trading NSE stocks: a chart scanner, a news monitor, an entry timer, an exit planner on the NSE tick, a time machine that replays 10,000 sessions before and after charges, a risk manager with Zerodha's charges and price bands, a budget manager, an order executor (paper by default, Zerodha Kite when you go live, never without your yes), price alerts, a results analyst and a Pelosi tracker.",
+      "description": "Ten Claude skills for day trading NSE stocks: a chart scanner, a news monitor, an entry timer, an exit planner on the NSE tick, a time machine that replays 10,000 sessions before and after charges, a risk manager with Zerodha's charges and price bands, a budget manager, an order executor (paper by default, Zerodha Kite when you go live, never without your yes), price alerts and a results analyst. Plus an MCP server with read-only tools and a stop switch.",
       "source": "./",
       "category": "productivity",
+      "homepage": "https://github.com/Souradeep028/day-trader-skill-india",
+      "version": "3.0.0"
+    },
+    {
+      "name": "congress-trades",
+      "description": "The Pelosi Tracker: US Congress members' stock-trade disclosures (STOCK Act PTRs), read as soon as they are filed. US stocks only.",
+      "source": "./congress-trades",
+      "category": "productivity",
+      "version": "1.0.0",
       "homepage": "https://github.com/Souradeep028/day-trader-skill-india"
     }
   ]

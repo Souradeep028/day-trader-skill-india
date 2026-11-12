@@ -61,6 +61,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
+    if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
+        sys.path.append(_p)
+import tradercore  # noqa: E402
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Souradeep028/day-trader-skill-india)"
 BACKOFF = 5.0
@@ -70,31 +75,12 @@ DEFAULTS = {"flat_by": "15:10", "min_reward_risk": 1.0}
 ATR_BARS = 14
 MIN_RISK_PCT = Decimal("0.05")     # risk under 0.05% of the price is inside the spread's noise
 CENT = Decimal("0.01")
-TICKS = ((Decimal("250"), Decimal("0.01")), (Decimal("1000"), Decimal("0.05")), (Decimal("5000"), Decimal("0.10")),
-         (Decimal("10000"), Decimal("0.50")), (Decimal("20000"), Decimal("1.00")))
-TOP_TICK = Decimal("5.00")
+TICKS, TOP_TICK = tradercore.ticks(Decimal)  # NSE tick sizes: core/nse.json
 EPOCH = datetime.datetime(1970, 1, 1)
 NOTE = "A stop is a plan, not a guarantee: a gap or a fast market can fill past it."
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays, NSE circular for 2026
-    "2026-01-15": "Municipal Corporation elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
-NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes
+NSE_HOLIDAYS = tradercore.holidays()  # NSE equity segment trading holidays: core/nse.json, the one copy
+NSE_EARLY_CLOSE = tradercore.early_close()  # NSE has no scheduled early closes
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)

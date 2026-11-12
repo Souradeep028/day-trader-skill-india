@@ -1,7 +1,7 @@
 {
   "name": "day-trader-skill-india",
-  "description": "11 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a rupee.",
-  "version": "2.0.0-india.1",
+  "description": "10 Claude skills for day trading NSE stocks: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a rupee.",
+  "version": "3.0.0",
   "author": {
     "name": "Souradeep028",
     "url": "https://github.com/Souradeep028"
@@ -21,5 +21,16 @@
     "india",
     "zerodha"
   ],
-  "skills": "./"
+  "skills": "./",
+  "mcpServers": {
+    "day-trader-india": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/core/mcp_server.py"
+      ],
+      "env": {
+        "TRADER_HOME": "${TRADER_HOME:-}"
+      }
+    }
+  }
 }

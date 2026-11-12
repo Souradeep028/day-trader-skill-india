@@ -1,0 +1,15 @@
+{
+  "name": "Zerodha",
+  "segment": "equity intraday (MIS) on the NSE",
+  "source": "zerodha.com/charges",
+  "read": "2026-11-08",
+  "charges": {
+    "brokerage_pct": 0.03,
+    "brokerage_max": 20.0,
+    "stt_sell_pct": 0.025,
+    "exchange_pct": 0.00307,
+    "sebi_per_crore": 10.0,
+    "stamp_buy_pct": 0.003,
+    "gst_pct": 18.0
+  }
+}

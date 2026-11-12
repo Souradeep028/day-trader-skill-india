@@ -69,6 +69,11 @@ import json
 import math
 import os
 import sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
+    if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
+        sys.path.append(_p)
+import tradercore  # noqa: E402
 
 # v2 defaults: the contract's config.example.json. Missing keys fall back to these.
 DEFAULTS = {
@@ -104,10 +109,7 @@ DEFAULTS = {
     "intraday_leverage": 1,
     "charges": {},
 }
-CHARGES = {  # Zerodha, equity intraday on the NSE: zerodha.com/charges, read 2026-11-08
-    "brokerage_pct": 0.03, "brokerage_max": 20.0, "stt_sell_pct": 0.025, "exchange_pct": 0.00307,
-    "sebi_per_crore": 10.0, "stamp_buy_pct": 0.003, "gst_pct": 18.0,
-}
+CHARGES = tradercore.charges("zerodha")  # equity intraday on the NSE: core/brokers/zerodha.json
 MAX_LEVERAGE = 5.0
 EPS = 1e-9
 FRESH_MINUTES = 15

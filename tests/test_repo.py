@@ -5,15 +5,15 @@ import unittest
 
 from _load import ROOT
 
-# v2, the day-trading pack: the eleven folders the reel's repo card shows
+# v3, the NSE day-trading pack: ten skill folders at the root; the US-only Pelosi Tracker is its own plugin
 SKILLS = ["trader-scanner", "trader-news", "trader-entry", "trader-exit", "trader-timemachine",
-          "trader-risk", "trader-budget", "trader-broker", "trader-alerts", "trader-analyst",
-          "trader-pelosi"]
-ABOUT = ("11 Claude skills for day trading: scan thousands of charts, track breaking news, time every "
+          "trader-risk", "trader-budget", "trader-broker", "trader-alerts", "trader-analyst"]
+CONGRESS = os.path.join(ROOT, "congress-trades")
+ABOUT = ("10 Claude skills for day trading NSE stocks: scan thousands of charts, track breaking news, time every "
          "entry and exit, and replay every outcome before you risk a rupee.")
 # skills on the way to an order carry the safety block
 ORDER_PATH = ["trader-scanner", "trader-entry", "trader-exit", "trader-timemachine", "trader-budget",
-              "trader-pelosi", "trader-risk", "trader-broker", "trader-alerts"]
+              "trader-risk", "trader-broker", "trader-alerts", os.path.join("congress-trades", "trader-pelosi")]
 V1_ONLY = ["trader-copycat", "trader-screener", "trader-tax", "trader-rebalance"]
 
 
@@ -33,21 +33,23 @@ def every_text_file():
 
 
 class Repo(unittest.TestCase):
-    def test_eleven_skill_folders_at_the_root(self):
+    def test_ten_skill_folders_at_the_root_and_the_pelosi_plugin(self):
         found = sorted(d for d in os.listdir(ROOT)
                        if os.path.isfile(os.path.join(ROOT, d, "SKILL.md")))
         self.assertEqual(found, sorted(SKILLS))
+        self.assertTrue(os.path.isfile(os.path.join(CONGRESS, "trader-pelosi", "SKILL.md")))
 
     def test_root_matches_the_reel(self):
         root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "docker", "tests", "trader"] + SKILLS))
+        self.assertEqual(root, sorted([".claude-plugin", "CHANGELOG.md", "LICENSE", "README.md", "congress-trades", "core",
+                                       "docker", "tests", "trader"] + SKILLS))
         # trader/ ships NSE's lists only: personal config and state stay out of git
         self.assertEqual(sorted(os.listdir(os.path.join(ROOT, "trader"))), ["banknifty.txt", "nifty100.txt", "nifty50.txt", "sectors.json"])
 
     def test_frontmatter_name_and_description(self):
-        for s in SKILLS:
+        for s in SKILLS + [os.path.join("congress-trades", "trader-pelosi")]:
             fm, text = frontmatter(os.path.join(ROOT, s, "SKILL.md"))
-            self.assertIn("name: %s\n" % s, fm + "\n", s)
+            self.assertIn("name: %s\n" % os.path.basename(s), fm + "\n", s)
             self.assertRegex(fm, r"description: ", s)
             self.assertGreater(len(fm), 200, "%s description is too thin" % s)
             self.assertGreater(len(text.splitlines()), 60, s)
@@ -69,6 +71,19 @@ class Repo(unittest.TestCase):
             market = json.load(fh)
         self.assertEqual(market["name"], "day-trader-skill-india")
         self.assertEqual(market["plugins"][0]["name"], "day-trader-skill-india")
+        self.assertEqual(market["plugins"][0]["version"], plugin["version"])
+        self.assertRegex(plugin["version"], r"^\d+\.\d+\.\d+$")              # a plain semver: releases are v<it>
+        # the second plugin, the US-only Pelosi Tracker
+        congress = [p for p in market["plugins"] if p["name"] == "congress-trades"][0]
+        self.assertEqual(congress["source"], "./congress-trades")
+        with open(os.path.join(CONGRESS, ".claude-plugin", "plugin.json")) as fh:
+            self.assertEqual(json.load(fh)["name"], "congress-trades")
+        # the pack's MCP server, started by Claude Code from the plugin
+        mcp = plugin["mcpServers"]["day-trader-india"]
+        self.assertEqual(mcp["args"], ["${CLAUDE_PLUGIN_ROOT}/core/mcp_server.py"])
+        self.assertFalse(os.path.exists(os.path.join(ROOT, ".mcp.json")))   # not a project server for repo devs
+        with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as fh:
+            self.assertIn("## %s" % plugin["version"], fh.read())
 
     def test_readme_carries_the_reel_copy(self):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
@@ -80,7 +95,7 @@ class Repo(unittest.TestCase):
                      "/plugin install day-trader-skill-india@day-trader-skill-india",
                      "## Fine print"):
             self.assertIn(line, readme)
-        for s in SKILLS:
+        for s in SKILLS + ["trader-pelosi"]:
             self.assertIn("/" + s, readme, s)
 
     def test_no_em_dashes_and_no_personal_email(self):
@@ -104,7 +119,7 @@ class Repo(unittest.TestCase):
 
     def test_every_tool_runs_on_python_3_8(self):
         # no 3.9+ only modules or syntax in the tools (the README promises 3.8)
-        for s in SKILLS:
+        for s in SKILLS + ["core", os.path.join("congress-trades", "trader-pelosi")]:
             folder = os.path.join(ROOT, s)
             for f in os.listdir(folder):
                 if not f.endswith(".py"):
@@ -141,7 +156,19 @@ class Repo(unittest.TestCase):
 
 
 class SharedTables(unittest.TestCase):
-    """The pack copies a few tables into each skill so each one runs alone. They must stay the same."""
+    """The NSE calendar, the tick sizes and the charges live once, in core/; every skill reads them from there."""
+
+    def test_one_copy_only(self):
+        for s in SKILLS:
+            folder = os.path.join(ROOT, s)
+            for f in os.listdir(folder):
+                if not f.endswith(".py"):
+                    continue
+                with open(os.path.join(folder, f), encoding="utf-8") as fh:
+                    src = fh.read()
+                for table in (r"(?m)^NSE_HOLIDAYS = \{", r"(?m)^CHARGES = \{", r"(?m)^TICKS = \(\(", r'"2026-01-26": '):
+                    found = re.search(table, src)
+                    self.assertIsNone(found, "%s/%s keeps its own copy (%s)" % (s, f, table))
 
     def test_the_holiday_lists_match(self):
         from _load import load

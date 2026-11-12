@@ -20,6 +20,7 @@ FROM base AS run
 COPY --from=test /tmp/tests-passed /tmp/tests-passed
 WORKDIR /app
 COPY .claude-plugin/ .claude-plugin/
+COPY core/ core/
 COPY trader/ trader/
 COPY trader-alerts/ trader-alerts/
 COPY trader-analyst/ trader-analyst/
@@ -28,12 +29,13 @@ COPY trader-budget/ trader-budget/
 COPY trader-entry/ trader-entry/
 COPY trader-exit/ trader-exit/
 COPY trader-news/ trader-news/
-COPY trader-pelosi/ trader-pelosi/
 COPY trader-risk/ trader-risk/
 COPY trader-scanner/ trader-scanner/
 COPY trader-timemachine/ trader-timemachine/
 
-RUN useradd --create-home --uid 1000 trader && mkdir -p /data && chown trader /data
+# `trader <command>` inside the container: docker compose -f docker/compose.yaml exec trader trader doctor
+RUN printf '#!/bin/sh\nexec python3 /app/core/trader.py "$@"\n' > /usr/local/bin/trader && chmod 755 /usr/local/bin/trader \
+ && useradd --create-home --uid 1000 trader && mkdir -p /data && chown trader /data
 USER trader
 WORKDIR /data
 VOLUME ["/data"]

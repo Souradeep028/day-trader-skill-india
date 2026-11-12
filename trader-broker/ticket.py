@@ -62,6 +62,11 @@ import json
 import os
 import re
 import sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
+    if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
+        sys.path.append(_p)
+import tradercore  # noqa: E402
 
 ORDER_FIELDS = ("symbol", "exchange", "product", "side", "qty", "notional", "type", "time_in_force",
                 "limit_price", "stop_price", "trail_price", "trail_percent", "extended_hours", "client_order_id",
@@ -70,10 +75,7 @@ ORDER_FIELDS = ("symbol", "exchange", "product", "side", "qty", "notional", "typ
 TIF_WORDS = {"day": "good for today", "ioc": "immediate or cancel"}
 PRODUCT_WORDS = {"MIS": "intraday (MIS)", "CNC": "delivery (CNC)"}
 KITE_TYPES = {"market": "MARKET", "limit": "LIMIT", "stop": "SL-M", "stop_limit": "SL"}
-CHARGES = {  # Zerodha, equity intraday on the NSE: zerodha.com/charges, read 2026-11-08
-    "brokerage_pct": 0.03, "brokerage_max": 20.0, "stt_sell_pct": 0.025, "exchange_pct": 0.00307,
-    "sebi_per_crore": 10.0, "stamp_buy_pct": 0.003, "gst_pct": 18.0,
-}
+CHARGES = tradercore.charges("zerodha")  # equity intraday on the NSE: core/brokers/zerodha.json
 FRESH_MINUTES = 15
 YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}

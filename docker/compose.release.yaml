@@ -1,0 +1,17 @@
+# The released image, no build: the version you pin is the code that runs, on every day of a forward test.
+#   TRADER_VERSION=3.0.0 docker compose -f docker/compose.release.yaml up -d
+# Upgrade between forward tests, not during one: `trader doctor` shows when the code changed mid-test.
+# The images are built by .github/workflows/release.yml from a tagged commit after the tests pass, for
+# linux/amd64 and linux/arm64 (a Raspberry Pi 4/5 or an Apple-silicon Mac runs the arm64 one).
+services:
+  trader:
+    image: ghcr.io/souradeep028/day-trader-india:${TRADER_VERSION:-3.0.0}
+    container_name: day-trader
+    restart: unless-stopped
+    init: true
+    user: "${TRADER_UID:-1000}:${TRADER_GID:-1000}"
+    volumes:
+      - ${TRADING_DIR:-${HOME}/trading}:/data
+    environment:
+      TZ: Asia/Kolkata
+      NOTIFY_URL: ${NOTIFY_URL:-}       # optional alerts, e.g. https://ntfy.sh/<a topic only you know>

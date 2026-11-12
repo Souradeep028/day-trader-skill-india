@@ -35,14 +35,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKILLS = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import scan  # noqa: E402  (this folder's scanner: its calendar and clock)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
+    if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
+        sys.path.append(_p)
+import tradercore  # noqa: E402
 
 SCAN = os.path.join(HERE, "scan.py")
 PREFLIGHT = os.path.join(SKILLS, "trader-broker", "preflight.py")
 NEWS = os.path.join(SKILLS, "trader-news", "news.py")
 EXPIRY_WEEKDAY = 1        # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
 STALE_DAYS = 7
-SPECIAL_SESSIONS = {"2026-11-08": "Diwali Muhurat trading, a short Sunday session"}   # as in trader-risk
-CHARGES_READ = "2026-11-08"                                                        # as in trader-risk
+SPECIAL_SESSIONS = tradercore.special_sessions()   # core/nse.json
+CHARGES_READ = tradercore.charges_read("zerodha")  # when the charges were last checked against zerodha.com/charges
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
           "November", "December")

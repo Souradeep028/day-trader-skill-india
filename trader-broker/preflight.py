@@ -78,6 +78,9 @@ def run_checks(now_utc, cfg, test, state, portfolio, events_doc, surveillance_do
         add("calendar", False, unknown)
     else:
         add("calendar", True, "NSE session 9:15 to 15:30" + (", Nifty's weekly expiry" if check.expiry_day(d) else ""))
+    halt = check.stop_reason()
+    if halt:
+        add("stop switch", False, halt)
     c = dict(check.DEFAULTS)
     c.update(check.inr_keys(cfg or {}))
     if cfg is None:

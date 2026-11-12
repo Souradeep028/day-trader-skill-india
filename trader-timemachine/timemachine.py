@@ -90,6 +90,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
+    if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
+        sys.path.append(_p)
+import tradercore  # noqa: E402
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Souradeep028/day-trader-skill-india)"
 PAUSE = 0.5          # seconds between requests: be polite to free endpoints
@@ -109,12 +114,9 @@ STRONG = 0.15
 MANY_NEITHER = 0.40
 EPOCH = datetime.datetime(1970, 1, 1)
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes
+NSE_EARLY_CLOSE = tradercore.early_close()  # NSE has no scheduled early closes
 EARLY_MIN = 13 * 60
-CHARGES = {  # Zerodha, equity intraday on the NSE: zerodha.com/charges, read 2026-11-08
-    "brokerage_pct": 0.03, "brokerage_max": 20.0, "stt_sell_pct": 0.025, "exchange_pct": 0.00307,
-    "sebi_per_crore": 10.0, "stamp_buy_pct": 0.003, "gst_pct": 18.0,
-}
+CHARGES = tradercore.charges("zerodha")  # equity intraday on the NSE: core/brokers/zerodha.json
 DEFAULT_MAX_LOSS = 500.0
 DEFAULT_FLAT_BY = "15:10"   # trader-exit's default: out before the broker squares off MIS positions
 
@@ -487,7 +489,7 @@ def cents_away(x, long):
     return (math.floor(c) if long else math.ceil(c)) / 100.0
 
 
-TICKS = ((250, 0.01), (1000, 0.05), (5000, 0.10), (10000, 0.50), (20000, 1.00))
+TICKS, TOP_TICK = tradercore.ticks()  # NSE tick sizes: core/nse.json
 
 
 def tick_for(price):
@@ -495,7 +497,7 @@ def tick_for(price):
     for below, tick in TICKS:
         if price < below:
             return tick
-    return 5.00
+    return TOP_TICK
 
 
 def observed_tick(prices, min_count=12):

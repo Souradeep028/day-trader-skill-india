@@ -1,6 +1,6 @@
 # The Day Trader skill
 
-11 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a rupee.
+10 Claude skills for day trading NSE stocks: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a rupee.
 
 For the Indian market: NSE stocks, IST, the NSE calendar, rupees, the NSE
 tick and price bands, Zerodha's intraday charges, and orders in Zerodha
@@ -49,14 +49,24 @@ Or as a plugin, in Claude Code:
 /plugin install day-trader-skill-india@day-trader-skill-india
 ```
 
+The plugin also brings the pack's MCP server (see "One command, a health
+check and an MCP server" below) and runs `core/` from the plugin's own
+folder. The US-only Pelosi Tracker is a separate plugin in the same
+marketplace: `/plugin install congress-trades@day-trader-skill-india`.
+
 Claude Code namespaces plugin skills, so installed as a plugin they show up as
 `/day-trader-skill-india:trader-scanner` and so on. Copy the folders instead if you want
-plain `/trader-scanner`:
+plain `/trader-scanner` (copy `core/` too: every skill reads the NSE calendar,
+the tick sizes and the charges from it):
 
 ```bash
 git clone https://github.com/Souradeep028/day-trader-skill-india.git
-cp -r day-trader-skill-india/trader-* ~/.claude/skills/
+cp -r day-trader-skill-india/trader-* day-trader-skill-india/core ~/.claude/skills/
 ```
+
+One skill on its own (for example uploaded to claude.ai): `python3
+core/trader.py package trader-risk` writes `dist/trader-risk.zip` with the
+shared tables inside.
 
 Project-local instead of global: copy the same folders into your repo's
 `.claude/skills/`. Copy `trader/nifty50.txt`, `trader/banknifty.txt` and
@@ -68,7 +78,7 @@ lose the Python tools, but the method works.
 The tools need Python 3.8 or newer. Nothing to pip install. Start your rules
 from `trader-budget/config.example.json` (copy it to `trader/config.json`).
 
-## The eleven
+## The ten
 
 | command | job | what it does |
 | --- | --- | --- |
@@ -82,7 +92,10 @@ from `trader-budget/config.example.json` (copy it to `trader/config.json`).
 | `/trader-broker` | Order Executor | Paper trades approved orders by default, or sends them to Zerodha Kite, never without your yes. |
 | `/trader-alerts` | Price Alerts | Rings when a price, a stop, the flat-by time or the opening bell hits. |
 | `/trader-analyst` | Results Analyst | Works through a company's quarterly results from its NSE filing and sums up what changed. |
-| `/trader-pelosi` | Pelosi Tracker | Reads US Congress's stock-trade disclosures the minute they are filed (US stocks only). |
+
+And in its own plugin, `congress-trades`: `/trader-pelosi`, the Pelosi
+Tracker, which reads US Congress's stock-trade disclosures the minute they
+are filed. US stocks only, so it is kept out of the NSE pack.
 
 ## How to use it
 
@@ -181,14 +194,62 @@ python3 trader-alerts/alerts.py check                                  # rings w
 python3 trader-analyst/results.py show trader/results/INFY.json        # quarters, growth, margins
 python3 trader-analyst/results.py event INFY.NS 2026-11-12             # a results date: no entries that day
 python3 trader-analyst/results.py event MARKET 2026-12-04 --what "RBI policy"   # no entries at all that day
-python3 trader-pelosi/ptr.py index --member pelosi                     # her PTRs this year (US)
+python3 congress-trades/trader-pelosi/ptr.py index --member pelosi     # her PTRs this year (US)
 ```
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs the same tests on every push (`.github/workflows/tests.yml`).
+GitHub Actions runs the same tests on every push, on Python 3.8 to 3.13 and
+on macOS (`.github/workflows/tests.yml`).
+
+## One command, a health check and an MCP server
+
+Every tool above also runs through one front door, from your trading folder
+(or anywhere, with `TRADER_HOME=~/trading`):
+
+```bash
+python3 core/trader.py help                 # every command
+python3 core/trader.py setup                # a new trading folder: the lists and a paper config
+python3 core/trader.py doctor               # is everything ready? OK / WARN / FAIL, exit 1 on a FAIL
+python3 core/trader.py doctor --online      # also: does Yahoo answer, is this machine's clock right
+python3 core/trader.py migrate              # an older trader/config.json to the current format (backup kept)
+python3 core/trader.py stop "bad week"      # the stop switch: no new entries, paper or live
+python3 core/trader.py resume               # off again (only you can)
+python3 core/trader.py check                # = python3 trader-risk/check.py, and so on for every tool
+```
+
+`doctor` checks Python, the shared tables, whether the NSE holiday list
+covers this year (and next, in December), the config's format and any key
+the pack does not know (a typo like `max_los_per_trade_inr` would otherwise
+be silently ignored), paper or live, the charges' age, the stop switch, the
+forward tests and whether the code changed during them, the scheduler's last
+check-in, Yahoo's data lag, disk and write access. `doctor --bundle
+doctor.zip` writes a file to attach to a GitHub issue: the report, your
+config, the state files and the last 200 lines of each log. It holds no
+trades, no positions and no keys, but it does hold your config: read it
+before you share it.
+
+**The MCP server.** Installed as a plugin, Claude Code starts
+`core/mcp_server.py` (standard library, no install) and gets typed tools
+instead of shell commands: `doctor`, `status` (today's GO or NO-GO, the stop
+switch, the scheduler, the autopilot), `forward_tests`, `journal`,
+`daily_report`, `schedule`, and `stop`. It works in the folder Claude Code
+was started in, or `TRADER_HOME`. On purpose there is no tool that places,
+approves or changes an order, and none that turns the stop switch off: live
+orders go through the broker's own MCP behind its approval card, and each
+still needs your yes.
+
+**One copy of the tables.** The NSE holidays, the tick sizes and each
+broker's charges live once, in `core/nse.json` and `core/brokers/`, and every
+skill reads them from there. A new year's holidays or a charges change is one
+edit, and it changes the code fingerprint, so a forward test shows it.
+
+**Versions.** Releases are tagged (`v3.0.0`, see CHANGELOG.md). A tag runs
+the tests, then builds the Docker image for amd64 and arm64 and publishes it
+as `ghcr.io/souradeep028/day-trader-india:<version>`. Pin a version for the
+daily run (below) and upgrade between forward tests, never during one.
 
 The tests run offline, on fixtures cut from real data: Infosys's 5-minute bars
 for the 60 sessions to 6 November 2026, the Nifty 50's 5-minute and daily
@@ -316,6 +377,14 @@ docker compose -f docker/compose.yaml up -d --build           # start it; it res
 docker compose -f docker/compose.yaml logs -f                 # what it ran
 docker compose -f docker/compose.yaml run --rm trader plan    # what is due now, and when it wakes next
 docker compose -f docker/compose.yaml run --rm trader now daily   # one job right away
+docker compose -f docker/compose.yaml exec trader trader doctor   # the health check, inside the container
+```
+
+Or a released image, no build, pinned to a version (amd64, or arm64 for a
+Raspberry Pi 4 or 5 or an Apple-silicon Mac that stays on all day):
+
+```bash
+TRADER_VERSION=3.0.0 docker compose -f docker/compose.release.yaml up -d
 ```
 
 Freeze a rule first (`forward.py start`, run in the container with
@@ -334,7 +403,7 @@ line on a NO-GO morning, on a failed job, and after the daily report; that
 service then sees those lines. Off by default. Back up the trading folder
 like any folder you care about: it is the only copy of the run.
 
-Every daily report fingerprints the code (each tool in the trader-* folders)
+Every daily report fingerprints the code (each tool in the trader-* folders and the shared tables in core/)
 and the forward tests record it: if you rebuild with changed code during a
 test, the report says from which day, because a change to fills, sizing or
 limits mid-test makes the days before and after hard to compare. Rebuild
@@ -366,8 +435,9 @@ What still needs you, and how often:
 - **Monthly (5 minutes):** the RBI policy date and the results and dividend
   dates of the stocks you trade (`results.py event`); the SIP purchase, or
   set up the broker's own ETF SIP and record it.
-- **Yearly, each December:** next year's NSE holidays, and a look at the
-  charges; the risk check and the reports remind you. Miss the holidays and
+- **Yearly, each December:** next year's NSE holidays into `core/nse.json`
+  (or a plugin update that has them), and a look at the charges; the risk
+  check, the reports and `doctor` remind you. Miss the holidays and
   nothing trades from 1 January: the pre-flight says NO-GO and the risk
   check refuses every new entry until the list is in.
 
@@ -400,8 +470,13 @@ not at all in a halt, orders placed outside the pack, and editing the code.
 
 ## Fine print
 
-**Not financial advice.** This is software that reads public data and does
-arithmetic. It does not know your situation and it cannot see the future.
+**Not financial advice.** This is an education and research tool: software
+that reads public data and does arithmetic. Its author is not a SEBI-registered
+investment adviser or research analyst, and the pack publishes no signals,
+tips or recommendations to anyone. Each copy runs on its owner's machine, for
+the owner's own account, under the owner's own limits; it never holds broker
+keys and has no server. Running it to trade for other people, or sharing its
+output as advice, is a different, regulated activity. It does not know your situation and it cannot see the future.
 SEBI's own study of intraday trading in the equity cash segment found that
 about seven in ten individual traders lost money. You can lose money. Decide
 for yourself, and talk to a SEBI-registered adviser if you need advice.
@@ -423,8 +498,9 @@ order tools); see `/trader-broker`. Keys live in its config, never in the chat.
 read 8 November 2026) come into every size, every max loss, every
 reward:risk and every paper fill: brokerage 0.03 % or 20 rupees an order,
 STT 0.025 % on the sell, exchange 0.00307 %, SEBI 10 rupees a crore, stamp
-duty 0.003 % on the buy, and 18 % GST. Another broker's rates go in
-`"charges"` in your config. Your contract note is the final word.
+duty 0.003 % on the buy, and 18 % GST. They live in
+`core/brokers/zerodha.json`; another broker's rates go in a file of their own
+there (with `"broker"` in your config), or in `"charges"` in your config. Your contract note is the final word.
 
 **Leverage and square-off.** Intraday (MIS) positions can borrow up to about
 five times your cash. This pack borrows nothing unless you set
@@ -458,7 +534,8 @@ time, each after your yes, but check your broker's own rules (such as a
 registered static IP for API orders) before going live.
 
 **Congress's trades are public, and American.** Members of the US Congress
-must disclose trades within 45 days (the STOCK Act); the Pelosi skill reads
+must disclose trades within 45 days (the STOCK Act); the Pelosi skill (its own
+plugin, `congress-trades`) reads
 those public filings. They are about US stocks and say nothing about the NSE.
 
 **Taxes.** In India, intraday equity trading is speculative business income,
@@ -473,14 +550,18 @@ trader-scanner/     SKILL.md, scan.py, morning.py
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py
 trader-exit/        SKILL.md, exit.py
-trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py
+trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py, openclose.py, tom.py, archive.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, sip.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, forward.py, daily.py, autopilot.py, preflight.py, claude_desktop_config.example.json
+trader-broker/      SKILL.md, ticket.py, forward.py, gapshadow.py, daily.py, autopilot.py, preflight.py, audit.py,
+                    scheduler.py, day.sh, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py
-trader-pelosi/      SKILL.md, ptr.py
+core/               trader.py (one command), doctor.py, mcp_server.py, package.py, tradercore.py,
+                    nse.json (holidays, ticks), brokers/zerodha.json (charges): shared by every skill
+congress-trades/    the second plugin: trader-pelosi/ (SKILL.md, ptr.py), US only
 trader/             nifty50.txt, nifty100.txt, banknifty.txt, sectors.json (NSE's index lists and industries)
+docker/             Dockerfile, compose.yaml (build here), compose.release.yaml (a pinned release)
 tests/              unittest suite + offline fixtures
 ```
 

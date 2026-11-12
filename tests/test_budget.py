@@ -19,7 +19,7 @@ REEL_V1 = {"AAPL": 1250, "AXP": 1119, "GOOGL": 823, "KO": 708, "BAC": 600}
 PRICES = {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53.96}
 # the NSE config, key for key
 CONTRACT_CFG = {
-    "budget": 100000, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 75000, "min_order_inr": 500,
+    "config_version": 3, "budget": 100000, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 75000, "min_order_inr": 500,
     "max_loss_per_trade_inr": 500, "max_daily_loss_inr": 1500, "max_weekly_loss_inr": 3000,
     "max_monthly_loss_inr": 6000, "max_same_side_risk_inr": 1000, "drawdown_cut_pct": 5, "drawdown_size_factor": 0.5, "max_trades_per_day": 3, "max_orders_per_day": 10,
     "max_losing_streak": 2, "max_entries_per_sector": 2, "min_reward_risk": 1.0, "max_charges_pct_of_risk": 15, "require_stop": True,

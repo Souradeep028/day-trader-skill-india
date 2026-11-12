@@ -112,6 +112,11 @@ import math
 import os
 import re
 import sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
+    if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
+        sys.path.append(_p)
+import tradercore  # noqa: E402
 
 DEFAULTS = {
     "budget": None, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 75000,
@@ -138,10 +143,7 @@ TYPES = {"market", "limit", "stop", "stop_limit"}
 TIFS = {"day", "ioc"}
 DERIV = re.compile(r"^[A-Z0-9&\-]+\d{2}[A-Z]{3}(\d+(\.\d+)?(CE|PE)|FUT)$|^[A-Z0-9&\-]+\d{2}[0-9OND]\d{2}\d+(CE|PE)$")
 TICKER = re.compile(r"^[A-Z0-9&\-]{1,20}\.NS$")
-CHARGES = {  # Zerodha, equity intraday on the NSE: zerodha.com/charges, read 2026-11-08
-    "brokerage_pct": 0.03, "brokerage_max": 20.0, "stt_sell_pct": 0.025, "exchange_pct": 0.00307,
-    "sebi_per_crore": 10.0, "stamp_buy_pct": 0.003, "gst_pct": 18.0,
-}
+CHARGES = tradercore.charges("zerodha")  # equity intraday on the NSE: core/brokers/zerodha.json
 MAX_LEVERAGE = 5.0
 BAND_MARGIN_PCT = 1.0
 HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
@@ -150,32 +152,13 @@ FRESH_MINUTES = 15
 REF_WORDS = {"plan": "the plan's entry", "price": "the latest price", "limit": "the limit price",
              "stop price": "the stop price", "stale price": "an old price"}
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays, NSE circular for 2026
-    "2026-01-15": "Municipal Corporation elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
-NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes
-NSE_SPECIAL_SESSIONS = {  # one-off sessions on closed days: the pack does not trade them
-    "2026-11-08": "Diwali Muhurat trading, a short Sunday session",
-}
+NSE_HOLIDAYS = tradercore.holidays()  # NSE equity segment trading holidays: core/nse.json, the one copy
+NSE_EARLY_CLOSE = tradercore.early_close()  # NSE has no scheduled early closes
+NSE_SPECIAL_SESSIONS = tradercore.special_sessions()  # one-off sessions on closed days: the pack does not trade them
 INDEX = "^NSEI"
 MWCB_PCT = 10.0            # a 10 % move in Nifty or the Sensex halts all trading (market-wide circuit breaker)
-CALENDAR_YEARS = (2026,)
-CHARGES_READ = "2026-11-08"   # when CHARGES was last checked against zerodha.com/charges
+CALENDAR_YEARS = tradercore.calendar_years()
+CHARGES_READ = tradercore.charges_read("zerodha")  # when the charges were last checked against zerodha.com/charges
 # The live lock. Deliberately a constant in the code, not a config key: a bad afternoon should not be able to
 # switch it off. Live entries need trader-broker's forward test to have PASSED, on the shadow replay AND on
 # your own paper trades, with both verdicts no older than FORWARD_FRESH_DAYS.
@@ -279,8 +262,8 @@ def calendar_unknown(d):
     if d.year in CALENDAR_YEARS:
         return None
     return ("the NSE holiday list covers %s only, so %s may be a holiday: no new entries until %d's list is "
-            "added (nseindia.com, Resources, Exchange communication, Holidays: copy it into NSE_HOLIDAYS in "
-            "trader-alerts, trader-entry, trader-exit, trader-risk and trader-scanner, and %d into CALENDAR_YEARS)"
+            "added (nseindia.com, Resources, Exchange communication, Holidays: add it to \"holidays\" in "
+            "core/nse.json, and %d to \"calendar_years\")"
             % (" and ".join(map(str, CALENDAR_YEARS)), d.isoformat(), d.year, d.year))
 
 
@@ -656,8 +639,8 @@ def staleness(d):
     the broker's charges (checked once a year)."""
     out = []
     if d.month == 12 and d.year + 1 not in CALENDAR_YEARS:
-        out.append("NSE publishes %d's trading holidays in December: add them to NSE_HOLIDAYS (trader-alerts, "
-                   "trader-entry, trader-risk, trader-scanner) and %d to CALENDAR_YEARS before 1 January"
+        out.append("NSE publishes %d's trading holidays in December: add them to \"holidays\" in core/nse.json "
+                   "and %d to \"calendar_years\" before 1 January"
                    % (d.year + 1, d.year + 1))
     age = (d - datetime.date.fromisoformat(CHARGES_READ)).days
     if age > 365:
@@ -714,8 +697,27 @@ def load_events(doc):
     return out
 
 
+STOP_FILE = os.path.join("trader", "STOP")   # the stop switch: while this file exists, no new entries
+
+
+def stop_reason(path=None):
+    """The stop switch (core/trader.py stop): a file whose presence blocks every new entry, paper or live, until it
+    is removed (trader.py resume). Exits are never blocked. None when the switch is off."""
+    path = path or STOP_FILE
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            why = " ".join(fh.read().split())[:200]
+    except OSError:
+        why = ""
+    return "stop switch: %s is there%s: no new entries until it is removed (trader.py resume)" % (
+        path, (" (%s)" % why) if why else "")
+
+
 def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None,
-          bands=None, prev_close=None, sectors=None, events=None, surveillance=None, forward=None, morning=None):
+          bands=None, prev_close=None, sectors=None, events=None, surveillance=None, forward=None, morning=None,
+          stop=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
     now          naive UTC (default: the real clock); its IST date is "today"
@@ -726,7 +728,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     events       {SYM: [(date, what)]}, from trader/events.json (results dates)
     surveillance {"symbols": {SYM: list}, "updated": date}, from trader/surveillance.json
     forward      trader-broker's forward test (trader/forward.json): its verdicts unlock live trading
-    morning      {"date", "limits"}: the limits at the day's first check (trader/state/limits.json)"""
+    morning      {"date", "limits"}: the limits at the day's first check (trader/state/limits.json)
+    stop         the stop switch's reason; None reads trader/STOP (stop_reason), False ignores it"""
     c = dict(DEFAULTS)
     c.update(inr_keys(cfg or {}))
     prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
@@ -752,6 +755,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             loss_today += ml
     placed_keys = {(str(r.get("symbol", "")).upper(), r.get("side")) for r in done_today}
     win_reasons, win_warns = window_check(now_ist, c)
+    halt = stop_reason() if stop is None else (stop or None)
+    if halt:
+        win_reasons = [halt] + list(win_reasons)
     streak, closed_today = losing_streak(state, today, c.get("charges"))
     sectors = {str(k).upper(): v for k, v in (sectors or {}).items()}
     sector_count = {}

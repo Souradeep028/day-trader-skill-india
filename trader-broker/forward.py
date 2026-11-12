@@ -112,20 +112,25 @@ def write(path, doc):
 
 
 def code_version(root=None):
-    """A short fingerprint of the pack's code: every tool (.py, .sh) in every trader-* folder. It changes when any
-    of them does, so a forward test can say whether the same code ran on every day it counts."""
+    """A short fingerprint of the pack's code: every tool (.py, .sh) in every trader-* folder, and the shared tables
+    in core/ (its .py and .json files, the NSE calendar and the charges among them). It changes when any of them
+    does, so a forward test can say whether the same code ran on every day it counts."""
     import hashlib
     root = root or os.path.dirname(HERE)
     h = hashlib.sha256()
     for d in sorted(os.listdir(root)):
         folder = os.path.join(root, d)
-        if not d.startswith("trader-") or not os.path.isdir(folder):
+        if not (d.startswith("trader-") or d == "core") or not os.path.isdir(folder):
             continue
-        for f in sorted(os.listdir(folder)):
-            if f.endswith((".py", ".sh")):
-                h.update(("%s/%s\n" % (d, f)).encode("utf-8"))
-                with open(os.path.join(folder, f), "rb") as fh:
-                    h.update(fh.read())
+        for base, dirs, files in os.walk(folder):
+            dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+            exts = (".py", ".sh", ".json") if d == "core" else (".py", ".sh")
+            for f in sorted(files):
+                if f.endswith(exts) and (d == "core" or base == folder):
+                    rel = os.path.relpath(os.path.join(base, f), root).replace(os.sep, "/")
+                    h.update((rel + "\n").encode("utf-8"))
+                    with open(os.path.join(base, f), "rb") as fh:
+                        h.update(fh.read())
     return h.hexdigest()[:10]
 
 

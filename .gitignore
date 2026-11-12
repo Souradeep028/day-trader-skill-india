@@ -6,3 +6,6 @@ __pycache__/
 trader/bars/
 trader/audit/
 trader/daily/
+dist/
+trader/STOP
+trader/*.bak

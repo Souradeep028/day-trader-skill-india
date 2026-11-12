@@ -1,0 +1,68 @@
+# A release: push a tag like v3.0.0 (it must match .claude-plugin/plugin.json's version).
+# The tests run first; only then is the image built for amd64 and arm64 and pushed to GitHub's registry as
+# ghcr.io/<owner>/day-trader-india:<version>, and a GitHub release is written with its digest.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The tag matches the plugin's version
+        run: |
+          v=$(python -c "import json;print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          test "v$v" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but plugin.json says $v"; exit 1; }
+      - run: python -m unittest discover -s tests
+
+  image:
+    needs: tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image name (lower case, as the registry needs)
+        id: name
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/day-trader-india" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.version }}
+            ${{ steps.name.outputs.image }}:latest
+      - name: The release, with the image's digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          python3 - "$v" > notes.md <<'PY'
+          import re, sys
+          v = sys.argv[1]
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(r"(?ms)^## %s\b.*?(?=^## |\Z)" % re.escape(v), text)
+          print(m.group(0) if m else "Release %s" % v)
+          PY
+          printf '\nImage: `%s:%s`\nDigest: `%s`\n' "${{ steps.name.outputs.image }}" "$v" "${{ steps.build.outputs.digest }}" >> notes.md
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file notes.md

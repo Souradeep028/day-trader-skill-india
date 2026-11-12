@@ -258,6 +258,24 @@ python3 "${CLAUDE_SKILL_DIR}/scheduler.py" plan         # what is due now and th
 python3 "${CLAUDE_SKILL_DIR}/scheduler.py" now daily    # one job right away
 ```
 
+## Health, the stop switch and the MCP tools (core/)
+
+Before anything else when the user asks "is it running?", "why didn't it
+trade?" or "something's wrong": run the health check, from the trading
+folder. If the pack's MCP server is connected (installed as a plugin), call
+its `doctor`, `status`, `forward_tests`, `journal` or `daily_report` tool
+instead of running scripts.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/../core/trader.py" doctor          # OK / WARN / FAIL, with what to do
+python3 "${CLAUDE_SKILL_DIR}/../core/trader.py" migrate         # an older config to the current format
+python3 "${CLAUDE_SKILL_DIR}/../core/trader.py" stop "why"      # no new entries, paper or live
+```
+
+When the user says to stop trading, turn the stop switch on (the MCP `stop`
+tool, or `trader.py stop`) and say that exits still run. Never turn it off
+yourself: `trader.py resume` is the user's to type.
+
 ## Without cron: the day runner (day.sh)
 
 Where cron is not an option (a Claude Code cloud session, a laptop

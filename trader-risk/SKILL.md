@@ -127,8 +127,13 @@ How the numbers work:
   both `no_entries_*` to null to switch the window off.
 - **A year with no holiday list** blocks every new entry, window on or off:
   a weekday the pack has no list for may be a holiday, so it fails closed
-  until next year's list is added (NSE publishes it in December). Exits are
-  never blocked.
+  until next year's list is added to `core/nse.json`, the one copy every
+  skill reads (NSE publishes it in December). Exits are never blocked.
+- **The stop switch** (`python3 core/trader.py stop "why"`, or the MCP
+  server's `stop` tool when you ask Claude to stop): while `trader/STOP`
+  exists every new entry is blocked, paper or live, and the pre-flight says
+  NO-GO. Exits, stops and the flat-by close still run. Only you turn it off
+  (`trader.py resume`).
 - **Price bands**: a stock at its band can lock, with no sellers above it (or
   buyers below it). F&O stocks have no fixed band (null in bands.json) and
   are not checked; a stock missing from bands.json is a warning. A stop under

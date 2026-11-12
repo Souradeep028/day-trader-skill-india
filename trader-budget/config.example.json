@@ -1,4 +1,5 @@
 {
+  "config_version": 3,
   "budget": 100000,
   "cash_buffer_pct": 10,
   "max_position_pct": 75,
