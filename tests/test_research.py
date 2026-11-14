@@ -311,3 +311,76 @@ class PowerAndPlan(unittest.TestCase):
             self.assertIn("break-even", out)
         finally:
             shutil.rmtree(d)
+
+
+class Budget(unittest.TestCase):
+    def test_trades_needed(self):
+        # one hypothesis, SD 1 R, +0.06 R, one-sided 5 %, 80 % power: ((1.645 + 0.842) / 0.06)^2 = 1,718
+        self.assertEqual(rs.trades_needed(1.0, 0.06, 1), 1718)
+        self.assertGreater(rs.trades_needed(1.0, 0.06, 10), rs.trades_needed(1.0, 0.06, 5))   # more tries, higher bar
+
+    def test_untestable_hypotheses_are_dropped_and_the_bar_settles(self):
+        charts, minutes, _ = rs.load_folder(EDGE)
+        hyps = HYPS + [{"name": "rare", "rule": "orb30 long wide 2R low_cost+calm_vix", "why": "rare on purpose"}]
+        b = rs.budget(charts, minutes, hyps, stocks=50, sessions=500, edge_r=0.06)
+        rows = {r["name"]: r for r in b["rows"]}
+        self.assertFalse(rows["rare"]["keep"])
+        self.assertTrue(rows["orb30 short wide"]["keep"])
+        self.assertEqual(b["needed"], rs.trades_needed(1.0, 0.06, len(b["kept"])))
+        for r in b["rows"]:
+            self.assertEqual(r["keep"], r["projected"] >= b["needed"], r)                # settled: no one either side
+        self.assertIn("DROP: too few trades to judge", "\n".join(rs.budget_lines(b)))
+        # the shipped list is already pruned this way
+        with open(rs.HYPOTHESES) as fh:
+            shipped = json.load(fh)
+        b = rs.budget(charts, minutes, shipped)
+        self.assertEqual(len(b["kept"]), len(shipped))
+
+
+class CrossCheck(unittest.TestCase):
+    def archive_day(self, root, day, rows):
+        import gzip
+        path = os.path.join(root, "1m", day + ".json.gz")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump({"interval": "1m", "date": day, "bars": {"INFY.NS": rows}}, fh)
+
+    def test_a_vendor_that_labels_bars_by_their_end_is_caught(self):
+        import random
+        rng = random.Random(5)
+        t0 = rs.parse_time("2026-11-06 09:15")
+        px, mine = 1500.0, []
+        for i in range(120):
+            o = px
+            px = round(px * (1 + rng.gauss(0, 0.001)), 2)
+            mine.append([t0 + 60 * i, o, max(o, px), min(o, px), px, 100])
+        d = tempfile.mkdtemp()
+        try:
+            self.archive_day(os.path.join(d, "bars"), "2026-11-06", mine)
+            same = rs.crosscheck({"INFY.NS": [list(r) for r in mine]}, os.path.join(d, "bars"))
+            self.assertEqual((same["INFY.NS"]["shift_min"], same["INFY.NS"]["ok"]), (0, True))
+            late = [[r[0] + 60] + r[1:] for r in mine]                               # stamped at the bar's end
+            got = rs.crosscheck({"INFY.NS": late}, os.path.join(d, "bars"))["INFY.NS"]
+            self.assertEqual((got["shift_min"], got["ok"], got["match"]), (-1, False, 100.0))
+            self.assertIn("LABELLED BY THE END", "\n".join(rs.crosscheck_lines({"INFY.NS": got})))
+            self.assertIn("no stock-days in both", rs.crosscheck_lines({})[0])
+        finally:
+            shutil.rmtree(d)
+
+
+class Decision(unittest.TestCase):
+    def test_the_plan_carries_what_you_will_do_with_the_answer(self):
+        d = tempfile.mkdtemp()
+        try:
+            plan = os.path.join(d, "plan.json")
+            self.assertEqual(quiet(["plan", "--file", plan])[0], 0)
+            with open(plan) as fh:
+                self.assertIn("index SIP", json.load(fh)["decision"])
+            code, out, _ = quiet(["run", "--data", EDGE, "--plan", plan, "--bootstrap", "30"])
+            self.assertIn("What you decided to do with the answer, before seeing it: If no hypothesis passes", out)
+            plan2 = os.path.join(d, "plan2.json")
+            quiet(["plan", "--file", plan2, "--decision", "Stop after one try."])
+            with open(plan2) as fh:
+                self.assertEqual(json.load(fh)["decision"], "Stop after one try.")
+        finally:
+            shutil.rmtree(d)

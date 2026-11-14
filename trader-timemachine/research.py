@@ -701,12 +701,120 @@ def bhavcopy_charts(folder, series=("EQ",)):
     return charts, actions
 
 
+# ---------------------------------------------------------------- the trade budget
+
+def trades_needed(sd, edge_r, n_hypotheses, power_=0.8):
+    """Trades to tell an edge of edge_r R from zero, one-sided, at 0.05 / n_hypotheses, with power_ power."""
+    nd = statistics.NormalDist()
+    za = nd.inv_cdf(1 - 0.05 / max(n_hypotheses, 1))
+    zb = nd.inv_cdf(power_)
+    return int(((za + zb) * sd / edge_r) ** 2) + 1
+
+
+def budget(charts, minutes, hypotheses, stocks=50, sessions=500, edge_r=0.06, cfg=None):
+    """How many trades each hypothesis would make on the data you plan to buy (stocks x sessions), projected from
+    its rate on the data at hand, against the trades a test of an edge_r R edge needs. Hypotheses that cannot
+    reach it are dropped, and the bar is worked out again for the ones left (fewer hypotheses, a lower bar),
+    until it settles. -> {"rows": [...], "kept": [names], "needed": n}."""
+    c = {"slippage_bp": 3.0, "fold_sessions": 10 ** 6, "bootstrap": 10}
+    c.update(cfg or {})
+    doc = run_research(charts, minutes, hypotheses, c, exclude=None)
+    seen = doc["sessions"] * doc["symbols"]
+    rows = []
+    for h, r in zip(hypotheses, doc["rows"]):
+        n = r["all"]["trades"]
+        rate = n / float(seen) if seen else 0.0
+        rows.append({"name": r["name"], "rule": h["rule"], "trades_here": n, "per_stock_session": round(rate, 4),
+                     "projected": int(round(rate * stocks * sessions)), "_h": h})
+    # the spread of R a trade is about 1 R on these rules (measured: 0.9 to 1.1); fewer hypotheses lower the bar,
+    # so it is worked out again with the ones left, letting back any that now clear it, until it settles
+    keep = list(rows)
+    for _ in range(20):
+        need = trades_needed(1.0, edge_r, max(len(keep), 1))
+        nxt = [r for r in rows if r["projected"] >= need]
+        if [r["name"] for r in nxt] == [r["name"] for r in keep]:
+            break
+        keep = nxt
+    need = trades_needed(1.0, edge_r, max(len(keep), 1))
+    for r in rows:
+        r["keep"] = r in keep
+    return {"stocks": stocks, "sessions": sessions, "edge_R": edge_r, "needed": need,
+            "from_symbols": doc["symbols"], "from_sessions": doc["sessions"],
+            "rows": [{k: v for k, v in r.items() if k != "_h"} for r in rows],
+            "kept": [r["_h"] for r in keep]}
+
+
+def budget_lines(b):
+    L = ["Trade budget: projected from %d stocks x %d sessions to %d stocks x %d sessions. Telling a %+.2f R edge "
+         "from luck (80 %% power, 0.05 shared across the %d kept) needs about %d trades a hypothesis." % (
+             b["from_symbols"], b["from_sessions"], b["stocks"], b["sessions"], b["edge_R"], len(b["kept"]),
+             b["needed"]), ""]
+    for r in b["rows"]:
+        L.append("  %-30s %5d here  %7d projected  %s" % (r["name"][:30], r["trades_here"], r["projected"],
+                                                        "keep" if r["keep"] else "DROP: too few trades to judge"))
+    L.append("")
+    L.append("Kept %d of %d. A dropped hypothesis is not wrong, only untestable on that much data: each one kept "
+             "raises the bar for all of them." % (len(b["kept"]), len(b["rows"])))
+    return L
+
+
+# ---------------------------------------------------------------- the vendor cross-check
+
+def crosscheck(vendor_rows, archive_root, interval="1m"):
+    """A vendor's bars against the pack's own archive (archive.py, Yahoo's minutes) on the days both have.
+    For each stock: the shift in minutes that best lines up their closes (anything but 0 means the vendor labels
+    bars by their END, so a test would see each minute's close a minute early: a look-ahead), the share of bars
+    within 0.05 % at that shift, and the median gap in bp. -> {sym: {...}}."""
+    days = set(archive.days_in(archive_root, interval))
+    ours = {}
+    for d in days:
+        for sym, rows in archive.read_day(archive_root, interval, d).items():
+            ours.setdefault(sym, {}).update({int(r[0]): r for r in rows})
+    out = {}
+    for sym, rows in sorted(vendor_rows.items()):
+        mine = ours.get(sym)
+        if not mine:
+            continue
+        theirs = {int(r[0]): r for r in rows}
+        best = None
+        for shift in (-2, -1, 0, 1, 2):
+            pairs = [(theirs[t], mine[t + 60 * shift]) for t in theirs if t + 60 * shift in mine]
+            if len(pairs) < 30:
+                continue
+            gaps = sorted(abs(a[4] / b[4] - 1) * 1e4 for a, b in pairs if b[4])
+            close = sum(1 for g in gaps if g <= 5) / float(len(gaps))
+            if best is None or close > best["match"]:
+                best = {"shift_min": shift, "match": close, "median_gap_bp": round(gaps[len(gaps) // 2], 2),
+                        "bars": len(pairs)}
+        if best:
+            best["match"] = round(100 * best["match"], 1)
+            best["ok"] = best["shift_min"] == 0 and best["match"] >= 90
+            out[sym] = best
+    return out
+
+
+def crosscheck_lines(res):
+    if not res:
+        return ["Cross-check: no stock-days in both the vendor's files and the archive (trader/bars/1m). Ask the "
+                "vendor for a sample covering days the archive already has."]
+    L = ["Cross-check against the archive (Yahoo's minutes, labelled by their start):"]
+    for sym, r in res.items():
+        L.append("  %-14s %5d bars, %5.1f %% within 0.05 %%, median gap %.1f bp, best shift %+d min  %s" % (
+            sym, r["bars"], r["match"], r["median_gap_bp"], r["shift_min"],
+            "OK" if r["ok"] else ("LABELLED BY THE END: shift it, or every test sees the future"
+                                  if r["shift_min"] else "prices disagree: ask the vendor why")))
+    return L
+
+
 # ---------------------------------------------------------------- the research plan
 
 PLAN = os.path.join("trader", "research-plan.json")
+DECISION = ("If no hypothesis passes, with the measured slippage, the ₹1,00,000 goes into the index SIP and no new "
+            "strategy is built on this data. If one passes, it is frozen with forward.py start and the sequential "
+            "gate judges it on paper before any live order.")
 
 
-def freeze_plan(path, hypotheses, settings, today):
+def freeze_plan(path, hypotheses, settings, today, decision=None):
     """Write the plan down before the data is seen: the hypotheses themselves, the fills, the folds, the
     holdout and the code that will judge them."""
     import hashlib
@@ -715,6 +823,7 @@ def freeze_plan(path, hypotheses, settings, today):
     body = json.dumps(hypotheses, sort_keys=True).encode("utf-8")
     doc = {"created_by": "trader-timemachine research.py plan", "frozen": today, "hypotheses": hypotheses,
            "hypotheses_sha": hashlib.sha256(body).hexdigest()[:12], "settings": settings,
+           "decision": decision or DECISION,
            "code": forward.code_version()}
     d = os.path.dirname(path)
     if d:
@@ -788,7 +897,18 @@ def main(argv=None):
     p.add_argument("--data", required=True, metavar="DIR", help="NSE equity bhavcopy CSVs, old or UDiFF format")
     p.add_argument("--out", required=True, metavar="DIR")
     p.add_argument("--series", default="EQ")
+    p = sub.add_parser("budget", help="project each hypothesis's trades to the data you plan to buy; drop the untestable")
+    p.add_argument("--data", required=True, metavar="DIR", help="the data at hand (the fixtures, or a sample)")
+    p.add_argument("--hypotheses", default=HYPOTHESES)
+    p.add_argument("--stocks", type=int, default=50)
+    p.add_argument("--sessions", type=int, default=500, help="about 250 a year")
+    p.add_argument("--edge-r", type=float, default=0.06, help="the smallest edge worth finding, in R a trade")
+    p.add_argument("--write-kept", metavar="PATH", help="write the kept hypotheses as a new hypotheses file")
+    p = sub.add_parser("crosscheck", help="a vendor's sample against the pack's own archive: labels and prices")
+    p.add_argument("--vendor", required=True, metavar="DIR", help="the vendor's 1-minute CSVs")
+    p.add_argument("--archive", default=archive.ROOT, help="the bar archive (archive.py save), default trader/bars")
     p = sub.add_parser("plan", help="freeze the hypotheses and settings before seeing the data")
+    p.add_argument("--decision", help="what you will do with the answer, in your words (a default is written)")
     p.add_argument("--hypotheses", default=HYPOTHESES)
     p.add_argument("--slippage-bp", type=float, default=3.0)
     p.add_argument("--latency-min", type=int, default=1)
@@ -797,7 +917,7 @@ def main(argv=None):
     p.add_argument("--file", default=PLAN)
     p.add_argument("--replace", action="store_true")
     a = ap.parse_args(argv)
-    if a.cmd not in ("run", "check", "power", "bhavcopy", "plan"):
+    if a.cmd not in ("run", "check", "power", "bhavcopy", "plan", "budget", "crosscheck"):
         ap.print_help()
         return 1
     today = datetime.date.today().isoformat()
@@ -828,6 +948,20 @@ def main(argv=None):
                   "Next: openclose.py run --offline %s --auction" % (len(charts), a.out,
                                                                      sum(len(v) for v in actions.values()), a.out))
             return 0
+        if a.cmd == "budget":
+            with open(a.hypotheses, encoding="utf-8") as fh:
+                hyps = json.load(fh)
+            charts, minutes, _ = load_folder(a.data)
+            b = budget(charts, minutes, hyps, a.stocks, a.sessions, a.edge_r)
+            print("\n".join(budget_lines(b)))
+            if a.write_kept:
+                _write(a.write_kept, b["kept"])
+                print("Wrote the %d kept hypotheses to %s (freeze them: plan --hypotheses %s)."
+                      % (len(b["kept"]), a.write_kept, a.write_kept))
+            return 0
+        if a.cmd == "crosscheck":
+            print("\n".join(crosscheck_lines(crosscheck(raw_rows(a.vendor), a.archive))))
+            return 0
         if a.cmd == "plan":
             if os.path.exists(a.file) and not a.replace:
                 raise ResearchError("a plan is already frozen in %s: --replace starts a new one (and says so)" % a.file)
@@ -836,7 +970,8 @@ def main(argv=None):
             for h in hyps:
                 parse_rule(h["rule"])
             doc = freeze_plan(a.file, hyps, {"slippage_bp": a.slippage_bp, "latency_min": a.latency_min,
-                                             "fold_sessions": a.fold_sessions, "holdout_from": a.holdout_from}, today)
+                                             "fold_sessions": a.fold_sessions, "holdout_from": a.holdout_from}, today,
+                              a.decision)
             print("Frozen on %s: %d hypotheses (%s), %g bp, folds of %d sessions, holdout from %s, code %s. Run with "
                   "--plan %s; nothing in it can change without a new, dated plan." % (
                       today, len(hyps), doc["hypotheses_sha"], a.slippage_bp, a.fold_sessions,
@@ -850,6 +985,8 @@ def main(argv=None):
             a.slippage_bp, a.latency_min, a.fold_sessions = st["slippage_bp"], st["latency_min"], st["fold_sessions"]
             a.holdout_from = st.get("holdout_from")
             notes.append("Plan frozen %s (%s): its hypotheses and settings." % (plan["frozen"], plan["hypotheses_sha"]))
+            if plan.get("decision"):
+                notes.append("What you decided to do with the answer, before seeing it: " + plan["decision"])
         else:
             with open(a.hypotheses, encoding="utf-8") as fh:
                 hyps = json.load(fh)

@@ -456,8 +456,32 @@ PREVCLOSE is adjusted for corporate actions, so splits and bonuses are
 adjusted away with NSE's own numbers. That tests the gap-up auction short on
 official prices, for free.
 
+**Before buying data**:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/research.py" budget --data DIR --stocks 50 --sessions 500 --write-kept kept.json
+python3 "${CLAUDE_SKILL_DIR}/research.py" crosscheck --vendor SAMPLE_DIR       # against trader/bars/1m
+python3 "${CLAUDE_SKILL_DIR}/research.py" plan --hypotheses kept.json --decision "..."
+```
+
+- **budget** projects each hypothesis's trades from the data at hand to the
+  data you plan to buy, against the trades a test of a +0.06 R edge needs
+  (80 % power, the luck bar shared across the hypotheses kept), and drops
+  the ones that cannot get there. Fewer hypotheses lower the bar, so it is
+  worked out again until it settles. The shipped list is pruned this way:
+  "prev-day high break" and "orb30 long calm VIX" fire too rarely to judge
+  on 50 stocks over two years.
+- **crosscheck** lines a vendor's sample up with the pack's own archive of
+  Yahoo's minutes (labelled by their start) on the days both have: the shift
+  that best matches their closes, and how closely. A vendor that labels
+  bars by their END shows as -1 minute: left alone, every test would see
+  each minute's close a minute early, a look-ahead that looks like an edge.
+- **plan --decision** writes down what you will do with the answer before
+  you see it (by default: no pass means the index SIP and no new strategy on
+  this data); `run --plan` prints it under the verdict.
+
 On the edge fixtures (5 stocks, 58 sessions, 5-minute data) none of the
-twelve passes, the selection loses, and the frozen ORB rule breaks even at
+hypotheses passes, the selection loses, and the frozen ORB rule breaks even at
 0.6 bp of slippage: what 58 sessions can and cannot say. The real run needs
 2 to 3 years of 1-minute bars.
 

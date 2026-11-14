@@ -52,6 +52,10 @@ From the trading review (the edge has to survive honest fills and a test big eno
   no false passes), **plan** (hypotheses and settings frozen before the data), **bhavcopy** (NSE's daily files,
   adjusted with NSE's own previous closes, for openclose.py), the break-even slippage of each hypothesis, and a
   last-hour setup (`late`) for the research harness only.
+- research.py **budget** (each hypothesis's trades projected to 50 stocks x 2 years against what a +0.06 R test
+  needs; the untestable are dropped, the list now 10), **crosscheck** (a vendor's sample against the archive:
+  catches bars labelled by their end, a one-minute look-ahead) and **plan --decision** (what you will do with the
+  answer, written before it).
 - edge.py's header now matches the grid: 96 rules, 16 filters, 1,536 combinations.
 
 Upgrading from 2.x: pull, run `python3 core/trader.py migrate` in your trading folder, then `doctor`. If you

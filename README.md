@@ -177,6 +177,8 @@ python3 trader-timemachine/research.py run --data DIR --members members.csv  # ~
 python3 trader-timemachine/research.py check --data DIR                     # splits, bad prints, gaps in the data
 python3 trader-timemachine/research.py power --stocks 20 --sessions 500     # can the test find a planted edge?
 python3 trader-timemachine/research.py bhavcopy --data NSE_DIR --out DAILY  # NSE's daily files, adjusted
+python3 trader-timemachine/research.py budget --data DIR --write-kept kept.json   # drop what cannot be judged
+python3 trader-timemachine/research.py crosscheck --vendor SAMPLE_DIR       # a vendor's labels and prices vs the archive
 python3 trader-budget/sip.py status                                    # the index-fund core, XIRR, trading beside it
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
