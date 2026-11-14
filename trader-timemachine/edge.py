@@ -415,6 +415,18 @@ def entry_at(s, setup, side, stop_rule, target_r, cfg):
     px = B[k][3] if fill is None else fill
     delay = int(cfg.get("entry_delay") or 0) if fill is None else 0
     slot = k
+    latency = int(cfg.get("latency_min") or 0) if fill is None else 0
+    if latency and s.get("minutes"):
+        # 1-minute bars (research.py): the order meets the open of the minute `latency` minutes after the
+        # signal bar closed, inside the next 5-minute bar, where only the stop counts
+        close_min = OPEN_MIN + 5 * (k + 1)
+        px = s["minutes"].get(close_min + latency)
+        if px is None or k + 1 >= len(B) or k + 1 >= cfg["flat_slot"]:
+            return None
+        delay, slot = 0, k + 1
+        at_entry = close_min + latency
+    else:
+        at_entry = None
     if delay:
         # the order goes in once the signal bar has closed: it meets the open of a later bar
         slot = k + delay
@@ -461,8 +473,11 @@ def entry_at(s, setup, side, stop_rule, target_r, cfg):
     }
     if delay:
         at_min = OPEN_MIN + 5 * slot
+    if at_entry is not None:
+        at_min = at_entry
     return {"slot": slot, "fill": fill, "entry": entry, "stop": stop, "target": target, "risk": risk, "qty": qty,
-            "time": "%d:%02d" % divmod(at_min, 60), "cost_pct": cost_pct, "filters": filt, "delayed": bool(delay),
+            "time": "%d:%02d" % divmod(at_min, 60), "cost_pct": cost_pct, "filters": filt,
+            "delayed": bool(delay) or at_entry is not None,
             "slip_bp": float(cfg.get("slippage_bp") or 0), "through": int(cfg.get("target_through") or 0)}
 
 
@@ -551,9 +566,16 @@ def baseline_trades(trades, prepared, cfg, target_r):
     for sym, sessions in sorted(prepared.items()):
         for s in sessions:
             B, t = s["bars"], s["tick"]
-            if (dates is not None and s["date"] not in dates) or slot >= len(B) or slot >= cfg["flat_slot"]:
+            lat = int(cfg.get("latency_min") or 0)
+            if lat and s.get("minutes"):
+                slot_s, px = k + 1, s["minutes"].get(OPEN_MIN + 5 * (k + 1) + lat)
+                late = True
+            else:
+                slot_s, late = slot, bool(delay)
+                px = (B[slot][0] if delay else B[k][3]) if slot < len(B) else None
+            if (dates is not None and s["date"] not in dates) or px is None or slot_s >= len(B) \
+                    or slot_s >= cfg["flat_slot"]:
                 continue
-            px = B[slot][0] if delay else B[k][3]
             if long:
                 entry = tick_up(px * (1 + bp) + slip * t, t)
                 stop = tick_down(entry * (1 - risk_pct), t)
@@ -568,9 +590,9 @@ def baseline_trades(trades, prepared, cfg, target_r):
             qty = size_for(entry, stop, cfg["max_loss"], cfg["max_order"], cfg.get("charges"))
             if qty <= 0 or target <= 0:
                 continue
-            e = {"slot": slot, "fill": None, "entry": entry, "stop": stop, "target": target, "risk": risk,
+            e = {"slot": slot_s, "fill": None, "entry": entry, "stop": stop, "target": target, "risk": risk,
                  "qty": qty, "time": "%d:%02d" % divmod(OPEN_MIN + 5 * (slot if delay else k + 1), 60),
-                 "cost_pct": None, "filters": {}, "delayed": bool(delay),
+                 "cost_pct": None, "filters": {}, "delayed": late,
                  "slip_bp": float(cfg.get("slippage_bp") or 0), "through": int(cfg.get("target_through") or 0)}
             out.append(play(sym, s, e, side, cfg))
     return out

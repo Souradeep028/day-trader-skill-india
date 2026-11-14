@@ -32,6 +32,7 @@ TOOLS = {
     "tom": ("trader-timemachine", "tom.py", "turn-of-the-month against buy and hold"),
     "rotation": ("trader-timemachine", "rotation.py", "the factor rotation report"),
     "archive": ("trader-timemachine", "archive.py", "save today's bars beyond Yahoo's window"),
+    "research": ("trader-timemachine", "research.py", "a few hypotheses, walk-forward, on years of bars you bring"),
     "size": ("trader-budget", "size.py", "size a trade to your budget and max loss"),
     "sip": ("trader-budget", "sip.py", "the index-fund core tracker"),
     "check": ("trader-risk", "check.py", "the risk check: PASS or BLOCK"),

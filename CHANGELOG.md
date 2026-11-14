@@ -43,6 +43,10 @@ From the trading review (the edge has to survive honest fills and a test big eno
   whatever the chart did: a rule that does not beat it is the day's drift, not its setup.
 - **Slippage in basis points.** The journal and the daily report give the autopilot's measured entry slippage in
   bp, the figure to feed back into `--slippage-bp`.
+- **research.py**: about ten hypotheses written down in advance, tested walk-forward on years of bars you
+  bring (a vendor's 1-minute CSVs, rolled up), with fills a minute after the signal, point-in-time index
+  membership, a holdout recorded when it is looked at, and a test of picking the best rule so far before each
+  fold. `trader.py research`.
 - edge.py's header now matches the grid: 96 rules, 16 filters, 1,536 combinations.
 
 Upgrading from 2.x: pull, run `python3 core/trader.py migrate` in your trading folder, then `doctor`. If you

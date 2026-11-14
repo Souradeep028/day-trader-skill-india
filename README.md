@@ -173,6 +173,7 @@ python3 trader-timemachine/rotation.py run --watchlist trader/nifty100.txt   # m
 python3 trader-timemachine/openclose.py run --watchlist trader/nifty50.txt   # day trades on 10 years of daily bars
 python3 trader-timemachine/tom.py run                                  # the turn of the month vs holding the index
 python3 trader-timemachine/archive.py save --watchlist trader/nifty50.txt   # keep the 5-minute bars Yahoo forgets
+python3 trader-timemachine/research.py run --data DIR --members members.csv  # ~10 hypotheses, walk-forward, honest fills
 python3 trader-budget/sip.py status                                    # the index-fund core, XIRR, trading beside it
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
@@ -565,7 +566,8 @@ trader-scanner/     SKILL.md, scan.py, morning.py
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py
 trader-exit/        SKILL.md, exit.py
-trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py, openclose.py, tom.py, archive.py
+trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py, openclose.py, tom.py, archive.py,
+                    research.py, hypotheses.example.json
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, sip.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, forward.py, gapshadow.py, daily.py, autopilot.py, preflight.py, audit.py,

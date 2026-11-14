@@ -376,6 +376,47 @@ python3 "${CLAUDE_SKILL_DIR}/archive.py" export --to /tmp/bars5 && python3 "${CL
 
 Run it every trading day: a session Yahoo has dropped cannot be fetched again.
 
+## The research harness: a few hypotheses, walk-forward, on your own data
+
+`edge.py` searches 1,536 combinations on Yahoo's 60 days. That finds leads,
+not edges: on 58 sessions no realistic edge can clear the luck correction
+for 1,536 tries. `research.py` is the opposite: about ten rules written down
+in advance (`hypotheses.example.json`, each with the reason someone would pay
+it), tested on years of bars you bring, with honest fills.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR                         # <SYMBOL>.csv per stock
+python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR --members members.csv --slippage-bp 4
+python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR --holdout-from 2026-01-01   # keep a year untouched
+python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR --holdout-from 2026-01-01 --final   # once
+```
+
+- **Data**: a vendor's 1-minute CSVs (any of datetime/timestamp or date and
+  time, open, high, low, close, volume; India time unless an offset is
+  given), rolled up to the 5-minute grid from 9:15, with each minute's open
+  kept for the fills. 5-minute CSVs and edge.py's Yahoo JSON work too.
+- **Fills**: with 1-minute data an entry meets the open of the minute after
+  the signal bar closes (`--latency-min`); with 5-minute data the next
+  bar's open. Then `--slippage-bp` (3) on every market fill, targets only
+  when traded through, Zerodha's charges.
+- **Point in time**: `--members` (symbol,from,to) counts a stock only on the
+  sessions it was in the index. Without it the report says the result
+  carries survivorship bias.
+- **Walk-forward**: the sessions are cut into folds of `--fold-sessions`
+  (60, about a quarter). A hypothesis PASSES only with all four: the pooled
+  average R above 0, a session-bootstrap p under 0.05 / the number of
+  hypotheses, money in two thirds of the folds, and beating its baseline.
+- **The selection test**: before each fold, the hypothesis with the best
+  average so far is picked and traded in that fold only. If that loses,
+  picking winners from the past does not work on this data, however good the
+  best one looks over the whole.
+- **Holdout**: `--holdout-from` leaves the last stretch out; `--final` puts
+  it in, once, and `trader/holdout.json` records each look.
+
+On the edge fixtures (5 stocks, 53 sessions, 5-minute data) none of the ten
+passes and the selection loses -0.046 R a trade: what 58 sessions can and
+cannot say. The real run needs 2 to 3 years of 1-minute bars.
+
 ## The factor rotation report: momentum and low volatility
 
 `rotation.py` tests the two factors with the most evidence behind them,
