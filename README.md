@@ -323,9 +323,23 @@ separately measured experiment:
 
 So: freeze one rule with `forward.py start`, paper trade every signal it
 gives, and let `forward.py status` judge it by limits set before the first
-trade (40 trades, an 8 R drawdown stop, the backtest's low end), and let
-`forward.py shadow` replay it on every session after the close. Go live
-only on a PASSED, at half size. The risk check's limits (cool-off, sector
+trade (the sequential gate: no PASS before 300 trades, and then only when
+the average less 2.5 standard errors is above 0; STOP from 40 trades if it
+is clearly losing, from 300 while it makes under +0.05 R, at 1,300 if still
+not proven, or on a 30 R fall), and let `forward.py shadow` replay it on
+every session after the close, filled the way the paper autopilot fills (in
+at the next bar's open, 3 bp of slippage on market orders, targets only
+when the price trades through them). Go live only on a PASSED, at a quarter
+size.
+
+Why 300 and not 40: a trade's R spreads about 1 R either side, so 40 trades
+leave a range of about ±0.31 R around the average. Simulated on these rules'
+own spread, the old 40-trade gate passed a rule that loses 0.10 R a trade
+one time in four, and stopped a rule that makes +0.076 R more often than it
+passed it. The sequential gate passes a rule with no edge about 3 % of the
+time, one losing 0.10 R almost never, and one making +0.15 R about 94 % of
+the time. Telling +0.076 R from zero takes about 1,300 trades: there is no
+quick way to prove a small edge. The risk check's limits (cool-off, sector
 cap, weekly and monthly losses, drawdown sizing, same-direction cap,
 charges, big-Nifty-day halt, results days, ex-dates, market events,
 surveillance) are there for the days it does not work.
@@ -447,8 +461,9 @@ Nothing can promise no losing trades. What the pack does is make losing real
 money hard:
 
 - **Paper first, locked.** A live account (`"paper": false`) cannot enter a
-  trade until a frozen rule has PASSED its forward test on both the
-  automatic shadow replay and your own paper trades, within 30 days. The
+  trade until a frozen rule has PASSED its forward test, on the sequential
+  gate (300+ trades), on both the automatic shadow replay and your own paper
+  trades, within 30 days. A pass on the old 40-trade gate does not count. The
   lock is in the code, not the config.
 - **Ramp, then stop by itself.** Live trading starts at 25 % size, goes to
   50 % and 100 % only after good blocks of 20 trades, and stops on a bad

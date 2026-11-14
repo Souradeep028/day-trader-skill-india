@@ -46,7 +46,7 @@ class Autopilot(unittest.TestCase):
             json.dump(dict({"budget": 100000}, **c), fh)
 
     def start(self, rule="orb15 long tight 2R none"):
-        quiet(forward.main, ["start", "--rule", rule, "--expect-r", "0.05", "--expect-low", "-0.1",
+        quiet(forward.main, ["start", "--fills", "close", "--rule", rule, "--expect-r", "0.05", "--expect-low", "-0.1",
                              "--file", self.p["forward"], "--today", DAY])
 
     def pass_at(self, hhmm, day=DAY):
@@ -151,7 +151,7 @@ class Hardening(unittest.TestCase):
             json.dump({"symbols": {}, "updated": DAY}, fh)
         with open(self.p["config"], "w") as fh:
             json.dump({"budget": 1000000, "max_charges_pct_of_risk": 0}, fh)
-        quiet(forward.main, ["start", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--expect-low",
+        quiet(forward.main, ["start", "--fills", "close", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--expect-low",
                              "-0.1", "--file", self.p["forward"], "--today", DAY])
 
     def tearDown(self):
@@ -341,7 +341,7 @@ class Accuracy(unittest.TestCase):
                 json.dump({"budget": 1000000, "max_charges_pct_of_risk": 0}, fh)
             with open(p["surveillance"], "w") as fh:
                 json.dump({"symbols": {}, "updated": DAY}, fh)
-            quiet(forward.main, ["start", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--file",
+            quiet(forward.main, ["start", "--fills", "close", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--file",
                                  p["forward"], "--today", DAY])
 
             def stale(sym, rng="60d", interval="5m"):
@@ -376,11 +376,12 @@ class Reporting(unittest.TestCase):
             st = json.load(fh)
         trades, _ = ticket.round_trips(st, DAY, DAY, paper=True)
         # 3.50 a share worse than the signal; the risk at the signal was 1160.60 - 1149.80 = 10.80: 0.324 R;
-        # 32 shares x 3.50 = 112
-        self.assertEqual(ticket.entry_slippage(st, trades), {"trades": 1, "per_share": 3.5, "R": 0.324, "rupees": 112.0})
+        # 32 shares x 3.50 = 112; 3.50 / 1160.60 = 30.16 bp
+        self.assertEqual(ticket.entry_slippage(st, trades), {"trades": 1, "per_share": 3.5, "R": 0.324, "rupees": 112.0,
+                                                             "bp": 30.16})
         code, out, _ = quiet(ticket.main, ["journal", "--paper", "--state", self.p["state"], "--config", self.p["config"]])
-        self.assertIn("Entry slippage (the autopilot's fills against their signals): +3.50 a share, +0.324 R a trade "
-                      "on average, ₹112 over 1 trade.", out)
+        self.assertIn("Entry slippage (the autopilot's fills against their signals): +3.50 a share, +30.2 bp, +0.324 R "
+                      "a trade on average, ₹112 over 1 trade.", out)
         daily = load("trader-broker", "daily")
         code, out, err = quiet(daily.main, ["--date", DAY, "--offline", EDGE, "--watchlist", self.wl, "--forward",
                                             self.p["forward"], "--state", self.p["state"], "--config", self.p["config"],
@@ -388,7 +389,9 @@ class Reporting(unittest.TestCase):
                                             "--sip", os.path.join(self.d, "none"), "--events",
                                             os.path.join(self.d, "none"), "--surveillance", self.p["surveillance"]])
         self.assertEqual(code, 0, err)
-        self.assertIn("- Entry slippage: +3.50 a share, +0.324 R a trade on average (₹112 over 1 trades)", out)
+        self.assertIn("- Entry slippage: +3.50 a share, +30.2 bp, +0.324 R a trade on average (₹112 over 1 trades)", out)
+        self.assertIn("use the measured figure (edge.py run --fills realistic --slippage-bp 30.2), once it rests on "
+                      "30+ trades.", out)
         # the shadow took the same INFY trade at 1160.60: the paper one, five minutes later, gave some of it back
         self.assertIn("- Execution gap: paper ", out)
         self.assertIn("on the 1 trades both took", out)

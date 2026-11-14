@@ -201,12 +201,22 @@ python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ti
   on the tick the stock really traded at that day, one tick of slippage on
   the entry, the stop and the flat-by exit (a stop that gaps fills at the
   bar's open). R is the result after charges over the planned risk.
+  That is `--fills close`, the default and an upper bound: no order can
+  trade at the close of the bar that triggered it. `--fills realistic` is
+  what the paper autopilot and a real order get: in at the next bar's open,
+  `--slippage-bp` (3) on every market fill, targets only when the price
+  trades a tick through them. A tick on these stocks is under 1 bp, so use
+  the daily report's measured "Entry slippage" in bp once it has 30 trades.
 - **Two halves and a luck test**: a rule "held up" when it made money after
   charges in both the first two thirds of the sessions and the last third,
   with 30 or more trades in each. With 1,536 combinations tested, some will
   hold up by luck, so a rule only PASSES when a session bootstrap (whole
   days resampled, since one day's trades move together) also gives it a
-  p-value under 0.05 / 1,536 = 0.000033.
+  p-value under 0.05 / 1,536 = 0.000033, AND, re-run with realistic fills
+  and 3 bp, it still makes money and beats its baseline: every stock on
+  every session, the same side, stop width and target, in at 9:30 whatever
+  the chart did (the day's drift, not the setup). The report shows the best
+  rule that way at 0, 3 and 6 bp.
 
 - **What one person would have made**: the grid takes every signal on
   every stock; a person takes 3 a day. The report scales each rule to that

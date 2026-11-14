@@ -57,7 +57,7 @@ class GapShadow(unittest.TestCase):
         self.assertAlmostEqual(oct23[0]["R"], 3.0928, places=4)
         self.assertLess(oct23[1]["R"], -1.0)
         self.assertEqual(doc["verdicts"]["shadow"]["state"], "running")
-        self.assertIn("Too early: 5 trades of 40.", out)
+        self.assertIn("Too early: 5 trades of the 40 before any verdict (no PASS before 300).", out)
 
     def test_three_a_day_and_the_daily_report(self):
         quiet(gap.main, ["start", "--file", self.file, "--today", "2026-10-23"])

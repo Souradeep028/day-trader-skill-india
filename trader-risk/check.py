@@ -587,6 +587,9 @@ def live_gate(forward, today):
         x = v.get(kind) or {}
         if x.get("state") != "passed":
             bad.append("%s %s" % (kind, x.get("state") or "not run"))
+        elif x.get("gate") != "sequential":
+            bad.append("%s passed the old 40-trade gate, which is too small to tell a small edge from luck: "
+                       "freeze a new test (forward.py start) and pass the sequential gate" % kind)
         elif (d_today - datetime.date.fromisoformat(x["date"])).days > FORWARD_FRESH_DAYS:
             bad.append("%s passed on %s, over %d days ago: run forward.py status again" % (kind, x["date"],
                                                                                           FORWARD_FRESH_DAYS))

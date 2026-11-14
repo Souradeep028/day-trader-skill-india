@@ -279,8 +279,8 @@ class PlanRules(unittest.TestCase):
         self.assertIn("live trading is locked: no forward test", s["refusal"])
         self.assertIsNone(size.bracket_order(s))
         fw = {"expected": {"low": -0.1}, "verdicts": {
-            "shadow": {"state": "passed", "date": TODAY, "passed_on": TODAY},
-            "paper": {"state": "passed", "date": TODAY, "passed_on": TODAY}}}
+            "shadow": {"state": "passed", "date": TODAY, "passed_on": TODAY, "gate": "sequential"},
+            "paper": {"state": "passed", "date": TODAY, "passed_on": TODAY, "gate": "sequential"}}}
         s = size.size_trade(plan(), live, today=TODAY, forward=fw)
         # 25 % of 500 = 125: 10 shares (107 + 12.32 of charges = 119.32); 11 would be 131.25
         self.assertEqual((s["qty"], s["refusal"]), (10, None))

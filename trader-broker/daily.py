@@ -258,9 +258,11 @@ def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None, gap=None):
             L.append("- Paper: " + ticket.performance_text(paper["performance"]) + ".")
         sl = paper.get("slippage")
         if sl:
-            L.append("- Entry slippage: %+.2f a share, %+.3f R a trade on average (%s over %d trades): what acting a "
-                     "little after the signal costs." % (sl["per_share"], sl["R"], ticket._money(sl["rupees"]),
-                                                         sl["trades"]))
+            L.append("- Entry slippage: %+.2f a share, %+.1f bp, %+.3f R a trade on average (%s over %d trades): what "
+                     "acting a little after the signal costs. Backtests and new shadow tests assume 3 bp: use the "
+                     "measured figure (edge.py run --fills realistic --slippage-bp %.1f)%s." % (
+                         sl["per_share"], sl.get("bp", 0), sl["R"], ticket._money(sl["rupees"]), sl["trades"],
+                         max(sl.get("bp", 0), 0), "" if sl["trades"] >= 30 else ", once it rests on 30+ trades"))
         m = paper.get("matched") or {}
         if fw and fw.get("avg_R") is not None and paper.get("avg_R") is not None:
             L.append("- Execution gap: paper %+.2f R a trade against the shadow's %+.2f R (%+.2f)%s." % (

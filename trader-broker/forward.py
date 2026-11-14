@@ -14,11 +14,21 @@ advance, traded on every signal it gives (on paper first), and judged by limits 
 
 start   freezes the rule in trader/forward.json with what the backtest expects: its average R after
         charges and the low end of its 95 % bootstrap range (edge.py --write saved both), or --expect-r
-        and --expect-low. And the stop rules, fixed now, not after a bad week:
-          --min-trades 40     no verdict before 40 trades
-          --max-drawdown-r 8  stop if the trades since the start are ever 8 R under their best
-          the verdict at --min-trades: STOP when the average R is under the backtest's low end, or 0 or
-          less; PASSED when it is above both
+        and --expect-low. And the stop rules, fixed now, not after a bad week (the sequential gate):
+          --min-trades 300     no PASS before 300 trades
+          --max-trades 1300    STOP, not proven, at 1,300 trades (what +0.076 R needs to show itself)
+          --kill-r 0.05        from 300 trades on, STOP while the average is under +0.05 R
+          --z 2.5              PASS when the average less 2.5 standard errors is above 0; STOP (from 40
+                               trades) when the average plus 2.5 standard errors is under 0. 2.5, not 1.96,
+                               because the test is looked at after every session
+          --max-drawdown-r 30  STOP if the trades since the start are ever 30 R under their best
+        Simulated on the R spread of these rules (SD about 1 R a trade): a rule with no edge passes about 3 %
+        of the time and one losing 0.10 R a trade almost never; one making +0.15 R passes about 94 %; one
+        making +0.076 R about half the time (any test of a small edge needs many trades).
+        --fills realistic (the default) replays the shadow the way the paper autopilot fills: the next bar's
+        open, --slippage-bp (3, or the measured figure) on market fills, targets traded through.
+        Tests frozen before this gate (no "gate" in their stop rules) keep their 40-trade verdict, but it
+        no longer unlocks live trading: trader-risk's live lock needs a sequential PASS.
 signal  logs each signal of the rule: --taken or --skipped (with --reason). Taking some and skipping others
         quietly changes the rule; the status says how many were skipped and why.
 status  pairs the broker log's fills (trader/state/broker.json, paper by default) since the start into round
@@ -33,7 +43,7 @@ shadow  the automatic forward test: replays the frozen rule on each session's re
         replaced, not doubled). status then judges the shadow trades by the same stop rules. No human
         picks, no skipped signals: the rule itself, going forward. Run it after the close each day.
 
-A forward test is evidence, not proof: 40 trades still leave a wide range. Not financial advice.
+A forward test is evidence, not proof. Not financial advice.
 """
 
 import argparse
@@ -49,9 +59,19 @@ sys.path.insert(1, os.path.join(os.path.dirname(HERE), "trader-timemachine"))
 import ticket  # noqa: E402  (this folder's broker log reader)
 import edge  # noqa: E402  (trader-timemachine's edge report: the same trades as the backtest)
 
-MIN_TRADES = 40
+MIN_TRADES = 40            # the old gate's verdict point, kept for tests frozen with it
 PER_DAY = 3
 MAX_DRAWDOWN_R = 8.0
+# the sequential gate (see the docstring): the stop rules every new test is frozen with
+SEQUENTIAL = {"gate": "sequential", "min_trades": 300, "max_trades": 1300, "kill_R": 0.05, "z": 2.5,
+              "early": 40, "max_drawdown_R": 30.0}
+SHADOW_FILLS = {"model": "realistic", "slippage_bp": 3.0}
+
+
+def sequential_rules(**changes):
+    r = dict(SEQUENTIAL)
+    r.update({k: v for k, v in changes.items() if v is not None})
+    return r
 OFF_PLAN_R = -1.25
 EARLY = 10
 
@@ -184,6 +204,8 @@ def evaluate(test, trades):
     if worst >= rules["max_drawdown_R"] - 1e-9:
         verdict, state = ("STOP: the trades since the start fell %.1f R from their best, past the %.0f R limit "
                           "set at the start" % (worst, rules["max_drawdown_R"])), "stop"
+    elif rules.get("gate") == "sequential":
+        verdict, state = sequential_verdict(rs, rules)
     elif n < EARLY:
         verdict, state = "Too early: %d trade%s of %d. Keep taking every signal." % (
             n, "" if n == 1 else "s", rules["min_trades"]), "running"
@@ -202,6 +224,7 @@ def evaluate(test, trades):
                           "end%s. Evidence, not proof: if you go live, start at half size and keep the journal."
                           % (n, avg, (" %+.2f R" % low) if low is not None else "")), "passed"
     return {"rule": test["rule"], "filter": test["filter"], "started": test["started"], "trades": n,
+            "gate": rules.get("gate") or "legacy-40",
             "with_R": len(rs), "wins": sum(1 for t in trades if t["net"] > 0),
             "avg_R": avg, "total_R": round(sum(rs), 2), "worst_drawdown_R": round(worst, 2),
             "net": round(sum(t["net"] for t in trades), 2), "expected": exp, "floor": floor,
@@ -221,6 +244,11 @@ def shadow_trades(test, charts, index_text, vix_text, days, per_day=PER_DAY, cfg
     entries first. charts {SYM: chart text} as edge.py reads them."""
     c = {"max_loss": 500.0, "max_order": 75000.0, "slippage_ticks": 1, "max_cost_pct": edge.MAX_COST_PCT}
     c.update(cfg or {})
+    fills = test.get("fills") or {}
+    if fills.get("model") == "realistic":
+        # the shadow fills the way the paper autopilot does, not at the signal bar's close
+        c.update(edge.FILLS["realistic"])
+        c["slippage_bp"] = float(fills.get("slippage_bp", edge.FILLS["realistic"]["slippage_bp"]))
     c["first_slot"] = edge.hhmm_slot(c.get("no_entries_before") or "09:30", "no_entries_before")
     c["last_entry_slot"] = edge.hhmm_slot(c.get("no_entries_after") or "14:45", "no_entries_after")
     c["flat_slot"] = edge.hhmm_slot(c.get("flat_by") or "15:10", "flat_by")
@@ -308,12 +336,42 @@ def cmd_shadow(a):
     return 0 if res["state"] != "stop" else 1
 
 
+def sequential_verdict(rs, rules):
+    """(verdict, state) for the sequential gate, from the R of every trade so far (the drawdown stop is
+    checked before this)."""
+    import math
+    n = len(rs)
+    early, lo_n, hi_n = rules.get("early", 40), rules["min_trades"], rules.get("max_trades", 1300)
+    if n < early:
+        return ("Too early: %d trade%s of the %d before any verdict (no PASS before %d). Keep taking every signal."
+                % (n, "" if n == 1 else "s", early, lo_n)), "running"
+    avg = sum(rs) / n
+    sd = math.sqrt(sum((r - avg) ** 2 for r in rs) / (n - 1)) if n > 1 else 0.0
+    z = rules.get("z", 2.5)
+    lo, hi = avg - z * sd / math.sqrt(n), avg + z * sd / math.sqrt(n)
+    band = "average %+.3f R, range %+.2f to %+.2f R" % (avg, lo, hi)
+    if hi < 0:
+        return ("STOP: after %d trades it is losing by more than chance (%s). Drop it; do not re-tune it on "
+                "these trades." % (n, band)), "stop"
+    if n >= lo_n and lo > 0:
+        return ("PASSED: after %d trades it is making money by more than chance (%s). Evidence, not proof: "
+                "if you go live, the live ramp starts at a quarter size." % (n, band)), "passed"
+    if n >= lo_n and avg < rules.get("kill_R", 0.05):
+        return ("STOP: %d trades and the average is under %+.2f R (%s): too small to be worth trading even if "
+                "it is real." % (n, rules.get("kill_R", 0.05), band)), "stop"
+    if n >= hi_n:
+        return "STOP: %d trades and still not proven (%s)." % (n, band), "stop"
+    return ("Running: %d trades, %s. A PASS needs %d+ trades and the whole range above 0."
+            % (n, band, lo_n)), "running"
+
+
 def record(test, kind, res, today):
     """Keep each verdict in the test file with its date, so trader-risk can read it: live trading stays locked
     until both the shadow and your own paper trades say PASSED (and not long ago)."""
     v = test.setdefault("verdicts", {})
     old = v.get(kind) or {}
     v[kind] = {"state": res["state"], "date": today, "trades": res["trades"], "avg_R": res["avg_R"],
+               "gate": res.get("gate"),
                "passed_on": (old.get("passed_on") or today) if res["state"] == "passed" else None}
 
 
@@ -327,16 +385,25 @@ def cmd_start(a):
     else:
         exp = from_edge(read(a.edge, "edge report (edge.py run --write)"), rule, filt)
     today = a.today or datetime.date.today().isoformat()
+    rules = sequential_rules(min_trades=a.min_trades, max_trades=a.max_trades, kill_R=a.kill_r, z=a.z,
+                             max_drawdown_R=a.max_drawdown_r)
+    fills = ({"model": "realistic", "slippage_bp": a.slippage_bp if a.slippage_bp is not None
+              else SHADOW_FILLS["slippage_bp"]} if a.fills == "realistic" else {"model": "close"})
     test = {"created_by": "trader-broker forward.py", "rule": rule, "filter": filt, "started": today,
-            "account": "live" if a.live else "paper", "expected": exp,
-            "stop_rules": {"min_trades": a.min_trades, "max_drawdown_R": a.max_drawdown_r}, "signals": []}
+            "account": "live" if a.live else "paper", "expected": exp, "stop_rules": rules, "fills": fills,
+            "signals": []}
     write(a.file, test)
     print("Frozen on %s: %s (%s account)." % (today, rule_text(test), test["account"]))
     print("Expected: %s R a trade after charges%s (%s)." % (
         "%+.2f" % exp["avg_R"] if exp.get("avg_R") is not None else "unknown",
         (", low end %+.2f R" % exp["low"]) if exp.get("low") is not None else "", exp.get("source")))
-    print("Stop rules, fixed now: no verdict before %d trades; STOP if the trades fall %.0f R from their best; "
-          "at %d, STOP under the low end or at 0 R or less." % (a.min_trades, a.max_drawdown_r, a.min_trades))
+    print("Stop rules, fixed now: PASS from %d trades when the average less %g standard errors is above 0; STOP "
+          "from %d trades when the average plus %g standard errors is under 0, from %d while the average is under "
+          "%+.2f R, at %d if still not proven, or if the trades fall %.0f R from their best." % (
+              rules["min_trades"], rules["z"], rules["early"], rules["z"], rules["min_trades"], rules["kill_R"],
+              rules["max_trades"], rules["max_drawdown_R"]))
+    print("Shadow fills: %s." % ("realistic, %g bp on market fills" % fills["slippage_bp"]
+                                 if fills["model"] == "realistic" else "at the signal bar's close (an upper bound)"))
     print("Log every signal: forward.py signal SYMBOL.NS --taken (or --skipped --reason ...).")
     return 0
 
@@ -417,8 +484,15 @@ def main(argv=None):
     p.add_argument("--edge", default="trader/edge.json")
     p.add_argument("--expect-r", type=float, help="the expected average R, when there is no edge report row")
     p.add_argument("--expect-low", type=float, help="the low end of its range")
-    p.add_argument("--min-trades", type=int, default=MIN_TRADES)
-    p.add_argument("--max-drawdown-r", type=float, default=MAX_DRAWDOWN_R)
+    p.add_argument("--min-trades", type=int, default=SEQUENTIAL["min_trades"], help="no PASS before this many trades")
+    p.add_argument("--max-trades", type=int, default=SEQUENTIAL["max_trades"], help="STOP, not proven, here")
+    p.add_argument("--kill-r", type=float, default=SEQUENTIAL["kill_R"], help="from --min-trades, STOP under this")
+    p.add_argument("--z", type=float, default=SEQUENTIAL["z"], help="standard errors for PASS and early STOP")
+    p.add_argument("--max-drawdown-r", type=float, default=SEQUENTIAL["max_drawdown_R"])
+    p.add_argument("--fills", choices=("realistic", "close"), default="realistic",
+                   help="how the shadow replay fills: realistic (the autopilot's way) or close (the old upper bound)")
+    p.add_argument("--slippage-bp", type=float, help="bp on market fills in the shadow (default 3; use the paper "
+                   "autopilot's measured figure once it has one)")
     p.add_argument("--live", action="store_true", help="test the live account's trades (default: paper)")
     p.add_argument("--replace", action="store_true")
     p = sub.add_parser("signal", help="log a signal of the rule, taken or skipped")

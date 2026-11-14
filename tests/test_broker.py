@@ -159,8 +159,8 @@ class FlowBase(unittest.TestCase):
         # a forward test that PASSED on both the shadow replay and paper, today: the live lock opens
         with open(self.forward, "w") as fh:
             json.dump({"expected": {"avg_R": 0.08, "low": -0.1}, "verdicts": {
-                "shadow": {"state": "passed", "date": TODAY, "passed_on": TODAY},
-                "paper": {"state": "passed", "date": TODAY, "passed_on": TODAY}}}, fh)
+                "shadow": {"state": "passed", "date": TODAY, "passed_on": TODAY, "gate": "sequential"},
+                "paper": {"state": "passed", "date": TODAY, "passed_on": TODAY, "gate": "sequential"}}}, fh)
 
     def args(self, *extra, **kw):
         return list(extra) + ["--orders", self.orders, "--config", self.cfg, "--risk", self.risk,
@@ -677,7 +677,11 @@ class Forward(unittest.TestCase):
         code, text, err = self.start("--edge", ep)
         self.assertEqual(code, 0, err)
         self.assertIn("Expected: +0.08 R a trade after charges, low end -0.14 R", text)
-        self.assertIn("no verdict before 40 trades", text)
+        self.assertIn("Stop rules, fixed now: PASS from 300 trades", text)
+        self.assertIn("Shadow fills: realistic, 3 bp on market fills", text)
+        with open(self.f) as fh:
+            doc = json.load(fh)
+        self.assertEqual((doc["stop_rules"]["gate"], doc["fills"]), ("sequential", {"model": "realistic", "slippage_bp": 3.0}))
         code, _, err = self.start("--edge", ep)
         self.assertEqual(code, 1)
         self.assertIn("already running", err)
@@ -689,18 +693,23 @@ class Forward(unittest.TestCase):
         self.state([102.0, 99.0, 102.0])
         code, text, _ = self.status()
         self.assertEqual(code, 0)
-        self.assertIn("Too early: 3 trades of 40", text)
+        self.assertIn("Too early: 3 trades of the 40 before any verdict (no PASS before 300)", text)
         self.state([102.0, 99.0, 99.0] * 5)
-        self.assertIn("Running: 15 of 40 trades", self.status()[1])
+        self.assertIn("Too early: 15 trades", self.status()[1])
 
-    def test_passed_and_stopped_at_40(self):
+    def test_the_old_40_trade_gate_still_judges_old_tests(self):
         self.start("--expect-r", "0.1", "--expect-low", "-0.1", "--max-drawdown-r", "100")
+        with open(self.f) as fh:
+            doc = json.load(fh)
+        doc["stop_rules"] = {"min_trades": 40, "max_drawdown_R": 100}             # frozen before the new gate
+        with open(self.f, "w") as fh:
+            json.dump(doc, fh)
         self.state([102.0, 99.0] * 20)                                    # 20 wins, 20 losses: about +0.4 R
         res = forward.evaluate(json.load(open(self.f)), ticket.round_trips(json.load(open(self.st)), "2026-11-10",
                                                                           paper=True)[0])
         self.assertEqual(res["trades"], 40)
         self.assertGreater(res["avg_R"], 0)
-        self.assertEqual(res["state"], "passed")
+        self.assertEqual((res["state"], res["gate"]), ("passed", "legacy-40"))
         self.assertIn("PASSED: after 40 trades", self.status()[1])
         self.state([102.0, 99.0, 99.0, 99.0] * 10)                        # 10 wins, 30 losses: about -0.34 R
         code, text, _ = self.status()
@@ -740,7 +749,7 @@ class Shadow(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.f = os.path.join(self.d, "forward.json")
-        run_fwd(["start", "--rule", "orb15 long tight 2R none", "--expect-r", "0.05", "--expect-low", "-0.1",
+        run_fwd(["start", "--rule", "orb15 long tight 2R none", "--fills", "close", "--expect-r", "0.05", "--expect-low", "-0.1",
                  "--file", self.f, "--today", "2026-10-09"])
 
     def tearDown(self):

@@ -681,19 +681,21 @@ def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
 def entry_slippage(state, trades):
     """The autopilot's entry slippage on these round trips: how much worse each fill was than its signal, from
     the paper positions it recorded. {"trades", "per_share", "R", "rupees"} or None when there is none.
-    R is the slippage over the risk a share at the signal (signal to stop): what the delay cost in R."""
+    R is the slippage over the risk a share at the signal (signal to stop): what the delay cost in R. bp is the
+    slippage in basis points of the signal price: the figure to give edge.py --slippage-bp and forward.py start."""
     keys = {(t["date"], t["symbol"]) for t in trades}
     got = []
     for leg in (state or {}).get("paper_legs", []):
         if leg.get("auto") and (leg.get("date"), leg.get("symbol")) in keys and leg.get("signal") is not None:
             risk = abs(float(leg["signal"]) - float(leg["stop"]))
             sl = float(leg.get("slippage") or 0)
-            got.append((sl, sl / risk if risk else 0.0, sl * float(leg.get("qty") or 0)))
+            bp = 1e4 * sl / float(leg["signal"]) if float(leg["signal"]) else 0.0
+            got.append((sl, sl / risk if risk else 0.0, sl * float(leg.get("qty") or 0), bp))
     if not got:
         return None
     n = len(got)
     return {"trades": n, "per_share": round(sum(g[0] for g in got) / n, 2), "R": round(sum(g[1] for g in got) / n, 3),
-            "rupees": round(sum(g[2] for g in got), 2)}
+            "rupees": round(sum(g[2] for g in got), 2), "bp": round(sum(g[3] for g in got) / n, 2)}
 
 
 def performance(trades, capital=None):
@@ -782,9 +784,10 @@ def cmd_journal(a):
     print(performance_text(s["performance"])[:1].upper() + performance_text(s["performance"])[1:] + ".")
     slip = entry_slippage(state, trades)
     if slip:
-        print("Entry slippage (the autopilot's fills against their signals): %+.2f a share, %+.3f R a trade on "
-              "average, %s over %d trade%s." % (slip["per_share"], slip["R"], _money(slip["rupees"]), slip["trades"],
-                                                "" if slip["trades"] == 1 else "s"))
+        print("Entry slippage (the autopilot's fills against their signals): %+.2f a share, %+.1f bp, %+.3f R a trade "
+              "on average, %s over %d trade%s." % (slip["per_share"], slip.get("bp", 0), slip["R"],
+                                                   _money(slip["rupees"]), slip["trades"],
+                                                   "" if slip["trades"] == 1 else "s"))
     for o in still_open:
         print("Still open: %s %s on %s (not counted)." % (_str_num(o["qty"]), o["symbol"], o["date"]))
     if s["trades"] < 30:

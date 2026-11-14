@@ -11,17 +11,19 @@ by more than luck would explain. Standard library only.
     python3 edge.py run --offline DIR --symbols INFY.NS,TCS.NS --json
     python3 edge.py run --watchlist trader/nifty50.txt --setups orb30 --sides short --max-cost-pct 10
 
-The grid: 4 setups x long and short x 2 stops x 4 targets (1R, 1.5R, 2R, 3R) = 64 rules.
+The grid: 6 setups x long and short x 2 stops x 4 targets (1R, 1.5R, 2R, 3R) = 96 rules.
   orb15, orb30  the first 5-minute bar after the 15- or 30-minute opening range to CLOSE above its high
                 (long) or below its low (short). Stops: the range midpoint (tight) or the far side of
                 the range (wide).
+  orb15s, orb30s  the same ranges with a resting stop order a tick beyond them: it fills inside the bar
+                that reaches it (or at the open of a bar that gaps through).
   pdb           the first bar to close above the previous session's high (long) or below its low
                 (short), having closed on the other side the bar before.
   vwap          a pullback to VWAP: the bar before closed above VWAP, this bar's low touched it and it
                 closed back above, and above the day's open (long; mirrored for short).
   For pdb and vwap the tight stop is the entry bar's low (high for a short), the wide stop the day's
   low (high) so far.
-Each rule runs with no filter, with each of these, and with low_cost plus each other one (14 in all):
+Each rule runs with no filter, with each of these, and with low_cost plus each other one (16 in all):
   with_nifty  Nifty 50 (^NSEI) has moved the trade's way from its 9:15 open at the entry bar's close
   stronger    the stock has moved the trade's way from its open by more than Nifty has
   volume      the entry bar traded at least the average of the day's bars before it
@@ -31,6 +33,7 @@ Each rule runs with no filter, with each of these, and with low_cost plus each o
               risk: a wide enough stop that charges do not eat the trade (trader-budget's
               max_charges_pct_of_risk)
   not_expiry  not Nifty's weekly F&O expiry (Tuesday, or the trading day before a Tuesday holiday)
+  not_10_to_11  no entry between 10:00 and 11:00
 
 One trade, the way the other skills would take it:
   entry       the setup's bar's close, closing between no_entries_before (09:30) and no_entries_after
@@ -49,9 +52,19 @@ One trade, the way the other skills would take it:
 
 The sessions are split in time: the first two thirds (in-sample) and the last third (out-of-sample).
 A rule "held up" when its average R after charges is above 0 in BOTH halves with at least 30 trades in
-each. With 896 combinations tested, some will hold up by chance, so a rule only PASSES when it also
+each. With 1,536 combinations tested, some will hold up by chance, so a rule only PASSES when it also
 clears a session bootstrap: whole days resampled (a day's trades move together), with a one-sided
-p-value under 0.05 / the number of combinations (Bonferroni). A past edge is not a promise.
+p-value under 0.05 / the number of combinations (Bonferroni). And then it is re-run with realistic fills
+(below, at 3 bp) and must still make money AND beat its baseline: every stock on every session, the same
+side, stop width and target, entered at the first bar of the window whatever the chart did. That is the
+day's drift, not the setup. A past edge is not a promise.
+
+Fills (--fills). "close", the grid's default, enters at the signal bar's close and takes a target on a
+touch: an upper bound, since no order can trade at the price of the bar that triggered it. "realistic"
+is what the paper autopilot and a real order get: in at the NEXT bar's open, a target only when the price
+trades a tick through it, and --slippage-bp (3) basis points on every market fill (entry, stop, flat-by).
+The report shows the best rule both ways at 0, 3 and 6 bp. One NSE tick on these stocks is under 1 bp,
+so a tick count says little: the paper autopilot measures the real figure (daily report, "Entry slippage").
 
 Data: Yahoo v8 chart, range=60d interval=5m, one request per symbol, half a second apart; --offline
 DIR reads <SYMBOL>.json or .json.gz from DIR.
@@ -98,6 +111,13 @@ CAPITAL = 100000.0
 MIN_TRADES = 30
 MAX_COST_PCT = 15.0
 EXPIRY_WEEKDAY = 1        # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
+# How a trade is filled. "close": at the signal bar's close and a target on a touch, the grid's default and an
+# upper bound. "realistic": what the paper autopilot and a real order get: in at the NEXT bar's open (the
+# order goes in after the bar closes), a target only when the price trades a tick through it (a resting limit
+# order is behind the queue), and slippage_bp basis points on every market fill (entry, stop, flat-by).
+FILLS = {"close": {"entry_delay": 0, "target_through": 0, "slippage_bp": 0.0},
+         "realistic": {"entry_delay": 1, "target_through": 1, "slippage_bp": 3.0}}
+SENSITIVITY_BP = (0.0, 3.0, 6.0)
 BOOTSTRAP = 1000
 ALPHA = 0.05
 MIN_RISK_PCT = 0.05
@@ -391,13 +411,23 @@ def entry_at(s, setup, side, stop_rule, target_r, cfg):
         return None
     k, tight, wide, fill = got
     B, t = s["bars"], s["tick"]
+    fk = k if fill is None else k - 1        # the last bar the filters may see
     px = B[k][3] if fill is None else fill
+    delay = int(cfg.get("entry_delay") or 0) if fill is None else 0
+    slot = k
+    if delay:
+        # the order goes in once the signal bar has closed: it meets the open of a later bar
+        slot = k + delay
+        if slot >= len(B) or slot >= cfg["flat_slot"]:
+            return None
+        px = B[slot][0]
+    bp = float(cfg.get("slippage_bp") or 0) / 1e4
     raw = tight if stop_rule == "tight" else wide
     if long:
-        entry, stop = tick_up(px + slip * t, t), tick_down(raw, t)
+        entry, stop = tick_up(px * (1 + bp) + slip * t, t), tick_down(raw, t)
         risk = round(entry - stop, 2)
     else:
-        entry, stop = tick_down(px - slip * t, t), tick_up(raw, t)
+        entry, stop = tick_down(px * (1 - bp) - slip * t, t), tick_up(raw, t)
         risk = round(stop - entry, 2)
     if risk <= 0 or risk < entry * MIN_RISK_PCT / 100.0:
         return None
@@ -411,7 +441,6 @@ def entry_at(s, setup, side, stop_rule, target_r, cfg):
     at_stop = round_trip(qty, *((entry, stop) if long else (stop, entry)), rates=cfg.get("charges"))
     # the filters see only what was known at the entry: the entry bar's close for a close entry, the bar
     # before it for a stop entry (which fills inside its bar)
-    fk = k if fill is None else k - 1
     close = B[fk][3]
     n_at = s["nifty"].get(fk, (None,) * 4)[3] if s["nifty"] else None
     n_open, s_open = s["n_open"], B[0][0]
@@ -430,8 +459,11 @@ def entry_at(s, setup, side, stop_rule, target_r, cfg):
         "not_expiry": not s["expiry"],
         "not_10_to_11": not 600 <= at_min < 660,
     }
-    return {"slot": k, "fill": fill, "entry": entry, "stop": stop, "target": target, "risk": risk, "qty": qty,
-            "time": "%d:%02d" % divmod(at_min, 60), "cost_pct": cost_pct, "filters": filt}
+    if delay:
+        at_min = OPEN_MIN + 5 * slot
+    return {"slot": slot, "fill": fill, "entry": entry, "stop": stop, "target": target, "risk": risk, "qty": qty,
+            "time": "%d:%02d" % divmod(at_min, 60), "cost_pct": cost_pct, "filters": filt, "delayed": bool(delay),
+            "slip_bp": float(cfg.get("slippage_bp") or 0), "through": int(cfg.get("target_through") or 0)}
 
 
 def exit_on(bar, e, long, slip, tick, first=False):
@@ -439,52 +471,139 @@ def exit_on(bar, e, long, slip, tick, first=False):
     first: the entry bar of a stop entry, where only the stop counts (the order inside the bar is unknown)."""
     o, h, l, c, v = bar
     stop, target = e["stop"], e["target"]
+    bp = float(e.get("slip_bp") or 0) / 1e4           # a stop is a market order once triggered: it pays the bp too
+    through = int(e.get("through") or 0) * tick       # a resting target fills only when the price trades through
     if first:
         if (l <= stop) if long else (h >= stop):
-            return "stop", tick_down(stop - slip * tick, tick) if long else tick_up(stop + slip * tick, tick)
+            return "stop", (tick_down(stop * (1 - bp) - slip * tick, tick) if long
+                            else tick_up(stop * (1 + bp) + slip * tick, tick))
         return None
     if long and l <= stop:
-        return "stop", tick_down(min(stop, o) - slip * tick, tick)
+        return "stop", tick_down(min(stop, o) * (1 - bp) - slip * tick, tick)
     if not long and h >= stop:
-        return "stop", tick_up(max(stop, o) + slip * tick, tick)
-    if (h >= target) if long else (l <= target):
+        return "stop", tick_up(max(stop, o) * (1 + bp) + slip * tick, tick)
+    if (h >= target + through) if long else (l <= target - through):
         return "target", target
     return None
 
 
-def flat_price(bar, long, slip, tick):
-    return tick_down(bar[3] - slip * tick, tick) if long else tick_up(bar[3] + slip * tick, tick)
+def flat_price(bar, long, slip, tick, bp=0.0):
+    f = float(bp or 0) / 1e4
+    return tick_down(bar[3] * (1 - f) - slip * tick, tick) if long else tick_up(bar[3] * (1 + f) + slip * tick, tick)
 
 
 def trades_for(sym, sessions, setup, side, stop_rule, target_r, cfg):
     """Every trade one rule takes on one stock's prepared sessions: [{date, time, side, entry, stop,
     target, exit, outcome, qty, charges, pnl, R_gross, R, cost_pct, filters: {name: bool}}]."""
     long = side == "long"
-    last, slip = cfg["flat_slot"], cfg["slippage_ticks"]
     out = []
     for s in sessions:
         e = entry_at(s, setup, side, stop_rule, target_r, cfg)
-        if e is None:
-            continue
-        B, t, k = s["bars"], s["tick"], e["slot"]
-        hit = exit_on(B[k], e, long, slip, t, first=True) if e["fill"] is not None else None
-        j = k + 1
-        while hit is None and j <= last:
-            hit = exit_on(B[j], e, long, slip, t)
-            j += 1
-        outcome, exit_px = hit if hit else ("close", flat_price(B[last], long, slip, t))
-        exit_px = max(exit_px, 0.01)
-        sign = 1 if long else -1
-        entry, qty, risk = e["entry"], e["qty"], e["risk"]
-        buy, sell = (entry, exit_px) if long else (exit_px, entry)
-        charges = round_trip(qty, buy, sell, cfg.get("charges"))
-        pnl = round(sign * qty * (exit_px - entry) - charges, 2)
-        out.append({"symbol": sym, "date": s["date"], "time": e["time"], "slot": k, "side": side, "entry": entry,
-                    "stop": e["stop"], "target": e["target"], "exit": exit_px, "outcome": outcome, "qty": qty,
-                    "risk": risk, "charges": charges, "pnl": pnl, "cost_pct": e["cost_pct"],
-                    "R_gross": round(sign * (exit_px - entry) / risk, 4), "R": round(pnl / (qty * risk), 4),
-                    "filters": e["filters"]})
+        if e is not None:
+            out.append(play(sym, s, e, side, cfg))
     return out
+
+
+def play(sym, s, e, side, cfg):
+    """One entry played out to its exit on the rest of the session: the trade dict trades_for returns."""
+    long = side == "long"
+    last, slip = cfg["flat_slot"], cfg["slippage_ticks"]
+    B, t, k = s["bars"], s["tick"], e["slot"]
+    # a fill inside its bar (a stop entry, or a delayed entry at the bar's open): only the stop counts in that
+    # bar, since the order of its high and low is unknown
+    hit = exit_on(B[k], e, long, slip, t, first=True) if (e["fill"] is not None or e.get("delayed")) else None
+    j = k + 1
+    while hit is None and j <= last:
+        hit = exit_on(B[j], e, long, slip, t)
+        j += 1
+    outcome, exit_px = hit if hit else ("close", flat_price(B[last], long, slip, t, e.get("slip_bp")))
+    exit_px = max(exit_px, 0.01)
+    sign = 1 if long else -1
+    entry, qty, risk = e["entry"], e["qty"], e["risk"]
+    buy, sell = (entry, exit_px) if long else (exit_px, entry)
+    charges = round_trip(qty, buy, sell, cfg.get("charges"))
+    pnl = round(sign * qty * (exit_px - entry) - charges, 2)
+    return {"symbol": sym, "date": s["date"], "time": e["time"], "slot": k, "side": side, "entry": entry,
+            "stop": e["stop"], "target": e["target"], "exit": exit_px, "outcome": outcome, "qty": qty,
+            "risk": risk, "charges": charges, "pnl": pnl, "cost_pct": e["cost_pct"],
+            "R_gross": round(sign * (exit_px - entry) / risk, 4), "R": round(pnl / (qty * risk), 4),
+            "filters": e["filters"]}
+
+
+def baseline_trades(trades, prepared, cfg, target_r):
+    """The baseline of a rule's trades: EVERY stock on EVERY session, on the rule's side, entered at the first bar
+    of the entry window whatever the chart did, with the rule's median stop distance (as a % of the price), its
+    target and its exits. It is not limited to the days the rule fired: those days carry what happened later
+    (a short fires because the stock fell), which would flatter the baseline. A rule that does not beat it is
+    the day's drift (Nifty 50 stocks tend to drift during the session), not its setup."""
+    if not trades:
+        return []
+    long = trades[0]["side"] == "long"
+    side = trades[0]["side"]
+    risk_pct = statistics.median(t["risk"] / t["entry"] for t in trades)
+    k = cfg["first_slot"]
+    delay = int(cfg.get("entry_delay") or 0)
+    slot = k + delay
+    bp = float(cfg.get("slippage_bp") or 0) / 1e4
+    slip = cfg["slippage_ticks"]
+    dates = cfg.get("dates")
+    out = []
+    for sym, sessions in sorted(prepared.items()):
+        for s in sessions:
+            B, t = s["bars"], s["tick"]
+            if (dates is not None and s["date"] not in dates) or slot >= len(B) or slot >= cfg["flat_slot"]:
+                continue
+            px = B[slot][0] if delay else B[k][3]
+            if long:
+                entry = tick_up(px * (1 + bp) + slip * t, t)
+                stop = tick_down(entry * (1 - risk_pct), t)
+                risk = round(entry - stop, 2)
+            else:
+                entry = tick_down(px * (1 - bp) - slip * t, t)
+                stop = tick_up(entry * (1 + risk_pct), t)
+                risk = round(stop - entry, 2)
+            if risk <= 0:
+                continue
+            target = tick_round(entry + target_r * risk if long else entry - target_r * risk, t)
+            qty = size_for(entry, stop, cfg["max_loss"], cfg["max_order"], cfg.get("charges"))
+            if qty <= 0 or target <= 0:
+                continue
+            e = {"slot": slot, "fill": None, "entry": entry, "stop": stop, "target": target, "risk": risk,
+                 "qty": qty, "time": "%d:%02d" % divmod(OPEN_MIN + 5 * (slot if delay else k + 1), 60),
+                 "cost_pct": None, "filters": {}, "delayed": bool(delay),
+                 "slip_bp": float(cfg.get("slippage_bp") or 0), "through": int(cfg.get("target_through") or 0)}
+            out.append(play(sym, s, e, side, cfg))
+    return out
+
+
+def rerun(prepared, rule, filt, cfg, **fills):
+    """One rule and filter again on the prepared sessions, with other fills: [trades]."""
+    c = dict(cfg)
+    c.update(fills)
+    need = filt.split("+")
+    ts = []
+    for sym, sess in prepared.items():
+        ts += [t for t in trades_for(sym, sess, rule["setup"], rule["side"], rule["stop"], rule["target_r"], c)
+               if all(t["filters"].get(x, False) for x in need)]
+    return ts
+
+
+def realism(r, prepared, cfg):
+    """A rule under realistic fills at 0, 3 and 6 bp of slippage, each with its baseline:
+    {"fills": "realistic", "by_bp": [{"bp", "trades", "avg_R", "baseline_R", "beats"}]}."""
+    out = []
+    for bp in SENSITIVITY_BP:
+        fills = dict(FILLS["realistic"], slippage_bp=bp)
+        ts = rerun(prepared, r["rule"], r["filter"], cfg, **fills)
+        c = dict(cfg)
+        c.update(fills)
+        bl = baseline_trades(ts, prepared, c, r["rule"]["target_r"])
+        a = statistics.mean(t["R"] for t in ts) if ts else None
+        b = statistics.mean(t["R"] for t in bl) if bl else None
+        out.append({"bp": bp, "trades": len(ts), "avg_R": round(a, 3) if a is not None else None,
+                    "baseline_R": round(b, 3) if b is not None else None,
+                    "beats": bool(a is not None and b is not None and a > 0 and a > b)})
+    return {"fills": "realistic", "by_bp": out}
 
 
 def stats(trades):
@@ -558,10 +677,14 @@ BASELINE = rule_key("orb15", "long", "tight", 2.0)
 def edge_report(charts, index_text=None, vix_text=None, cfg=None):
     """{symbol: chart text} -> the report document."""
     c = {"max_loss": 500.0, "max_order": 75000.0, "slippage_ticks": 1, "no_entries_before": "09:30",
-         "no_entries_after": "14:45", "flat_by": "15:10", "max_cost_pct": MAX_COST_PCT,
+         "no_entries_after": "14:45", "flat_by": "15:10", "max_cost_pct": MAX_COST_PCT, "fills": "close",
          "expiry_weekday": EXPIRY_WEEKDAY, "bootstrap": BOOTSTRAP, "setups": SETUPS, "sides": SIDES,
          "tax_pct": TAX_PCT, "trades_per_day": TRADES_PER_DAY, "capital": CAPITAL}
     c.update({k: v for k, v in (cfg or {}).items() if v is not None})
+    if c["fills"] not in FILLS:
+        raise EdgeError("unknown fills %r: close or realistic" % c["fills"])
+    for k, v in FILLS[c["fills"]].items():
+        c.setdefault(k, v)
     c["first_slot"] = hhmm_slot(c["no_entries_before"], "no_entries_before")
     c["last_entry_slot"] = hhmm_slot(c["no_entries_after"], "no_entries_after")
     c["flat_slot"] = hhmm_slot(c["flat_by"], "flat_by")
@@ -625,10 +748,18 @@ def edge_report(charts, index_text=None, vix_text=None, cfg=None):
         if r["all"]["trades"] >= 2 * MIN_TRADES and r["all"]["avg_R"] > 0:
             r["bootstrap"] = bootstrap(r["_trades"], c["bootstrap"])
             r["passed"] = bool(r["held_up"] and r["bootstrap"] and r["bootstrap"]["p"] < bar)
+        r["realism"] = None
+        if r["passed"]:
+            # passing on the grid's fills is not enough: it must still make money, and beat the day's drift,
+            # with the order going in after the bar and 3 bp of slippage
+            r["realism"] = realism(r, prepared, c)
+            r["passed"] = bool(r["realism"]["by_bp"][1]["beats"])
 
     rows.sort(key=lambda r: (-rank_key(r), SETUPS.index(r["rule"]["setup"]), r["rule"]["side"], r["rule"]["stop"],
                              r["rule"]["target_r"], r["filter"]))
     best = rows[0]
+    if best.get("realism") is None:
+        best["realism"] = realism(best, prepared, c)
     base = [r for r in rows if r["filter"] == "none" and r["rule"] == BASELINE]
     by_setup = []
     for setup in c["setups"]:
@@ -658,7 +789,7 @@ def edge_report(charts, index_text=None, vix_text=None, cfg=None):
         "expiry_sessions": sorted(d for d in c["expiry"] if d in dates),
         "settings": {k: c[k] for k in ("max_loss", "max_order", "slippage_ticks", "no_entries_before",
                                         "no_entries_after", "flat_by", "max_cost_pct", "expiry_weekday",
-                                        "bootstrap")},
+                                        "bootstrap", "fills", "entry_delay", "target_through", "slippage_bp")},
         "setups": list(c["setups"]), "sides": list(c["sides"]),
         "combinations": n, "significance": float("%.3g" % bar),
         "charges_in_R": {"median_pct": round(statistics.median(costs), 1) if costs else None,
@@ -773,10 +904,14 @@ def report(doc, top=12):
                 doc["out_of_sample"]["from"], doc["out_of_sample"]["to"]),
              "%d combinations: %s; %s; tight or wide stop; 1 to 3R; no filter, each filter, and low cost with each." % (
                  doc["combinations"], ", ".join(SETUP_NAMES[x] for x in doc["setups"]), " and ".join(doc["sides"])),
-             "Each trade sized to a %s max loss with charges (max order %s), %d tick%s of slippage, entries %s to %s, "
-             "flat by %s." % (money(s["max_loss"]), money(s["max_order"]), s["slippage_ticks"],
-                               "" if s["slippage_ticks"] == 1 else "s", s["no_entries_before"], s["no_entries_after"],
-                               s["flat_by"]), ""]
+             "Each trade sized to a %s max loss with charges (max order %s), %d tick%s of slippage%s, entries %s to %s, "
+             "flat by %s; %s fills." % (money(s["max_loss"]), money(s["max_order"]), s["slippage_ticks"],
+                               "" if s["slippage_ticks"] == 1 else "s",
+                               (" plus %g bp" % s["slippage_bp"]) if s.get("slippage_bp") else "",
+                               s["no_entries_before"], s["no_entries_after"], s["flat_by"],
+                               "realistic (the next bar's open, targets traded through)"
+                               if s.get("fills") == "realistic" else "close (the signal bar's close, targets on a "
+                               "touch: an upper bound)"), ""]
     head = "%-66s %6s %6s %7s %8s %11s  %s" % ("rule", "trades", "win %", "avg R", "R gross", "P&L",
                                               "in / out of sample")
     lines.append(head)
@@ -818,15 +953,34 @@ def report(doc, top=12):
                          % bm["nifty_pct"])
         lines.append("  The best rules are picked with hindsight from %d tries: a fresh period usually gives back "
                      "much of it. Only the default was fixed in advance." % doc["combinations"])
+    lines += realism_lines(doc)
     lines += ["", doc["verdict"],
-              "A rule passes only when it made money after charges in both halves (%d+ trades each) and its "
-              "session-bootstrap p-value is under %s (0.05 shared across %d tests)." % (
+              "A rule passes only when it made money after charges in both halves (%d+ trades each), its "
+              "session-bootstrap p-value is under %s (0.05 shared across %d tests), AND it still makes money and "
+              "beats its baseline with realistic fills and 3 bp of slippage." % (
                   MIN_TRADES, doc["significance"], doc["combinations"]),
-              "Charges are Zerodha's intraday rates; slippage is a guess, and real fills can be worse. A past edge "
-              "is not a promise. Not financial advice."]
+              "Charges are Zerodha's intraday rates; slippage is a guess until the paper autopilot measures it "
+              "(daily report, \"Entry slippage\"). A past edge is not a promise. Not financial advice."]
     if doc["failed"]:
         lines.append("No data for: %s." % ", ".join(sorted(doc["failed"])))
     return lines
+
+
+def realism_lines(doc):
+    """The best rule under realistic fills, at 0, 3 and 6 bp, against its baseline."""
+    best = doc.get("best") or {}
+    rz = best.get("realism")
+    if not rz:
+        return []
+    out = ["", "The best rule with realistic fills (in at the next bar's open, a target only when the price trades "
+           "a tick through it, slippage on every market fill), against a baseline: every stock, every session, the same "
+           "side and stop width, in at %s whatever the chart did (the day's drift):" % doc["settings"]["no_entries_before"]]
+    for x in rz["by_bp"]:
+        out.append("  %4.1f bp: %d trades, %s R a trade; baseline %s R; %s" % (
+            x["bp"], x["trades"], "%+.3f" % x["avg_R"] if x["avg_R"] is not None else "n/a",
+            "%+.3f" % x["baseline_R"] if x["baseline_R"] is not None else "n/a",
+            "beats it" if x["beats"] else "does NOT beat it"))
+    return out
 
 
 # ---------------------------------------------------------------- command line
@@ -853,6 +1007,11 @@ def main(argv=None):
     p.add_argument("--max-loss", type=float, default=500.0)
     p.add_argument("--max-order", type=float, default=75000.0)
     p.add_argument("--slippage-ticks", type=int, default=1)
+    p.add_argument("--fills", choices=sorted(FILLS), default="close",
+                   help="close: at the signal bar's close, targets on a touch (the grid's upper bound); realistic: "
+                        "the next bar's open, targets traded through, --slippage-bp on market fills")
+    p.add_argument("--slippage-bp", type=float, help="basis points on every market fill (default 0 for close fills, "
+                   "3 for realistic): use the paper autopilot's measured figure (daily report)")
     p.add_argument("--no-entries-before", default="09:30")
     p.add_argument("--no-entries-after", default="14:45")
     p.add_argument("--flat-by", default="15:10")
@@ -893,7 +1052,8 @@ def main(argv=None):
                "max_cost_pct": a.max_cost_pct, "expiry_weekday": a.expiry_weekday, "bootstrap": a.bootstrap,
                "tax_pct": a.tax_pct, "trades_per_day": a.trades_per_day, "capital": a.capital,
                "setups": tuple(x.strip() for x in a.setups.split(",")) if a.setups else None,
-               "sides": tuple(x.strip() for x in a.sides.split(",")) if a.sides else None}
+               "sides": tuple(x.strip() for x in a.sides.split(",")) if a.sides else None,
+               "fills": a.fills, "slippage_bp": a.slippage_bp}
         doc = edge_report(charts, idx, vix, cfg)
         doc["failed"].update({k: v for k, v in fails.items() if k not in (INDEX, VIX)})
         if INDEX in fails or VIX in fails:

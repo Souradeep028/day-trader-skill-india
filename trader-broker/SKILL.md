@@ -310,8 +310,8 @@ of daily bars, but only for entries in NSE's pre-open auction: short a Nifty
 50 stock that opened 2 % or more up, a 1 % stop, out at 15:10. It had faded
 in the later years, and a rule picked from 200 flatters itself, so
 `gapshadow.py` freezes it and judges it only on sessions after the freeze,
-by forward.py's rules (40 trades, an 8 R drawdown stop, the backtest's low
-end +0.147 R). Nothing is traded: it needs pre-open orders and prices. After
+by forward.py's rules (the test frozen on 11 November keeps the old 40-trade
+verdict; a new one is frozen with the sequential gate, 300+ trades). Nothing is traded: it needs pre-open orders and prices. After
 the close it works out what the rule would have done from Yahoo's daily bar
 (the official open is the auction price) and the day's 5-minute bars (the
 stop and the 15:10 exit), the 3 biggest gaps a day.
@@ -370,10 +370,16 @@ python3 "${CLAUDE_SKILL_DIR}/forward.py" status                            # tra
 
 - **start** saves the rule, what the backtest expects (its average R after
   charges and the low end of its 95 % bootstrap range, from `edge.py run
-  --write`), and the stop rules: no verdict before 40 trades
-  (`--min-trades`); STOP whenever the trades fall 8 R from their best
-  (`--max-drawdown-r`); at 40, STOP if the average is 0 or less or under the
-  low end, PASSED if above both.
+  --write`), and the stop rules, the sequential gate: no PASS before 300
+  trades (`--min-trades`), and then only when the average less 2.5 standard
+  errors (`--z`) is above 0; STOP from 40 trades when the average plus 2.5
+  standard errors is under 0, from 300 while the average is under +0.05 R
+  (`--kill-r`), at 1,300 if still not proven (`--max-trades`), or on a 30 R
+  fall from the best (`--max-drawdown-r`). And how the shadow fills
+  (`--fills realistic`, the default: the next bar's open, `--slippage-bp`
+  3 or the measured figure, targets traded through). Tests frozen before
+  this gate keep their 40-trade verdict, but only a sequential PASS opens
+  trader-risk's live lock: 40 trades cannot tell a small edge from luck.
 - **signal** logs each signal, taken or skipped with a reason. Skipping more
   than a fifth of them means the test measures your picks, not the rule.
 - **status** pairs the paper (or `--live`) fills since the start into round

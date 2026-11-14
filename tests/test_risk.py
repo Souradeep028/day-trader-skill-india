@@ -866,8 +866,8 @@ class Upkeep(unittest.TestCase):
 
 def passed(day=TODAY, low=-0.1, shadow="passed", paper="passed"):
     return {"expected": {"avg_R": 0.08, "low": low}, "verdicts": {
-        "shadow": {"state": shadow, "date": day, "passed_on": day if shadow == "passed" else None},
-        "paper": {"state": paper, "date": day, "passed_on": day if paper == "passed" else None}}}
+        "shadow": {"state": shadow, "date": day, "passed_on": day if shadow == "passed" else None, "gate": "sequential"},
+        "paper": {"state": paper, "date": day, "passed_on": day if paper == "passed" else None, "gate": "sequential"}}}
 
 
 def live_trades(results, start="2026-11-06"):

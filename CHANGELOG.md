@@ -28,6 +28,23 @@ The platform release: the pack as something anyone with Claude Code can install,
 - **Fine print.** The README says plainly what the pack is (an education and research tool, run by each user for
   their own account) and is not (advice, signals, or a service for others).
 
+From the trading review (the edge has to survive honest fills and a test big enough to see it):
+
+- **The sequential gate.** New forward tests are frozen with it: no PASS before 300 trades, then only when the
+  average less 2.5 standard errors is above 0; STOP from 40 trades when clearly losing, from 300 while under
+  +0.05 R, at 1,300 if still not proven, or on a 30 R fall. Simulated on these rules' spread, a rule with no
+  edge passes about 3 % of the time (the old 40-trade gate: about 45 %). Old tests keep their 40-trade verdict,
+  but trader-risk's live lock now needs a sequential PASS.
+- **Realistic fills.** `edge.py --fills realistic`: in at the next bar's open, `--slippage-bp` on every market
+  fill, targets only when traded through. The default (`close`) is unchanged and labelled an upper bound. The
+  report shows the best rule with realistic fills at 0, 3 and 6 bp, and a rule only PASSES if it still makes
+  money there at 3 bp. New shadow tests fill realistically (`forward.py start --fills realistic --slippage-bp`).
+- **A baseline to beat.** Every stock on every session, the rule's side, stop width and target, in at 9:30
+  whatever the chart did: a rule that does not beat it is the day's drift, not its setup.
+- **Slippage in basis points.** The journal and the daily report give the autopilot's measured entry slippage in
+  bp, the figure to feed back into `--slippage-bp`.
+- edge.py's header now matches the grid: 96 rules, 16 filters, 1,536 combinations.
+
 Upgrading from 2.x: pull, run `python3 core/trader.py migrate` in your trading folder, then `doctor`. If you
 copied skill folders into `~/.claude/skills/`, copy `core/` there too. Wait for a running forward test to end
 first.

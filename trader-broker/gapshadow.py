@@ -57,10 +57,10 @@ def rule_text(test=None):
     return "short a 2 %+ gap-up at the auction price, 1 % stop, out at 15:10 (3 a day, biggest gaps)"
 
 
-def freeze(today, min_trades=forward.MIN_TRADES, max_dd=forward.MAX_DRAWDOWN_R):
+def freeze(today, **rules):
     return {"created_by": "trader-broker gapshadow.py", "rule": dict(RULE), "filter": RULE["filter"],
             "started": today, "account": "shadow", "expected": dict(EXPECTED),
-            "stop_rules": {"min_trades": min_trades, "max_drawdown_R": max_dd}, "signals": [],
+            "stop_rules": forward.sequential_rules(**rules), "signals": [],
             "shadow": {"sessions": {}}}
 
 
@@ -177,8 +177,9 @@ def main(argv=None):
                 raise GapError("a gap-up shadow test is already running in %s (frozen %s)"
                                % (a.file, forward.read(a.file, "test")["started"]))
             forward.write(a.file, freeze(today))
-            print("Frozen on %s: %s. Expected %+.3f R a trade, low end %+.3f R (%s). No verdict before %d trades."
-                  % (today, rule_text(), EXPECTED["avg_R"], EXPECTED["low"], EXPECTED["source"], forward.MIN_TRADES))
+            print("Frozen on %s: %s. Expected %+.3f R a trade, low end %+.3f R (%s). No PASS before %d trades "
+                  "(the sequential gate)." % (today, rule_text(), EXPECTED["avg_R"], EXPECTED["low"],
+                                              EXPECTED["source"], forward.SEQUENTIAL["min_trades"]))
             return 0
         test = forward.read(a.file, "gap-up shadow test (gapshadow.py start)")
         if a.cmd == "status":
