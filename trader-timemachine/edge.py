@@ -102,9 +102,18 @@ STOPS = ("tight", "wide")
 TARGETS = (1.0, 1.5, 2.0, 3.0)
 SINGLE = ("none", "with_nifty", "stronger", "volume", "no_gap", "calm_vix", "low_cost", "not_expiry", "not_10_to_11")
 FILTERS = SINGLE + tuple("low_cost+" + f for f in SINGLE[1:] if f != "low_cost")
+# setups the research harness can test that are NOT in the grid above (the grid stays 1,536 combinations)
+#   late    the last hour with the market: at the close of the 14:25 bar (14:30), long when Nifty 50 is
+#           LATE_MOVE_PCT or more above its 9:15 open, short when it is that much below. Index funds and
+#           derivative books trade the day's move into NSE's closing price (the average of the last 30
+#           minutes), so a trend day tends to carry into the close. Stops: the last 30 minutes' low (high for a
+#           short) as tight, the day's low (high) as wide.
+EXTRA_SETUPS = ("late",)
+LATE_SLOT = 62            # the 14:25 bar, closing at 14:30
+LATE_MOVE_PCT = 0.5
 SETUP_NAMES = {"orb15": "15-min range break", "orb30": "30-min range break",
                "orb15s": "15-min range stop entry", "orb30s": "30-min range stop entry",
-               "pdb": "previous-day break", "vwap": "VWAP pullback"}
+               "pdb": "previous-day break", "vwap": "VWAP pullback", "late": "last hour with the market"}
 TAX_PCT = 30.0            # speculative business income is taxed at the slab rate: 30 % plus cess at the top
 TRADES_PER_DAY = 3        # trader-budget's max_trades_per_day
 CAPITAL = 100000.0
@@ -386,6 +395,18 @@ def trigger(s, setup, long, cfg):
             return None
         k = next((k for k in range(max(1, first), last_entry + 1)
                   if (B[k][3] > level >= B[k - 1][3] if long else B[k][3] < level <= B[k - 1][3])), None)
+    elif setup == "late":
+        k = int(cfg.get("late_slot", LATE_SLOT))
+        nifty, n_open = s.get("nifty") or {}, s.get("n_open")
+        if k >= len(B) or k not in nifty or not n_open:
+            return None
+        move = 100.0 * (nifty[k][3] / n_open - 1)
+        need = float(cfg.get("late_move_pct", LATE_MOVE_PCT))
+        if (move < need) if long else (move > -need):
+            return None
+        if long:
+            return k, min(b[2] for b in B[k - 5:k + 1]), min(b[2] for b in B[:k + 1]), None
+        return k, max(b[1] for b in B[k - 5:k + 1]), max(b[1] for b in B[:k + 1]), None
     elif setup == "vwap":
         vw, day_open = s["vwap"], B[0][0]
         k = next((k for k in range(max(3, first), last_entry + 1) if vw[k] and vw[k - 1] and (

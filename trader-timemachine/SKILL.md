@@ -413,9 +413,53 @@ python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR --holdout-from 2026-01-
 - **Holdout**: `--holdout-from` leaves the last stretch out; `--final` puts
   it in, once, and `trader/holdout.json` records each look.
 
-On the edge fixtures (5 stocks, 53 sessions, 5-minute data) none of the ten
-passes and the selection loses -0.046 R a trade: what 58 sessions can and
-cannot say. The real run needs 2 to 3 years of 1-minute bars.
+- **Break-even slippage**: each hypothesis is also run at 0 bp, and the
+  report gives the slippage at which it stops making money ("none": it
+  loses even at 0 bp). One under the paper autopilot's measured slippage is
+  not worth trading, whatever its statistics.
+- **The data check** runs first, by itself (`check`) and inside `run`
+  (unless `--no-check`): it refuses sessions with an overnight jump that
+  looks like an unadjusted split or bonus (x0.5, x0.2 ...), a bad print (a
+  bar 8 % away from both sides), broken bars, or a fifth of the bars
+  missing; it reports duplicates, bars outside 9:15 to 15:30, weekend and
+  holiday sessions, and members with no file.
+- **The last hour** (`late`, research only, not in edge.py's grid): at 14:30,
+  with Nifty 0.5 % or more from its open, in the market's direction, out at
+  15:10: index funds and derivative books trade the day's move into NSE's
+  closing price, the average of the last 30 minutes.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/research.py" check --data DIR --members members.csv  # the data's faults
+python3 "${CLAUDE_SKILL_DIR}/research.py" power --stocks 20 --sessions 500        # made-up data, no download
+python3 "${CLAUDE_SKILL_DIR}/research.py" plan --holdout-from 2026-01-01          # freeze before looking
+python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR --plan trader/research-plan.json
+python3 "${CLAUDE_SKILL_DIR}/research.py" bhavcopy --data NSE_DIR --out DAILY    # NSE's own daily files
+```
+
+**The power test** (`power`) plants an edge in made-up 5-minute bars (once a
+bar closes under the first 30 minutes' range, the rest of the day drifts
+down) and runs the whole harness on many samples: how often it finds the
+planted rule, and how often it passes rules with no edge. Measured: a
++0.056 R edge (after charges and 3 bp) was found in 4 of 10 runs with 10
+stocks over a year (about 870 trades) and in 9 of 10 with 20 stocks over two
+years (about 3,400 trades); rules with no edge never passed. So: buy at
+least two years, of all 50 stocks.
+
+**The plan** (`plan`) writes the hypotheses themselves, the slippage, the
+folds, the holdout and the code's fingerprint to trader/research-plan.json
+before the data is seen; `run --plan` uses those and nothing else.
+
+**NSE's daily files** (`bhavcopy`): NSE's equity bhavcopy CSVs (the old
+format or the UDiFF one) become daily charts for `openclose.py --offline`
+and `swing.py --offline`. NSE's OPEN is the pre-open auction price, and its
+PREVCLOSE is adjusted for corporate actions, so splits and bonuses are
+adjusted away with NSE's own numbers. That tests the gap-up auction short on
+official prices, for free.
+
+On the edge fixtures (5 stocks, 58 sessions, 5-minute data) none of the
+twelve passes, the selection loses, and the frozen ORB rule breaks even at
+0.6 bp of slippage: what 58 sessions can and cannot say. The real run needs
+2 to 3 years of 1-minute bars.
 
 ## The factor rotation report: momentum and low volatility
 

@@ -28,5 +28,11 @@
    "why": "the mirror: buy stops over yesterday's high"},
   {"name": "orb30 long calm VIX",
    "rule": "orb30 long wide 2R low_cost+calm_vix",
-   "why": "in a calm market a range break is less often a fake-out: one regime filter, chosen in advance, not searched"}
+   "why": "in a calm market a range break is less often a fake-out: one regime filter, chosen in advance, not searched"},
+  {"name": "last hour long with Nifty",
+   "rule": "late long wide 1R low_cost",
+   "why": "on a day Nifty is 0.5 % or more up by 14:30, index funds and derivative books trade the move into NSE's closing price (the average of the last 30 minutes): buy at 14:30, out at 15:10"},
+  {"name": "last hour short with Nifty",
+   "rule": "late short wide 1R low_cost",
+   "why": "the mirror on a day Nifty is 0.5 % or more down by 14:30"}
 ]

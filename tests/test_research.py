@@ -184,3 +184,130 @@ class Walk(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Check(unittest.TestCase):
+    def rows(self, day, start, n=75, step=300, px=100.0):
+        t0 = rs.parse_time("%s 09:15" % day)
+        return [[t0 + step * i, px, px + 0.5, px - 0.5, px, 10] for i in range(n)]
+
+    def test_faults_are_found_and_refused(self):
+        good = self.rows("2026-11-05", "09:15") + self.rows("2026-11-06", "09:15")
+        split = self.rows("2026-11-05", "09:15", px=2000.0) + self.rows("2026-11-06", "09:15", px=1000.0)
+        short = self.rows("2026-11-05", "09:15") + self.rows("2026-11-06", "09:15", n=30)
+        spike = self.rows("2026-11-06", "09:15")
+        spike[10] = [spike[10][0], 100.0, 120.0, 99.5, 100.0, 10]                 # one bar 20 % up, then back
+        dup = self.rows("2026-11-06", "09:15")
+        dup.insert(5, list(dup[4]))
+        sat = self.rows("2026-11-07", "09:15")
+        chk = rs.check_data({"GOOD.NS": good, "SPLIT.NS": split, "SHORT.NS": short, "SPIKE.NS": spike,
+                             "DUP.NS": dup, "SAT.NS": sat}, members={"GOOD.NS": [], "GONE.NS": []},
+                            holidays=set())
+        bad = chk["bad"]
+        self.assertNotIn(("GOOD.NS", "2026-11-06"), bad)
+        self.assertIn("unadjusted split or bonus", bad[("SPLIT.NS", "2026-11-06")])
+        self.assertIn("30 of about 75 bars", bad[("SHORT.NS", "2026-11-06")])
+        self.assertIn("a bad print at 10:05", bad[("SPIKE.NS", "2026-11-06")])
+        self.assertEqual(chk["symbols"]["DUP.NS"]["duplicates"], 1)
+        self.assertEqual(chk["symbols"]["SAT.NS"]["closed_days"], ["2026-11-07"])
+        self.assertEqual(chk["missing_members"], ["GONE.NS"])
+        text = "\n".join(rs.check_lines(chk))
+        self.assertIn("split-like jumps on 2026-11-06 (x0.50)", text)
+
+    def test_the_fixtures(self):
+        chk = rs.check_data(rs.raw_rows(EDGE))
+        # the stocks are clean; Yahoo's index files end on a half-finished 9 November
+        self.assertEqual(sorted(chk["bad"]), [("^INDIAVIX", "2026-11-09"), ("^NSEI", "2026-11-09")])
+
+
+class Bhavcopy(unittest.TestCase):
+    OLD = ("SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,LAST,PREVCLOSE,TOTTRDQTY,TOTTRDVAL,TIMESTAMP,TOTALTRADES,ISIN,\n"
+           "INFY,EQ,1500,1520,1490,1510,1510,1495,100000,1,%s,1,INE009A01021,\n"
+           "INFY,BE,1,1,1,1,1,1,1,1,%s,1,X,\n")
+    NEW = ("TradDt,BizDt,Sgmt,Src,FinInstrmTp,FinInstrmId,ISIN,TckrSymb,SctySrs,XpryDt,FininstrmActlXpryDt,"
+           "StrkPric,OptnTp,FinInstrmNm,OpnPric,HghPric,LwPric,ClsPric,LastPric,PrvsClsgPric,UndrlygPric,"
+           "SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,TtlTrfVal,TtlNbOfTxsExctd,SsnId,NewBrdLotQty,Rmks,"
+           "Rsvd1,Rsvd2,Rsvd3,Rsvd4\n"
+           "%s,%s,CM,NSE,STK,1594,INE009A01021,INFY,EQ,,,,,INFOSYS LTD,%s,%s,%s,%s,%s,%s,,%s,,,200000,1,1,F1,1,,,,,\n")
+
+    def test_both_formats_and_a_split_adjusted_away(self):
+        d = tempfile.mkdtemp()
+        out = os.path.join(d, "out")
+        try:
+            with open(os.path.join(d, "a.csv"), "w") as fh:
+                fh.write(self.OLD % ("03-NOV-2026", "03-NOV-2026"))
+            # a 1:2 split on 4 November: NSE's previous close is the adjusted 755, not 1,510
+            with open(os.path.join(d, "b.csv"), "w") as fh:
+                fh.write(self.NEW % ("2026-11-04", "2026-11-04", 760, 770, 750, 765, 765, 755, 765))
+            got = rs.read_bhavcopy(self.OLD % ("03-NOV-2026", "03-NOV-2026"))
+            self.assertEqual(got[("INFY", "EQ")], ("2026-11-03", 1500.0, 1520.0, 1490.0, 1510.0, 1495.0, 100000.0))
+            self.assertIn(("INFY", "BE"), got)
+            charts, actions = rs.bhavcopy_charts(d)
+            self.assertEqual(actions, {"INFY.NS": [("2026-11-04", 0.5)]})
+            swing = load("trader-timemachine", "swing")
+            bars = swing.daily_bars(charts["INFY.NS"], "INFY.NS")
+            self.assertEqual(bars, [("2026-11-03", 750.0, 760.0, 745.0, 755.0), ("2026-11-04", 760.0, 770.0, 750.0,
+                                                                                 765.0)])
+            self.assertEqual(rs.main(["bhavcopy", "--data", d, "--out", out]), 0)
+            self.assertTrue(os.path.exists(os.path.join(out, "INFY.NS.json")))
+            with self.assertRaises(rs.ResearchError):
+                rs.read_bhavcopy("a,b\n1,2\n")
+        finally:
+            shutil.rmtree(d)
+
+
+class LateSetup(unittest.TestCase):
+    def session(self, nifty_move_pct):
+        B = [(100.0, 100.5, 99.5, 100.0, 10)] * 75
+        n_open = 20000.0
+        nifty = {k: (n_open, n_open, n_open, n_open * (1 + nifty_move_pct / 100.0), 0) for k in range(75)}
+        return {"bars": B, "nifty": nifty, "n_open": n_open, "tick": 0.05}
+
+    def test_with_the_market_into_the_close(self):
+        cfg = {"first_slot": 2, "last_entry_slot": 65, "flat_slot": 70}
+        k, tight, wide, fill = edge.trigger(self.session(0.8), "late", True, cfg)
+        self.assertEqual((k, tight, wide, fill), (62, 99.5, 99.5, None))
+        self.assertIsNone(edge.trigger(self.session(0.3), "late", True, cfg))      # under the 0.5 % move
+        self.assertIsNone(edge.trigger(self.session(0.8), "late", False, cfg))     # no short on an up day
+        self.assertEqual(edge.trigger(self.session(-0.8), "late", False, cfg)[0], 62)
+        self.assertNotIn("late", edge.SETUPS)                                     # the grid stays 1,536
+        self.assertEqual(rs.parse_rule("late long tight 1R")[0]["setup"], "late")
+
+
+class PowerAndPlan(unittest.TestCase):
+    def test_a_strong_planted_edge_is_found_and_the_nulls_are_not(self):
+        p = rs.power(n_stocks=3, n_sessions=130, drift_bp=2.0, reps=2, fold_sessions=40, bootstrap=100)
+        self.assertGreater(p["planted_true_avg_R"], 0.2)
+        self.assertEqual((p["planted_pass_pct"], p["null_pass_pct"]), (100.0, 0.0))
+        self.assertIn("planted edge passed: 100 % of runs", "\n".join(rs.power_lines(p)))
+
+    def test_the_synthetic_market_holds_still(self):
+        # the planted edge must be the same size early and late, or the power test measures the wrong thing
+        doc = rs.run_research(rs.synthetic(6, 400, 1.0, seed=3), {}, rs.POWER_HYPOTHESES[:1],
+                              {"fold_sessions": 200, "bootstrap": 20})
+        a, b = [f["avg_R"] for f in doc["rows"][0]["folds"]]
+        self.assertLess(abs(a - b), 0.12)
+
+    def test_a_frozen_plan_runs_with_its_own_settings(self):
+        d = tempfile.mkdtemp()
+        try:
+            plan = os.path.join(d, "plan.json")
+            h = os.path.join(d, "h.json")
+            with open(h, "w") as fh:
+                json.dump(HYPS[:1], fh)
+            code, out, err = quiet(["plan", "--hypotheses", h, "--slippage-bp", "5", "--fold-sessions", "20",
+                                    "--file", plan])
+            self.assertEqual(code, 0, err)
+            self.assertIn("1 hypotheses", out)
+            self.assertEqual(quiet(["plan", "--hypotheses", h, "--file", plan])[0], 1)     # one at a time
+            with open(plan) as fh:
+                doc = json.load(fh)
+            self.assertEqual((doc["settings"]["slippage_bp"], len(doc["hypotheses_sha"])), (5.0, 12))
+            code, out, err = quiet(["run", "--data", EDGE, "--plan", plan, "--bootstrap", "50", "--slippage-bp", "0"])
+            self.assertEqual(code, 0, err)
+            self.assertIn("Research: 1 hypotheses", out)
+            self.assertIn("5 bp of slippage", out)                                 # the plan's, not the flag's
+            self.assertIn("Plan frozen", out)
+            self.assertIn("break-even", out)
+        finally:
+            shutil.rmtree(d)

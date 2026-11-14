@@ -174,6 +174,9 @@ python3 trader-timemachine/openclose.py run --watchlist trader/nifty50.txt   # d
 python3 trader-timemachine/tom.py run                                  # the turn of the month vs holding the index
 python3 trader-timemachine/archive.py save --watchlist trader/nifty50.txt   # keep the 5-minute bars Yahoo forgets
 python3 trader-timemachine/research.py run --data DIR --members members.csv  # ~10 hypotheses, walk-forward, honest fills
+python3 trader-timemachine/research.py check --data DIR                     # splits, bad prints, gaps in the data
+python3 trader-timemachine/research.py power --stocks 20 --sessions 500     # can the test find a planted edge?
+python3 trader-timemachine/research.py bhavcopy --data NSE_DIR --out DAILY  # NSE's daily files, adjusted
 python3 trader-budget/sip.py status                                    # the index-fund core, XIRR, trading beside it
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order

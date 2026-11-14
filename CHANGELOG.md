@@ -47,6 +47,11 @@ From the trading review (the edge has to survive honest fills and a test big eno
   bring (a vendor's 1-minute CSVs, rolled up), with fills a minute after the signal, point-in-time index
   membership, a holdout recorded when it is looked at, and a test of picking the best rule so far before each
   fold. `trader.py research`.
+- research.py **check** (unadjusted splits, bad prints, broken and short sessions, refused before a run),
+  **power** (a planted edge in made-up bars: +0.056 R found 4 times in 10 with ~870 trades, 9 in 10 with ~3,400;
+  no false passes), **plan** (hypotheses and settings frozen before the data), **bhavcopy** (NSE's daily files,
+  adjusted with NSE's own previous closes, for openclose.py), the break-even slippage of each hypothesis, and a
+  last-hour setup (`late`) for the research harness only.
 - edge.py's header now matches the grid: 96 rules, 16 filters, 1,536 combinations.
 
 Upgrading from 2.x: pull, run `python3 core/trader.py migrate` in your trading folder, then `doctor`. If you
