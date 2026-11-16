@@ -682,7 +682,9 @@ def entry_slippage(state, trades):
     """The autopilot's entry slippage on these round trips: how much worse each fill was than its signal, from
     the paper positions it recorded. {"trades", "per_share", "R", "rupees"} or None when there is none.
     R is the slippage over the risk a share at the signal (signal to stop): what the delay cost in R. bp is the
-    slippage in basis points of the signal price: the figure to give edge.py --slippage-bp and forward.py start."""
+    slippage in basis points of the signal price: the price's drift between the signal and the pass, on top of the
+    bp the paper fill already pays. Not a cost to give edge.py --slippage-bp: paper fills at Yahoo's last trade, so
+    the spread and the queue only show on live fills."""
     keys = {(t["date"], t["symbol"]) for t in trades}
     got = []
     for leg in (state or {}).get("paper_legs", []):

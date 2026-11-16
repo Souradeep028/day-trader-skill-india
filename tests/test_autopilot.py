@@ -105,6 +105,73 @@ class Autopilot(unittest.TestCase):
             mine, _ = ticket.round_trips(json.load(fh), DAY, DAY, paper=True)
         self.assertEqual([(t["symbol"], t["net"]) for t in mine], [("INFY.NS", 121.5)])
 
+    def test_the_index_halt_and_the_price_band_reach_the_risk_check(self):
+        # the autopilot used to call trader-risk with the stock's price only, so the big-Nifty-day halt and the
+        # price band never fired on paper. On 5 November Nifty 50 was +1.66 % from the 4th's close (23,960.60 to
+        # 24,358.80) at 9:40, when INFY signals: a 1.5 % limit must block it, as it would an order typed by hand
+        self.config(max_index_move_pct=1.5)
+        self.start()
+        code, out, err = self.pass_at("09:41")
+        self.assertEqual(code, 0, err)
+        self.assertIn("INFY.NS signal long at 1160.60 BLOCKED by trader-risk: index: Nifty 50 is +1.66% from "
+                      "yesterday's close (23960.60 to 24358.80)", out)
+        # and the band: INFY closed at 1128.20 on the 4th, so a 3 % band tops out at 1162.05, within 1 % of 1160.60
+        self.config()
+        for k in ("state", "limits-state"):          # a fresh day: this morning's stricter 1.5 % would still hold
+            os.remove(self.p[k])
+        self.p["bands"] = os.path.join(self.d, "bands.json")
+        with open(self.p["bands"], "w") as fh:
+            json.dump({"bands": {"INFY.NS": 3}}, fh)
+        code, out, err = self.pass_at("09:41")
+        self.assertEqual(code, 0, err)
+        self.assertIn("INFY.NS signal long at 1160.60 BLOCKED by trader-risk: band: INFY.NS at 1160.60 is within 1% "
+                      "of its upper price band 1162.05 (3% over the previous close 1128.20)", out)
+        self.assertNotIn("index:", out)
+
+    def test_paper_fills_pay_the_shadow_slippage(self):
+        # a test frozen with realistic fills (3 bp): every paper market fill pays the 3 bp the shadow charges, so
+        # paper can never look better than the shadow that gates live trading. The same day with close fills (0 bp)
+        # is the control: same trades, and each realistic one is worse by about 3 bp in and out
+        self.config(budget=1000000, max_same_side_risk_inr=0, max_entries_per_sector=0, max_charges_pct_of_risk=0,
+                    max_daily_loss_inr=0)
+        nets = {}
+        for fills in ("close", "realistic"):
+            for k in ("state", "portfolio", "preflight", "limits-state"):
+                if os.path.exists(self.p[k]):
+                    os.remove(self.p[k])
+            quiet(forward.main, ["start", "--replace", "--fills", fills, "--slippage-bp", "3", "--rule",
+                                 "orb15 long tight 2R none", "--expect-r", "0.05", "--expect-low", "-0.1",
+                                 "--file", self.p["forward"], "--today", DAY])
+            self.whole_day()
+            with open(self.p["state"]) as fh:
+                st = json.load(fh)
+            legs = {l["symbol"]: l for l in st["paper_legs"]}
+            mine, _ = ticket.round_trips(st, DAY, DAY, paper=True)
+            nets[fills] = ({t["symbol"]: t["net"] for t in mine}, legs)
+        close, real = nets["close"], nets["realistic"]
+        self.assertEqual(sorted(close[0]), sorted(real[0]))
+        self.assertEqual(len(real[0]), 3)
+        for sym, leg in real[1].items():
+            self.assertEqual(leg["slip_bp"], 3.0)
+            c_leg = close[1][sym]
+            self.assertAlmostEqual(leg["entry"] / c_leg["entry"] - 1, 3e-4, delta=1e-4)     # in 3 bp worse
+            self.assertLess(leg["exit"], c_leg["exit"])                                    # out worse (long)
+            self.assertLess(real[0][sym], close[0][sym])
+
+    def test_a_stop_fills_as_the_shadow_fills_it(self):
+        # the paper exit and the shadow's exit (edge.exit_on) are one rule: a stop at the stop or the open it gapped
+        # through, less bp and a tick; a target only when traded a tick through
+        edge = autopilot.edge
+        for long in (True, False):
+            leg = {"stop": 990.0, "target": 1020.0} if long else {"stop": 1010.0, "target": 980.0}
+            for bar in ((1000, 1005, 989, 995, 1), (985, 990, 980, 984, 1), (1000, 1021, 999, 1018, 1),
+                        (1000, 1020, 999, 1018, 1), (1000, 1011, 995, 1005, 1), (1015, 1016, 1001, 1003, 1),
+                        (1000, 1001, 979, 982, 1), (1000, 1004, 996, 1001, 1)):
+                for bp in (0.0, 3.0):
+                    got = autopilot.exit_in(bar, 10, {}, leg, long, 1, 0.05, bp)
+                    want = edge.exit_on(bar, dict(leg, slip_bp=bp, through=1), long, 1, 0.05)
+                    self.assertEqual(got[:2] if got else None, want, (long, bar, bp))
+
     def test_a_short_rule_needs_allow_short(self):
         self.config()
         self.start("orb15 short tight 2R none")
@@ -390,8 +457,7 @@ class Reporting(unittest.TestCase):
                                             os.path.join(self.d, "none"), "--surveillance", self.p["surveillance"]])
         self.assertEqual(code, 0, err)
         self.assertIn("- Entry slippage: +3.50 a share, +30.2 bp, +0.324 R a trade on average (₹112 over 1 trades)", out)
-        self.assertIn("use the measured figure (edge.py run --fills realistic --slippage-bp 30.2), once it rests on "
-                      "30+ trades.", out)
+        self.assertIn("do not feed it back into a backtest as the slippage (and it rests on under 30 trades).", out)
         # the shadow took the same INFY trade at 1160.60: the paper one, five minutes later, gave some of it back
         self.assertIn("- Execution gap: paper ", out)
         self.assertIn("on the 1 trades both took", out)

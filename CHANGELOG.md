@@ -4,6 +4,31 @@ Versions follow semver. A release is a git tag `v<version>`; the tag builds and 
 `ghcr.io/souradeep028/day-trader-india:<version>` (amd64 and arm64) once the tests pass. Pin a version for the
 daily run and upgrade between forward tests, never during one: the code fingerprint shows a mid-test change.
 
+## Unreleased
+
+Fixes from a review of the research and the paper autopilot. A forward test running now sees a code change:
+paper fills get worse by the test's own slippage, so start a new test (`forward.py start --replace`) rather than
+mixing the two.
+
+- **Paper fills like the shadow.** The autopilot charged no basis points of slippage: entries at Yahoo's last trade
+  and stops at the stop, a tick worse. Every paper market fill (entry, stop, flat-by) now pays the frozen test's
+  `slippage_bp` (3 by default) and a tick, exactly as the shadow replay does, so paper is never kinder than the
+  shadow. On the frozen ORB rule 3 bp is about 0.075 R a trade, the size of the edge it is testing.
+- **The autopilot's risk check sees the whole day.** It used to pass only the stock's price, so the 3 % Nifty
+  halt and the NSE price band never fired on paper. It now passes Nifty's price and previous close (from the bars
+  it already has) and the bands in `trader/bands.json` (`--bands`).
+- **The gate counts days, not just trades.** The sequential gate's standard error is now the larger of the
+  per-trade one and the one over whole days: a day's trades share the market's move. Simulated at a same-day
+  correlation of 0.15 (the fixtures' figure), a rule with no edge passed 4.7 % of the time; now 2.5 %.
+- **`trader/sectors.json` is in the repo**, with `scan.py sectors` to rebuild it from NSE's Nifty 500 list. It was
+  ignored by `.gitignore`, so a fresh clone failed three tests and the Docker build, and the sector cap was off.
+- **Honest wording.** Close fills are optimistic, not an upper bound. 5-minute research fills at the next bar's
+  open are no delay at all, not "harsher than a real order". Paper's "Entry slippage" is drift, not a measured
+  cost, and is no longer offered as the figure for backtests.
+- **New tests:** no look-ahead (every signal is identical on the day cut right after it), paper and shadow exits
+  are one rule, paper pays the shadow's slippage, the index halt and price band reach the autopilot, same-day
+  trades count as one draw.
+
 ## 3.0.0
 
 The platform release: the pack as something anyone with Claude Code can install, upgrade and trust.

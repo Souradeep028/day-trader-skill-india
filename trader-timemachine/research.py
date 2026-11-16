@@ -26,7 +26,7 @@ looking at the data, with the reason someone pays you; the fewer, the less the l
 Fills, always honest here: with 1-minute data an entry meets the open of the minute --latency-min (1) after the
 signal bar closed, the stop only counting in that 5-minute bar; with 5-minute data, the next bar's open. Then
 --slippage-bp (3) on every market fill, targets only when the price trades a tick through them, Zerodha's
-charges. Use the paper autopilot's measured slippage (daily report, "Entry slippage") once it has 30 trades.
+charges. Use a measured figure from live fills, or bid and ask logged at each signal once there are 30; paper's "Entry slippage" is drift, not a cost.
 
 Walk-forward. The sessions are cut, in time order, into folds of --fold-sessions (60, about a quarter). Each
 hypothesis is judged on every fold, and it PASSES only when, after charges and slippage:
@@ -389,8 +389,9 @@ def verdict(doc):
     if doc["survivorship"]:
         tail.append("No --members file: these are today's stocks over the whole period, which flatters long rules.")
     if doc["data"] != "1-minute":
-        tail.append("5-minute data: entries at the next bar's open, a 5-minute delay, harsher than a real order "
-                    "and coarser.")
+        tail.append("5-minute data: entries at the next bar's open, the first trade after the signal bar closed: "
+                    "no delay at all, so a real order (sent a minute or more later, after your yes) can only do as "
+                    "well with luck. 1-minute data with --latency-min is the honest test.")
     if sel["trades"] and sel["avg_R"] is not None and sel["avg_R"] <= 0:
         tail.append("Picking the best hypothesis so far before each fold LOST (%+.3f R over %d trades): choosing "
                     "winners from the past did not carry forward here." % (sel["avg_R"], sel["trades"]))

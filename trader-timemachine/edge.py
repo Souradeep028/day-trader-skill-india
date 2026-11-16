@@ -60,11 +60,15 @@ side, stop width and target, entered at the first bar of the window whatever the
 day's drift, not the setup. A past edge is not a promise.
 
 Fills (--fills). "close", the grid's default, enters at the signal bar's close and takes a target on a
-touch: an upper bound, since no order can trade at the price of the bar that triggered it. "realistic"
+touch, with no basis points of slippage. That is optimistic but NOT an upper bound: a bar's close is one trade
+print (a down bar's last print is often at the bid), and the next bar's open can be the better price, so on the
+fixtures the next open at 0 bp did a little better than the close. What decides the result is the slippage in
+basis points, not the bar the order meets: judge a rule by "realistic" at 3 bp or more. "realistic"
 is what the paper autopilot and a real order get: in at the NEXT bar's open, a target only when the price
 trades a tick through it, and --slippage-bp (3) basis points on every market fill (entry, stop, flat-by).
 The report shows the best rule both ways at 0, 3 and 6 bp. One NSE tick on these stocks is under 1 bp,
-so a tick count says little: the paper autopilot measures the real figure (daily report, "Entry slippage").
+so a tick count says little. Paper cannot measure slippage (it fills at Yahoo's last trade): the real figure
+comes from live fills, or from the bid and ask logged at each signal.
 
 Data: Yahoo v8 chart, range=60d interval=5m, one request per symbol, half a second apart; --offline
 DIR reads <SYMBOL>.json or .json.gz from DIR.
@@ -120,8 +124,8 @@ CAPITAL = 100000.0
 MIN_TRADES = 30
 MAX_COST_PCT = 15.0
 EXPIRY_WEEKDAY = 1        # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
-# How a trade is filled. "close": at the signal bar's close and a target on a touch, the grid's default and an
-# upper bound. "realistic": what the paper autopilot and a real order get: in at the NEXT bar's open (the
+# How a trade is filled. "close": at the signal bar's close and a target on a touch, no bp: the grid's default,
+# optimistic but not an upper bound (see the docstring). "realistic": what the paper autopilot and a real order get: in at the NEXT bar's open (the
 # order goes in after the bar closes), a target only when the price trades a tick through it (a resting limit
 # order is behind the queue), and slippage_bp basis points on every market fill (entry, stop, flat-by).
 FILLS = {"close": {"entry_delay": 0, "target_through": 0, "slippage_bp": 0.0},
@@ -954,7 +958,7 @@ def report(doc, top=12):
                                s["no_entries_before"], s["no_entries_after"], s["flat_by"],
                                "realistic (the next bar's open, targets traded through)"
                                if s.get("fills") == "realistic" else "close (the signal bar's close, targets on a "
-                               "touch: an upper bound)"), ""]
+                               "touch, no slippage: optimistic)"), ""]
     head = "%-66s %6s %6s %7s %8s %11s  %s" % ("rule", "trades", "win %", "avg R", "R gross", "P&L",
                                               "in / out of sample")
     lines.append(head)
@@ -1002,8 +1006,8 @@ def report(doc, top=12):
               "session-bootstrap p-value is under %s (0.05 shared across %d tests), AND it still makes money and "
               "beats its baseline with realistic fills and 3 bp of slippage." % (
                   MIN_TRADES, doc["significance"], doc["combinations"]),
-              "Charges are Zerodha's intraday rates; slippage is a guess until the paper autopilot measures it "
-              "(daily report, \"Entry slippage\"). A past edge is not a promise. Not financial advice."]
+              "Charges are Zerodha's intraday rates; slippage is a guess until live fills (or the bid and ask at each "
+              "signal) measure it: paper cannot. A past edge is not a promise. Not financial advice."]
     if doc["failed"]:
         lines.append("No data for: %s." % ", ".join(sorted(doc["failed"])))
     return lines
@@ -1051,10 +1055,10 @@ def main(argv=None):
     p.add_argument("--max-order", type=float, default=75000.0)
     p.add_argument("--slippage-ticks", type=int, default=1)
     p.add_argument("--fills", choices=sorted(FILLS), default="close",
-                   help="close: at the signal bar's close, targets on a touch (the grid's upper bound); realistic: "
+                   help="close: at the signal bar's close, targets on a touch, no bp (optimistic); realistic: "
                         "the next bar's open, targets traded through, --slippage-bp on market fills")
     p.add_argument("--slippage-bp", type=float, help="basis points on every market fill (default 0 for close fills, "
-                   "3 for realistic): use the paper autopilot's measured figure (daily report)")
+                   "3 for realistic): use a measured figure from live fills, or bid and ask logged at each signal, never less than 3")
     p.add_argument("--no-entries-before", default="09:30")
     p.add_argument("--no-entries-after", default="14:45")
     p.add_argument("--flat-by", default="15:10")

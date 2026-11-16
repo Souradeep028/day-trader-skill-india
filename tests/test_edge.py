@@ -187,6 +187,34 @@ class Pieces(unittest.TestCase):
             edge.trigger(sess[1], "gap_and_go", True, self._cfg())
 
 
+class NoLookahead(unittest.TestCase):
+    def test_a_signal_is_the_same_on_the_day_cut_right_after_it(self):
+        # every entry the replay takes on a whole day must come out the same (bar, price, stop, target, size and
+        # every filter) when the day, Nifty's bars included, ends at the signal bar: nothing after it may count.
+        # This is what the paper autopilot sees live, a bar at a time
+        idx = edge.sessions_of(edge.read_offline(DIR, edge.INDEX), edge.INDEX)
+        vix = edge.sessions_of(edge.read_offline(DIR, edge.VIX), edge.VIX)
+        cfg = {"slippage_ticks": 1, "first_slot": 3, "last_entry_slot": edge.hhmm_slot("14:45", "x"),
+               "flat_slot": edge.hhmm_slot("15:10", "x"), "max_loss": 500, "max_order": 75000, "max_cost_pct": 15}
+        seen = 0
+        for sym in ("INFY.NS", "SBIN.NS"):
+            days = edge.sessions_of(edge.read_offline(DIR, sym), sym)
+            cfg["expiry"] = edge.expiry_dates(set(days))
+            for s in edge.prepare(days, idx, vix, cfg):
+                for setup in ("orb15", "orb30", "orb30s", "pdb", "vwap"):
+                    for side in ("long", "short"):
+                        e = edge.entry_at(s, setup, side, "tight", 2.0, cfg)
+                        if e is None:
+                            continue
+                        cut = [x for x in edge.prepare(days, idx, vix, cfg, partial=(s["date"], e["slot"] + 1))
+                               if x["date"] == s["date"]][0]
+                        cut["nifty"] = {k: b for k, b in cut["nifty"].items() if k <= e["slot"]}
+                        self.assertEqual(edge.entry_at(cut, setup, side, "tight", 2.0, cfg), e,
+                                         (sym, s["date"], setup, side))
+                        seen += 1
+        self.assertGreater(seen, 300)
+
+
 class Report(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

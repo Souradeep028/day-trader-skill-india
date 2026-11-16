@@ -179,7 +179,9 @@ class AutopilotGate(unittest.TestCase):
             json.dump(c, fh)
         out = self.pass_at("09:40")[1]
         self.assertIn("max_loss_per_trade_inr was loosened today (to 5000); this morning's 500 holds", out)
-        self.assertIn("BUY 41 INFY.NS at 1160.60", out)          # sized at 500, not 5,000
+        # sized at 500, not 5,000. The test is frozen with realistic fills, so the paper entry pays the shadow's 3 bp
+        # and a tick: 1160.50 x 1.0003 + 0.10 = 1160.95, up to 1161.00; 40 x 11.20 = 448 plus charges fits 500
+        self.assertIn("BUY 40 INFY.NS at 1161.00", out)
         self.assertNotIn("loosened", self.pass_at("09:45")[1])   # said once a day
 
 

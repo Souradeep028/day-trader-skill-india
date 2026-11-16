@@ -342,10 +342,15 @@ Why 300 and not 40: a trade's R spreads about 1 R either side, so 40 trades
 leave a range of about ±0.31 R around the average. Simulated on these rules'
 own spread, the old 40-trade gate passed a rule that loses 0.10 R a trade
 one time in four, and stopped a rule that makes +0.076 R more often than it
-passed it. The sequential gate passes a rule with no edge about 3 % of the
-time, one losing 0.10 R almost never, and one making +0.15 R about 94 % of
-the time. Telling +0.076 R from zero takes about 1,300 trades: there is no
-quick way to prove a small edge. The risk check's limits (cool-off, sector
+passed it. The sequential gate passes a rule with no edge about 2 to 3 % of
+the time, one losing 0.10 R almost never, and one making +0.15 R 84 to 92 %
+of the time. Its standard error counts each day's trades as one draw when
+they move together (they share the market's move): counted as independent,
+a same-day correlation of 0.15 (the fixtures' figure) would let a rule with
+no edge pass about 5 % of the time. A rule making +0.076 R passes only 35 to
+42 % of the time: at 1,300 trades the expected average is 2.7 standard
+errors above 0, and 80 % power needs about 2,000 trades, more when a day's
+trades move together. There is no quick way to prove a small edge. The risk check's limits (cool-off, sector
 cap, weekly and monthly losses, drawdown sizing, same-direction cap,
 charges, big-Nifty-day halt, results days, ex-dates, market events,
 surveillance) are there for the days it does not work.

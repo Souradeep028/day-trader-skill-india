@@ -377,7 +377,8 @@ python3 "${CLAUDE_SKILL_DIR}/forward.py" status                            # tra
   (`--kill-r`), at 1,300 if still not proven (`--max-trades`), or on a 30 R
   fall from the best (`--max-drawdown-r`). And how the shadow fills
   (`--fills realistic`, the default: the next bar's open, `--slippage-bp`
-  3 or the measured figure, targets traded through). Tests frozen before
+  3, or a figure measured on live fills; the paper autopilot charges the
+  same bp on its own fills, targets traded through). Tests frozen before
   this gate keep their 40-trade verdict, but only a sequential PASS opens
   trader-risk's live lock: 40 trades cannot tell a small edge from luck.
 - **signal** logs each signal, taken or skipped with a reason. Skipping more

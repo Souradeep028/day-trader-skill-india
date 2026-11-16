@@ -30,8 +30,10 @@ Run it from your trading folder (the one with trader/), every 5 minutes on marke
 bar closes (Yahoo needs a moment to post it), for example with cron, in India time whatever the machine's:
     CRON_TZ=Asia/Kolkata
     1-59/5 9-15 * * 1-5  cd ~/trading && python3 /path/to/trader-broker/autopilot.py run --once >> trader/autopilot.log 2>&1
-A bar only counts once Yahoo's last trade is past its close. Entries fill at the price when the pass runs (a
-tick worse), not the signal bar's close, and the difference is kept as slippage. Passes never overlap (a
+A bar only counts once Yahoo's last trade is past its close. Entries fill at the price when the pass runs, not the
+signal bar's close, and the difference is kept as slippage. Every market fill (the entry, a stop, the flat-by) pays
+the frozen test's slippage_bp basis points and a tick, exactly as the shadow replay charges it (forward.py start
+--fills realistic, 3 bp by default; 0 bp for a test frozen with --fills close): paper is never kinder than the shadow. Passes never overlap (a
 lock file), and each leaves a heartbeat (trader/state/autopilot.json) for the daily report and the
 pre-flight.
 It exits at once outside 9:15 to 15:30 and on NSE holidays. Same prices, same rule and same order of passes
@@ -171,12 +173,14 @@ def minutes_of(text, day):
     return out
 
 
-def exit_in(bar5, slot, minutes, leg, long, slip, tick):
+def exit_in(bar5, slot, minutes, leg, long, slip, tick, bp=0.0):
     """Does this 5-minute bar take the position out, and how? With the bar's 1-minute bars, minute by minute:
     the stop (an SL-M at the broker) fills at the stop, or at the minute's open when it gapped through, a tick
     worse; the target (a resting LIMIT) only fills when the price trades THROUGH it by a tick, since a touch
     does not fill a queue that formed before you. Without 1-minute bars, the 5-minute bar decides, stop first.
+    A stop is a market order once triggered: it pays bp basis points as well, as in the shadow (edge.exit_on).
     Returns (outcome, price, minute or None) or None."""
+    f = float(bp or 0) / 1e4
     o5, h5, l5, c5, v5 = bar5
     stop, target = leg["stop"], leg["target"]
     through = (target + tick) if long else (target - tick)
@@ -186,17 +190,42 @@ def exit_in(bar5, slot, minutes, leg, long, slip, tick):
     if all(m is not None for m in mins):
         for i, (o, h, l, c) in enumerate(mins):
             if (l <= stop) if long else (h >= stop):
-                px = edge.tick_down(min(stop, o) - slip * tick, tick) if long else edge.tick_up(max(stop, o) + slip * tick, tick)
+                px = (edge.tick_down(min(stop, o) * (1 - f) - slip * tick, tick) if long
+                      else edge.tick_up(max(stop, o) * (1 + f) + slip * tick, tick))
                 return "stop", px, 5 * slot + i
             if (h >= through) if long else (l <= through):
                 return "target", target, 5 * slot + i
         return None
     if (l5 <= stop) if long else (h5 >= stop):
-        return "stop", (edge.tick_down(min(stop, o5) - slip * tick, tick) if long
-                        else edge.tick_up(max(stop, o5) + slip * tick, tick)), None
+        return "stop", (edge.tick_down(min(stop, o5) * (1 - f) - slip * tick, tick) if long
+                        else edge.tick_up(max(stop, o5) * (1 + f) + slip * tick, tick)), None
     if (h5 >= through) if long else (l5 <= through):
         return "target", target, None
     return None
+
+
+def slippage_bp(test):
+    """The basis points every market fill pays: the frozen test's own shadow fills, so paper and shadow match."""
+    fills = (test or {}).get("fills") or {}
+    if fills.get("model") == "realistic":
+        return float(fills.get("slippage_bp", forward.SHADOW_FILLS["slippage_bp"]))
+    return 0.0
+
+
+def entry_fill(px, long, bp, slip, tick):
+    """A market entry sent now: the price, bp basis points and slip ticks worse, on the tick (edge.entry_at's sum)."""
+    f = float(bp or 0) / 1e4
+    return edge.tick_up(px * (1 + f) + slip * tick, tick) if long else edge.tick_down(px * (1 - f) - slip * tick, tick)
+
+
+def prev_close_of(days, today):
+    """The last close of the session before today in {date: {slot: bar}}, or None. Yahoo's last 5-minute print;
+    NSE's official close (the last half hour's average) differs from it by a few basis points at most."""
+    before = sorted(d for d in days if d < today and days[d])
+    if not before:
+        return None
+    bars = days[before[-1]]
+    return bars[max(bars)][3]
 
 
 def side_of(rule):
@@ -255,6 +284,8 @@ def one_pass(a, now_utc):
     state = ticket.load_state(a.state)
     rates = cfg.get("charges")
     c = edge_cfg(cfg, state, rates)
+    bp = slippage_bp(test)
+    c["slippage_bp"] = bp                       # the signal's entry, size and charges filter as the shadow sees them
     c["dates"] = {today}
     syms = edge.symbols_from(argparse.Namespace(symbols=a.symbols, watchlist=a.watchlist))
     want_vix = "calm_vix" in need
@@ -288,9 +319,17 @@ def one_pass(a, now_utc):
             pass
     idx_text = charts.pop(edge.INDEX, None)
     idx_days = edge.sessions_of(idx_text, edge.INDEX) if idx_text else {}
+    n_idx = 0
     if today in idx_days:                       # Nifty's unfinished bar is not read either
         n_idx = settled(idx_text, now_utc, n, today)
         idx_days[today] = {k: v for k, v in idx_days[today].items() if k < n_idx}
+    idx_prev = prev_close_of(idx_days, today)
+    idx_px = None
+    if today in idx_days and idx_days[today]:
+        lag_i = None if a.offline else lag_seconds(idx_text, now_utc)
+        if lag_i is None or lag_i <= MAX_LAG:          # a stale index price would hide a big day: leave it out
+            idx_px = live_price(idx_text, idx_days, today, n_idx, a.offline)
+    bands = check.load_bands(forward.read(a.bands, "price bands", required=False))
     vix_days = edge.sessions_of(charts.pop(edge.VIX), edge.VIX) if edge.VIX in charts else {}
     all_days = set(idx_days)
     days, n_of = {}, {}
@@ -347,7 +386,7 @@ def one_pass(a, now_utc):
             t_ = sess["tick"]
             if px is None:
                 continue
-            fill = edge.tick_up(px + slip * t_, t_) if long else edge.tick_down(px - slip * t_, t_)
+            fill = entry_fill(px, long, bp, slip, t_)
             if (fill >= e["target"] or fill <= e["stop"]) if long else (fill <= e["target"] or fill >= e["stop"]):
                 out.append("%s %s: %s signal at %.2f, but the price is %.2f, already past the %s: not chased"
                            % (today, e["time"], sym, e["entry"], px, "target" if (fill >= e["target"]) == long
@@ -368,7 +407,15 @@ def one_pass(a, now_utc):
                      "plan": {"entry": e["entry"], "stop": e["stop"], "target": e["target"],
                               "flat_by": cfg.get("flat_by") or "15:10"}}
             pf = forward.read(a.portfolio, "portfolio", required=False)
-            res = check.check([order], cfg, pf, {sym: e["entry"]}, state, today, now_utc, None, None, None,
+            # the same day-level checks an order typed by hand gets: Nifty's move from yesterday's close (the 3 %
+            # halt) and the stock's NSE price band, from the bars this pass already has
+            prices, prev = {sym: e["entry"]}, {}
+            pc = prev_close_of(days[sym], today)
+            if pc:
+                prev[sym] = pc
+            if idx_px and idx_prev:
+                prices[edge.INDEX], prev[edge.INDEX] = idx_px, idx_prev
+            res = check.check([order], cfg, pf, prices, state, today, now_utc, None, bands, prev,
                               (lambda sd: sd.get("sectors", sd) if isinstance(sd, dict) else {})(
                                   forward.read(a.sectors, "sectors", required=False) or {}),
                               check.load_events(forward.read(a.events, "events", required=False)),
@@ -396,7 +443,8 @@ def one_pass(a, now_utc):
                    "stop": e["stop"], "target": e["target"], "date": today, "opened_at": stamp, "fingerprint": fp,
                    "status": "open", "auto": True, "entry_slot": slot, "checked": slot, "signal": e["signal"],
                    "slippage": round((e["entry"] - e["signal"]) if long else (e["signal"] - e["entry"]), 2),
-                   "stop_entry": e["fill"] is not None, "flat_by": cfg.get("flat_by") or "15:10"}
+                   "stop_entry": e["fill"] is not None, "flat_by": cfg.get("flat_by") or "15:10",
+                   "slip_bp": bp, "through": 1}
             legs.append(leg)
             ticket.write_json(a.state, state)
             ticket.apply_fill(a.portfolio, cfg, sym, side_of(rule), e["qty"], e["entry"], today, short=not long)
@@ -426,7 +474,7 @@ def one_pass(a, now_utc):
         while hit is None and j <= min(last_closed, c["flat_slot"]):
             if j not in bars:
                 break
-            r = exit_in(bars[j], j, mins.get(sym, {}), leg, lg, slip, tick)
+            r = exit_in(bars[j], j, mins.get(sym, {}), leg, lg, slip, tick, leg.get("slip_bp"))
             hit = (r[0], r[1]) if r else None
             at = j
             leg["checked"] = j
@@ -436,7 +484,7 @@ def one_pass(a, now_utc):
             px_now = live_price(charts.get(sym, ""), days.get(sym) or {}, leg["date"], n_of.get(sym, 0), a.offline) \
                 if leg["date"] == today else None
             bar = (px_now,) * 4 + (0,) if px_now and not a.offline else bars[c["flat_slot"]]
-            hit, at = ("flat-by", edge.flat_price(bar, lg, slip, tick)), c["flat_slot"]
+            hit, at = ("flat-by", edge.flat_price(bar, lg, slip, tick, leg.get("slip_bp"))), c["flat_slot"]
         done = [k for k in bars if k <= leg["checked"]]
         if done:
             leg["last_price"] = bars[max(done)][3]
@@ -454,7 +502,7 @@ def one_pass(a, now_utc):
             # past the flat-by with no bars to close on: out at the last price seen, and say so
             px0 = leg.get("last_price") or leg["entry"]
             hit, at = ("flat-by, no data: closed at the last price seen", edge.flat_price(
-                (px0, px0, px0, px0, 0), lg, slip, tick)), c["flat_slot"]
+                (px0, px0, px0, px0, 0), lg, slip, tick, leg.get("slip_bp"))), c["flat_slot"]
             PROBLEMS.append("%s: %s closed at its last price seen %.2f with no data at the flat-by" % (today, sym, px0))
         if hit is None:
             continue
@@ -491,6 +539,7 @@ def main(argv=None):
     p.add_argument("--portfolio", default="trader/portfolio.json")
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--sectors", default="trader/sectors.json")
+    p.add_argument("--bands", default="trader/bands.json", help="NSE price bands (trader-scanner: scan.py universe)")
     p.add_argument("--events", default="trader/events.json")
     p.add_argument("--surveillance", default="trader/surveillance.json")
     p.add_argument("--preflight", dest="out", default=preflight.STATE, help="today's pre-flight (preflight.py)")

@@ -201,12 +201,16 @@ python3 "${CLAUDE_SKILL_DIR}/edge.py" run --symbols INFY.NS,TCS.NS --slippage-ti
   on the tick the stock really traded at that day, one tick of slippage on
   the entry, the stop and the flat-by exit (a stop that gaps fills at the
   bar's open). R is the result after charges over the planned risk.
-  That is `--fills close`, the default and an upper bound: no order can
-  trade at the close of the bar that triggered it. `--fills realistic` is
+  That is `--fills close`, the default: optimistic (no slippage, a target
+  on a touch) but not an upper bound, since a bar's close is just one print
+  and the next bar's open can be better. `--fills realistic` is
   what the paper autopilot and a real order get: in at the next bar's open,
   `--slippage-bp` (3) on every market fill, targets only when the price
-  trades a tick through them. A tick on these stocks is under 1 bp, so use
-  the daily report's measured "Entry slippage" in bp once it has 30 trades.
+  trades a tick through them. A tick on these stocks is under 1 bp. Each bp
+  of slippage costs a tight-stop rule about 0.025 R a trade, so the bp you
+  assume matters more than any filter. The paper autopilot's "Entry
+  slippage" is only the drift from the signal to the pass, on top of the bp
+  it already charges: the real spread and queue are measured on live fills.
 - **Two halves and a luck test**: a rule "held up" when it made money after
   charges in both the first two thirds of the sessions and the last third,
   with 30 or more trades in each. With 1,536 combinations tested, some will
@@ -415,8 +419,9 @@ python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR --holdout-from 2026-01-
 
 - **Break-even slippage**: each hypothesis is also run at 0 bp, and the
   report gives the slippage at which it stops making money ("none": it
-  loses even at 0 bp). One under the paper autopilot's measured slippage is
-  not worth trading, whatever its statistics.
+  loses even at 0 bp). One under the slippage measured on live fills (or
+  under 3 bp until there is such a figure) is not worth trading, whatever
+  its statistics.
 - **The data check** runs first, by itself (`check`) and inside `run`
   (unless `--no-check`): it refuses sessions with an overnight jump that
   looks like an unadjusted split or bonus (x0.5, x0.2 ...), a bad print (a

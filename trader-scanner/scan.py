@@ -3,6 +3,7 @@
 
     python3 scan.py universe                          # NSE's lists -> trader/universe.txt + trader/bands.json
     python3 scan.py surveillance asm.csv gsm.csv      # NSE's ASM/GSM lists -> trader/surveillance.json
+    python3 scan.py sectors                           # NSE's Nifty 500 list -> trader/sectors.json
     python3 scan.py daily                             # before the open: daily setups -> trader/watchlist.json
     python3 scan.py daily --watchlist trader/nifty50.txt   # or --symbols INFY.NS,TCS.NS, or --limit 200
     python3 scan.py orb                               # after 9:35 AM IST: opening-range breakouts so far
@@ -25,6 +26,12 @@ surveillance  Reads NSE's ASM and GSM lists (Additional and Graded Surveillance
           and short-term tabs, and nseindia.com/reports/gsm) and pass the files:
           scan.py surveillance asm-lt.csv asm-st.csv gsm.csv. Writes
           trader/surveillance.json; trader-risk blocks new entries in those stocks.
+
+sectors   Downloads NSE's Nifty 500 constituents (ind_nifty500list.csv) and writes
+          trader/sectors.json: each stock's NSE industry, for trader-risk's sector
+          cap (max_entries_per_sector). --file reads a CSV saved from a browser.
+          NSE rebalances the index twice a year: run it again after March and
+          September.
 
 daily     Pre-market scan of daily CLOSES (Yahoo spark: 20 symbols a request,
           3 months of 1-day bars, closes only). Liquidity from the spark meta:
@@ -70,8 +77,10 @@ Exit code 0 when the scan found something, 1 when it did not or could not run.
 """
 
 import argparse
+import csv
 import datetime
 import gzip
+import io
 import json
 import os
 import re
@@ -858,6 +867,56 @@ def cmd_surveillance(a):
     return 0
 
 
+SECTORS_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
+
+
+def parse_sectors(text):
+    """NSE's index constituents CSV (Company Name, Industry, Symbol, Series, ISIN Code) -> {SYM.NS: industry}."""
+    rows = list(csv.reader(io.StringIO(text.lstrip("\ufeff"))))
+    if not rows:
+        raise ScanError("the sector list is empty")
+    head = [h.strip().lower() for h in rows[0]]
+    if "symbol" not in head or "industry" not in head:
+        raise ScanError("not an NSE index constituents list: the header is %s" % ", ".join(head))
+    si, ii = head.index("symbol"), head.index("industry")
+    out = {}
+    for r in rows[1:]:
+        if len(r) <= max(si, ii):
+            continue
+        sym, ind = r[si].strip().upper(), r[ii].strip()
+        if NSE_SYMBOL.match(sym) and ind:
+            out[sym + ".NS"] = ind
+    if not out:
+        raise ScanError("no stocks in the sector list")
+    return out
+
+
+def cmd_sectors(a):
+    if a.file:
+        with open(a.file, encoding="utf-8", errors="replace") as fh:
+            text, source = fh.read(), os.path.basename(a.file)
+    else:
+        try:
+            text, source = http_get(SECTORS_URL, timeout=60), SECTORS_URL
+        except urllib.error.HTTPError as e:
+            raise ScanError("nsearchives.nseindia.com answered HTTP %d for the Nifty 500 list. Save it from "
+                            "niftyindices.com (Nifty 500, constituents CSV) and pass --file" % e.code)
+        except (urllib.error.URLError, OSError) as e:
+            raise ScanError("could not reach nsearchives.nseindia.com: %s. Save the Nifty 500 constituents CSV "
+                            "from a browser and pass --file" % (getattr(e, "reason", e),))
+    sectors = parse_sectors(text)
+    now = to_ist(parse_now(a.now))
+    doc = {"created_by": "trader-scanner", "updated": now.date().isoformat(), "source": source,
+           "note": "Each stock's NSE industry from the Nifty 500 list, for trader-risk's sector cap. NSE "
+                   "rebalances the index in March and September: run scan.py sectors again after each.",
+           "sectors": dict(sorted(sectors.items()))}
+    if not a.no_write:
+        write_json(a.out, doc)
+    inds = sorted(set(sectors.values()))
+    print("%d stocks in %d industries%s." % (len(sectors), len(inds), "" if a.no_write else ", written to %s" % a.out))
+    return 0
+
+
 def cmd_universe(a):
     t0 = time.time()
     texts = {}
@@ -1090,6 +1149,12 @@ def main(argv=None):
     p.add_argument("--no-write", action="store_true")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("sectors", help="NSE's Nifty 500 list -> trader/sectors.json (the sector cap)")
+    p.add_argument("--file", metavar="CSV", help="ind_nifty500list.csv saved from a browser instead of the download")
+    p.add_argument("--out", default="trader/sectors.json")
+    p.add_argument("--now", help="pretend it is this IST time")
+    p.add_argument("--no-write", action="store_true")
+
     def common(p, min_price, min_volume):
         g = p.add_mutually_exclusive_group()
         g.add_argument("--symbols", help="comma-separated symbols (INFY.NS,TCS.NS) instead of the universe")
@@ -1122,7 +1187,7 @@ def main(argv=None):
         ap.print_help()
         return 1
     try:
-        return {"universe": cmd_universe, "surveillance": cmd_surveillance, "daily": cmd_daily,
+        return {"universe": cmd_universe, "surveillance": cmd_surveillance, "sectors": cmd_sectors, "daily": cmd_daily,
                 "orb": cmd_orb}[a.cmd](a)
     except ScanError as e:
         print("scan.py: %s" % e, file=sys.stderr)
