@@ -33,9 +33,10 @@ bar closes (Yahoo needs a moment to post it), for example with cron, in India ti
 A bar only counts once Yahoo's last trade is past its close. Entries fill at the price when the pass runs, not the
 signal bar's close, and the difference is kept as slippage. Every market fill (the entry, a stop, the flat-by) pays
 the frozen test's slippage_bp basis points and a tick, exactly as the shadow replay charges it (forward.py start
---fills realistic, 3 bp by default; 0 bp for a test frozen with --fills close): paper is never kinder than the shadow. Passes never overlap (a
-lock file), and each leaves a heartbeat (trader/state/autopilot.json) for the daily report and the
-pre-flight.
+--fills realistic, 3 bp by default; 0 bp for a test frozen with --fills close): paper is never kinder than the shadow.
+Passes never overlap (a lock file). Each holds the broker log's lock (trader/state/broker.lock, which ticket.py's
+writing commands take too) from reading the log to its last write, so a record ticket.py writes during a pass is
+never lost. Each leaves a heartbeat (trader/state/autopilot.json) for the daily report and the pre-flight.
 It exits at once outside 9:15 to 15:30 and on NSE holidays. Same prices, same rule and same order of passes
 give the same trades as the shadow replay, except where a risk check blocks one. Not financial advice.
 """
@@ -63,6 +64,7 @@ edge = forward.edge
 OPEN_MIN = 9 * 60 + 15
 FRESH_BARS = 2
 REPLY = "autopilot (paper)"
+STATE_WAIT = 60.0   # seconds a pass waits for the broker log while a ticket.py command writes it
 
 
 class AutopilotError(Exception):
@@ -560,7 +562,9 @@ def main(argv=None):
     try:
         del PROBLEMS[:]
         LAG.clear()
-        for line in one_pass(a, now):
+        with ticket.state_lock(a.state, wait=STATE_WAIT):
+            lines = one_pass(a, now)
+        for line in lines:
             print(line)
         heartbeat(hb_path, now, None, list(PROBLEMS), dict(LAG))
     except (AutopilotError, forward.ForwardError, ticket.TicketError, edge.EdgeError, check.RiskError) as e:

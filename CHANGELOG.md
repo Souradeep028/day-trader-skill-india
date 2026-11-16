@@ -28,6 +28,20 @@ mixing the two.
 - **New tests:** no look-ahead (every signal is identical on the day cut right after it), paper and shadow exits
   are one rule, paper pays the shadow's slippage, the index halt and price band reach the autopilot, same-day
   trades count as one draw.
+- **Burned sessions in research.py.** `trader-timemachine/burned.json` lists the sessions no test may count:
+  13 August to 6 November 2026 (edge.py's grid picked the hypotheses there) and 7 November onward (the forward
+  test's). `research.py run` leaves them out, refuses data that is all burned, and `--include-burned` explores
+  them as IN-SAMPLE with nothing able to pass. A frozen plan records the list.
+- **No verdict from the Monte Carlo.** timemachine.py no longer says "leans / strongly toward the target": its
+  replays draw each bar on its own, so the odds reflect the stock's range and recent drift (a short gets the
+  mirror image), not an edge. It prints the odds and a line saying what they are not.
+- **One lock on the broker log.** ticket.py's writing commands (approve, decline, result, paper, paper-check,
+  fill) and the autopilot's whole pass hold `trader/state/broker.lock`, so a record written by hand during a
+  pass is no longer overwritten by the pass's last write.
+- **A missing bar no longer drops a stock's day.** edge.py fills a bar Yahoo left out flat at the close before
+  it (which cannot make or save a trade) instead of leaving out the whole session, which chose sessions on what
+  happened later. A session missing its 9:15 bar or more than 15 bars is still left out; the report says what
+  it filled.
 
 ## 3.0.0
 

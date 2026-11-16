@@ -7,8 +7,9 @@ description: >-
   10,000 times from the stock's own 5-minute bars over the last 60 days, and
   re-runs the same rule on every past session. Prints the odds of target first,
   stop first, or neither by your flat-by time, where the price sits then, the
-  average R before and after Zerodha's charges, the history, and one honest
-  verdict, then hands off to /trader-budget. Its edge report (edge.py) tests
+  average R before and after Zerodha's charges and the history (no verdict:
+  shuffled bars measure the stock's range, not an edge), then hands off to
+  /trader-budget. Its edge report (edge.py) tests
   1,536 intraday rules across a list of stocks (opening-range breaks,
   previous-day breaks, VWAP pullbacks; long and short; with filters for Nifty,
   volume, gaps, VIX, charges and expiry) after charges and slippage, in two
@@ -91,16 +92,14 @@ or `.json.gz`), `--now "2026-11-05 09:45"` (IST) to pin the clock.
 5. **The history.** The plan's own rule (the same opening range, stop rule
    and target R, stops and targets on the NSE tick) runs again on every one
    of those past sessions. That is what really happened, not a simulation.
-6. **The verdict** is one line from the numbers. It looks only at the
-   replays that hit one side, and asks how often the target came first. A
-   bigger target needs to win less often to break even: 1 in (1 + R). That
-   is 50 % at 1R, 33 % at 2R, 25 % at 3R. Less than 5 points from break-even:
-   "Close to a coin flip" at 1R, "Close to break-even" at any other R. 5 to
-   15 points: "Leans toward the target" or "Leans toward the stop". 15 or
-   more: "Strongly toward" one of them.
-7. **Below the verdict**, when it applies: a line when more than 40 % of the
-   replays hit neither (the price at `--until` decides those), and the
-   average R when its sign goes against the lean.
+6. **No verdict.** The last line repeats the odds plainly, and the line
+   under it says what they are not. Each replay draws every bar on its own
+   from the same time of day in past sessions, so trends, momentum and the
+   breakout itself are gone: what is left is the stock's daily range and its
+   recent drift, and a short on the same stock gets the mirror image. Use
+   the odds to see whether a target is within the stock's reach by the
+   flat-by; whether the setup makes money is `edge.py`'s question and the
+   forward test's.
 
 **The seed.** The draws come from Python's `random.Random(seed)`, seed 19 by
 default. Same plan, same data, same seed: the same numbers, on any machine.
@@ -121,11 +120,12 @@ grid). A live in-progress bar is never used.
    so "neither" means still open at the time you would get out.
 3. Tell the user, in this order: the four odds, the median and the 5 to 95
    range of the price at the flat-by, the average R before and after charges,
-   the history line, then the verdict line and any line under it exactly as
-   printed. Say the seed.
-4. If the verdict is a coin flip, close to break-even or toward the stop, say
-   so plainly. Do not dress it up. If the history and the replays disagree,
-   say that too.
+   the history line, then the last two lines exactly as printed. Say the
+   seed.
+4. Never turn the odds into a call on the trade ("leans toward the target",
+   "good odds"): they are the stock's range, not an edge. If the history and
+   the replays disagree, say so. For "does this setup make money", point to
+   `edge.py` and the forward test.
 5. Say once that this is built from the last 60 days and is not a prediction.
    Results, news and halts can do things those 60 days never did. Check
    `/trader-news` for the stock before going on.
@@ -150,13 +150,17 @@ INFY.NS, Thursday 5 November 2026. The 15-minute opening range is 1144.90 to
 History: the same rule (15-min opening range, stop at the opening-range midpoint, 2R target) on each
 of those 57 real sessions fired 20 times: 1 target, 10 stop, 9 neither. Average R -0.349, -0.482 after
 charges and slippage.
-Strongly toward the stop: at 2R the target has to come first in 33 % of the replays that hit one side;
-it did in 8 % (target first 4.9 % vs stop first 53.5 %).
-41.6 % of the replays hit neither by 3:10 PM; the price at 3:10 PM decides those.
+Odds by 3:10 PM: target first 4.9 %, stop first 53.5 %, neither 41.6 %.
+These odds shuffle the stock's own recent bars, each drawn on its own: they measure how far it moves in a
+day and its recent drift, so a short on the same stock gets the mirror image. They size the stop and
+target against its range; they say nothing about whether the setup has an edge. That is edge.py's
+question, and the forward test's.
 ```
 
-That is the honest answer for this setup on INFY in those 57 sessions, and
-it is what the user should hear before `/trader-budget` sizes 41 shares. On
+So a 2R target is a long way for INFY to travel by 3:10 on its recent
+range, and the rule itself lost on those 57 sessions (the history line).
+That is what the user should hear before `/trader-budget` sizes 41 shares;
+whether opening-range breaks pay at all is the edge report's answer, below. On
 the day itself the trade hit neither side and closed at 15:10 for a small
 gain after charges: one day says little either way.
 
@@ -416,6 +420,14 @@ python3 "${CLAUDE_SKILL_DIR}/research.py" run --data DIR --holdout-from 2026-01-
   best one looks over the whole.
 - **Holdout**: `--holdout-from` leaves the last stretch out; `--final` puts
   it in, once, and `trader/holdout.json` records each look.
+- **Burned sessions** (`burned.json`, always applied): 13 August 2026
+  onward. `edge.py`'s grid picked the example hypotheses from 13 August to
+  6 November, and the forward test frozen on 10 November judges the frozen
+  rule after that, so neither stretch can test them: the data has to come
+  from before 13 August 2026. Data that is all burned (the fixtures, or
+  Yahoo's 60 days) is refused. `--include-burned` explores it, says
+  IN-SAMPLE, and nothing passes. A frozen plan records the list it was
+  frozen with.
 
 - **Break-even slippage**: each hypothesis is also run at 0 bp, and the
   report gives the slippage at which it stops making money ("none": it

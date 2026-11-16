@@ -1,0 +1,9 @@
+{
+  "note": "Sessions research.py leaves out by default: these sessions already shaped the hypotheses, or are the forward test's to judge. A hypothesis cannot be tested on the data it was picked from. --include-burned puts them back for exploring only: nothing can pass then.",
+  "windows": [
+    {"from": "2026-08-13", "to": "2026-11-06",
+     "why": "edge.py's 1,536-rule grid ran on these sessions (Yahoo's 60 days to 6 November 2026), and the hypotheses in hypotheses.example.json, the frozen orb30 short among them, were picked from what it found"},
+    {"from": "2026-11-07", "to": null,
+     "why": "the forward test (forward.py, frozen on 10 November 2026) judges the frozen rule on these sessions, so counting them here too would count the same trades twice"}
+  ]
+}

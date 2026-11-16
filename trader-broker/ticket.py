@@ -50,18 +50,23 @@ its work around the one moment that matters, your yes:
     python3 ticket.py reconcile --positions positions.json --broker-orders orders.json
     python3 ticket.py log
 
-Everything is written to trader/state/broker.json (append only). Dates are
+Everything is written to trader/state/broker.json (append only). Every command that writes it (approve,
+decline, result, paper, paper-check, fill) holds trader/state/broker.lock while it reads and writes, as the
+paper autopilot does for its whole pass, so neither can overwrite the other's records. Dates are
 IST dates; --now "2026-11-05 09:40" pins the clock. Charges are Zerodha's
 equity intraday rates on the NSE; "charges" in trader/config.json overrides.
 """
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
 import os
 import re
 import sys
+import threading
+import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "core")):  # the shared tables: core/tradercore.py
     if os.path.isfile(os.path.join(_p, "tradercore.py")) and _p not in sys.path:
@@ -144,6 +149,73 @@ def write_json(path, data):
         json.dump(data, fh, indent=2)
         fh.write("\n")
     os.replace(tmp, path)
+
+
+STATE_WAIT = 300.0      # seconds a writer waits for the broker log (an autopilot pass is stopped at 240)
+_LOCAL = threading.local()   # .held: lock path -> how deeply this thread holds it (state_lock is re-entrant)
+
+
+@contextlib.contextmanager
+def state_lock(state_path, wait=None, say=None):
+    """Hold trader/state/broker.lock (next to the broker log) while reading and writing the log and the paper
+    portfolio. Every writer takes it: ticket.py's commands and the paper autopilot's whole pass. Without it, a
+    pass that read the log at the start and wrote it 30 to 60 seconds later would silently drop a record written
+    in between. Re-entrant within one thread. Waits up to `wait` seconds (STATE_WAIT), telling `say` once that
+    it is waiting, then raises TicketError. A lock left by a crashed process is freed by the system (or, where
+    there are no file locks, expires after 15 minutes)."""
+    wait = STATE_WAIT if wait is None else wait
+    path = os.path.join(os.path.dirname(os.path.abspath(state_path)), "broker.lock")
+    held = _LOCAL.__dict__.setdefault("held", {})
+    if held.get(path):
+        held[path] += 1
+        try:
+            yield path
+        finally:
+            held[path] -= 1
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    deadline, told, handle = time.time() + wait, False, None
+    while handle is None:
+        try:
+            if fcntl:
+                fh = open(path, "a+")
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    handle = fh
+                except OSError:
+                    fh.close()
+            else:
+                if os.path.exists(path) and time.time() - os.path.getmtime(path) > 900:
+                    os.remove(path)
+                handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except OSError:
+            handle = None
+        if handle is not None:
+            break
+        if time.time() >= deadline:
+            raise TicketError("the broker log is busy (%s is held, by an autopilot pass or another command) for "
+                              "over %d seconds: try again in a minute" % (path, int(wait)))
+        if say and not told:
+            say("Waiting for %s: another command or an autopilot pass is writing the broker log." % path)
+            told = True
+        time.sleep(0.2)
+    held[path] = 1
+    try:
+        yield path
+    finally:
+        held[path] = 0
+        if fcntl:
+            handle.close()
+        else:
+            os.close(handle)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def rec_day(rec):
@@ -1426,6 +1498,9 @@ def cmd_log(a):
     return 0
 
 
+WRITERS = ("approve", "decline", "result", "paper", "paper-check", "fill")   # the commands that write the log
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Order tickets and your yes (trader-broker). Never places orders.")
     sub = ap.add_subparsers(dest="cmd")
@@ -1528,10 +1603,14 @@ def main(argv=None):
         ap.print_help()
         return 1
     try:
-        return {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
-                "paper": cmd_paper, "paper-check": cmd_paper_check,
-                "fill": cmd_fill, "flatten": cmd_flatten, "reconcile": cmd_reconcile, "log": cmd_log, "journal": cmd_journal,
-                "tax": cmd_tax}[a.cmd](a)
+        run = {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
+               "paper": cmd_paper, "paper-check": cmd_paper_check,
+               "fill": cmd_fill, "flatten": cmd_flatten, "reconcile": cmd_reconcile, "log": cmd_log, "journal": cmd_journal,
+               "tax": cmd_tax}[a.cmd]
+        if a.cmd in WRITERS:
+            with state_lock(a.state, say=lambda m: print(m, file=sys.stderr)):
+                return run(a)
+        return run(a)
     except TicketError as e:
         print("ticket.py: %s" % e, file=sys.stderr)
         return 1

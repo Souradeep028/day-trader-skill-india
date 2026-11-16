@@ -100,6 +100,66 @@ class Fills(unittest.TestCase):
                                         dict(cfg, latency_min=1)))
 
 
+class Burned(unittest.TestCase):
+    """Sessions that picked the hypotheses, or that the forward test is judging, cannot test them."""
+    CFG = {"fold_sessions": 15, "bootstrap": 50}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.charts, cls.minutes, _ = rs.load_folder(EDGE)
+
+    def test_the_shipped_list(self):
+        # edge.py's grid ran on 13 August to 6 November 2026 and picked the hypotheses; the forward test frozen on
+        # 10 November judges the frozen rule from then on
+        w = rs.read_burned(rs.BURNED)
+        self.assertEqual([(f, t) for f, t, _ in w], [("2026-08-13", "2026-11-06"), ("2026-11-07", None)])
+        self.assertTrue(rs.burned_on(w, "2026-08-13") and rs.burned_on(w, "2027-03-01"))
+        self.assertIsNone(rs.burned_on(w, "2026-08-12"))
+
+    def test_burned_sessions_are_left_out(self):
+        full = rs.run_research(self.charts, self.minutes, HYPS, self.CFG)
+        doc = rs.run_research(self.charts, self.minutes, HYPS, self.CFG, burned=[("2026-10-01", None, "test")])
+        self.assertLess(doc["to"], "2026-10-01")
+        self.assertEqual(doc["sessions"] + doc["burned"]["sessions"], full["sessions"])
+        self.assertFalse(doc["burned"]["included"])
+        self.assertIn("Burned sessions (burned.json): %d left out: 2026-10-01 to now: test." % doc["burned"]["sessions"],
+                      "\n".join(rs.report(doc)))
+        with self.assertRaises(rs.ResearchError) as e:
+            rs.run_research(self.charts, self.minutes, HYPS, self.CFG, burned=rs.read_burned(rs.BURNED))
+        self.assertIn("after leaving out 58 burned ones", str(e.exception))
+
+    def test_a_planted_edge_cannot_pass_on_burned_sessions(self):
+        # the power test's planted edge passes on fresh made-up data; the same sessions marked burned and put
+        # back with include_burned are in-sample, and nothing passes
+        charts = rs.synthetic(3, 130, 2.0, seed=1)
+        cfg = {"fold_sessions": 40, "bootstrap": 100}
+        fresh = rs.run_research(charts, {}, rs.POWER_HYPOTHESES[:1], cfg)
+        self.assertTrue(fresh["rows"][0]["passed"])
+        doc = rs.run_research(charts, {}, rs.POWER_HYPOTHESES[:1], cfg, burned=[("2023-01-01", None, "seen")],
+                              include_burned=True)
+        self.assertFalse(doc["rows"][0]["passed"])
+        self.assertFalse(doc["rows"][0]["checks"]["fresh_data"])
+        self.assertTrue(doc["burned"]["included"])
+        self.assertTrue(doc["verdict"].startswith("IN-SAMPLE"))
+
+    def test_the_command_and_the_plan(self):
+        code, _, err = quiet(["run", "--data", EDGE, "--bootstrap", "30"])
+        self.assertEqual(code, 1)
+        self.assertIn("burned", err)
+        code, out, err = quiet(["run", "--data", EDGE, "--bootstrap", "30", "--include-burned"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("IN-SAMPLE", out)
+        self.assertNotIn("PASSED", out)
+        d = tempfile.mkdtemp()
+        try:
+            plan = os.path.join(d, "plan.json")
+            self.assertEqual(quiet(["plan", "--file", plan])[0], 0)
+            with open(plan) as fh:
+                self.assertEqual(json.load(fh)["burned"][0]["from"], "2026-08-13")
+        finally:
+            shutil.rmtree(d)
+
+
 class Walk(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -165,7 +225,7 @@ class Walk(unittest.TestCase):
             with open(h, "w") as fh:
                 json.dump(HYPS, fh)
             code, out, err = quiet(["run", "--data", EDGE, "--hypotheses", h, "--fold-sessions", "20",
-                                    "--bootstrap", "100", "--write", os.path.join(d, "r.json")])
+                                    "--bootstrap", "100", "--write", os.path.join(d, "r.json"), "--include-burned"])
             self.assertEqual(code, 0, err)
             self.assertIn("Research: 2 hypotheses, 5 stocks", out)
             self.assertIn("The selection, walk-forward", out)
@@ -303,7 +363,8 @@ class PowerAndPlan(unittest.TestCase):
             with open(plan) as fh:
                 doc = json.load(fh)
             self.assertEqual((doc["settings"]["slippage_bp"], len(doc["hypotheses_sha"])), (5.0, 12))
-            code, out, err = quiet(["run", "--data", EDGE, "--plan", plan, "--bootstrap", "50", "--slippage-bp", "0"])
+            code, out, err = quiet(["run", "--data", EDGE, "--plan", plan, "--bootstrap", "50", "--slippage-bp", "0",
+                                    "--include-burned"])
             self.assertEqual(code, 0, err)
             self.assertIn("Research: 1 hypotheses", out)
             self.assertIn("5 bp of slippage", out)                                 # the plan's, not the flag's
@@ -376,7 +437,7 @@ class Decision(unittest.TestCase):
             self.assertEqual(quiet(["plan", "--file", plan])[0], 0)
             with open(plan) as fh:
                 self.assertIn("index SIP", json.load(fh)["decision"])
-            code, out, _ = quiet(["run", "--data", EDGE, "--plan", plan, "--bootstrap", "30"])
+            code, out, _ = quiet(["run", "--data", EDGE, "--plan", plan, "--bootstrap", "30", "--include-burned"])
             self.assertIn("What you decided to do with the answer, before seeing it: If no hypothesis passes", out)
             plan2 = os.path.join(d, "plan2.json")
             quiet(["plan", "--file", plan2, "--decision", "Stop after one try."])

@@ -83,8 +83,11 @@ class Pieces(unittest.TestCase):
         # long and short
         text, days = self._infy()
         last = edge.hhmm_slot("15:10", "x")
+        # the complete sessions, as edge_report picks them: the time machine leaves out days with missing bars
+        # (15 October lost 11:45 and 11:50 for every stock and Nifty), which prepare would now fill
+        full = {d for d, b in days.items() if all(k in b for k in range(last + 1))}
         cfg = {"slippage_ticks": 0, "first_slot": 3, "last_entry_slot": last, "flat_slot": last,
-               "max_loss": 500, "max_order": 1e9, "max_cost_pct": 15, "dates": {d for d in days if d <= "2026-11-04"}}
+               "max_loss": 500, "max_order": 1e9, "max_cost_pct": 15, "dates": {d for d in full if d <= "2026-11-04"}}
         sess = edge.prepare(days, {}, {}, cfg)
         for side, tm_side, entry, target in (("long", "buy", 1160.5, 1181.9), ("short", "sell", 1140.0, 1120.4)):
             mine = edge.trades_for("INFY.NS", sess, "orb15", side, "tight", 2.0, cfg)
@@ -213,6 +216,59 @@ class NoLookahead(unittest.TestCase):
                                          (sym, s["date"], setup, side))
                         seen += 1
         self.assertGreater(seen, 300)
+
+
+class Gaps(unittest.TestCase):
+    """A bar Yahoo left out of one stock's day used to drop the whole session: choosing sessions on what happened
+    later in the day. Now it is filled flat at the close before it, which can neither make nor save a trade."""
+    DAY = "2026-11-05"
+
+    def setUp(self):
+        self.days = edge.sessions_of(edge.read_offline(DIR, "INFY.NS"), "INFY.NS")
+        self.cfg = {"slippage_ticks": 1, "first_slot": 3, "last_entry_slot": edge.hhmm_slot("14:45", "x"),
+                    "flat_slot": edge.hhmm_slot("15:10", "x"), "max_loss": 500, "max_order": 75000, "max_cost_pct": 15}
+
+    def gapped(self, *slots, day=DAY):
+        days = dict(self.days)
+        days[day] = {k: v for k, v in days[day].items() if k not in slots}
+        return days
+
+    def trades(self, days):
+        return edge.trades_for("INFY.NS", edge.prepare(days, {}, {}, self.cfg), "orb15", "long", "tight", 2.0, self.cfg)
+
+    def test_a_gap_keeps_the_session_and_changes_no_trade(self):
+        days = self.gapped(40)
+        sess = [s for s in edge.prepare(days, {}, {}, self.cfg) if s["date"] == self.DAY][0]
+        self.assertEqual(sess["filled"], 1)
+        c = self.days[self.DAY][39][3]
+        self.assertEqual(sess["bars"][40], (c, c, c, c, 0))
+        before, after = self.trades(self.days), self.trades(days)
+        self.assertIn(self.DAY, [t["date"] for t in after])
+        strip = lambda ts: [{k: v for k, v in t.items() if k != "filters"} for t in ts]
+        self.assertEqual(strip(after), strip(before))
+
+    def test_no_opening_bar_or_too_many_gaps_still_leaves_it_out(self):
+        for days in (self.gapped(0), self.gapped(*range(30, 30 + edge.MAX_FILLED + 1))):
+            self.assertNotIn(self.DAY, [s["date"] for s in edge.prepare(days, {}, {}, self.cfg)])
+        self.assertIn(self.DAY, [s["date"] for s in edge.prepare(self.gapped(*range(30, 30 + edge.MAX_FILLED)),
+                                                                   {}, {}, self.cfg)])
+
+    def test_a_live_session_is_not_filled_past_its_last_bar(self):
+        # the autopilot's unfinished day: bars 0 to 5 closed, Yahoo has not posted bar 5 yet
+        days = self.gapped(*range(5, 75))
+        sess = edge.prepare(days, {}, {}, dict(self.cfg, dates={self.DAY}), partial=(self.DAY, 6))
+        self.assertEqual((len(sess), len(sess[0]["bars"]), sess[0]["filled"]), (1, 5, 0))
+
+    def test_the_report_says_what_it_filled(self):
+        doc = json.loads(edge.read_offline(DIR, "INFY.NS"))
+        r = doc["chart"]["result"][0]
+        t = [i for i, x in enumerate(r["timestamp"]) if x == 1793850300 + 40 * 300][0]     # 5 Nov, 12:35 IST
+        r["indicators"]["quote"][0]["close"][t] = None
+        ch = dict(charts(), **{"INFY.NS": json.dumps(doc)})
+        rep = edge.edge_report(ch, edge.read_offline(DIR, edge.INDEX), None,
+                               {"setups": ("orb15",), "sides": ("long",), "bootstrap": 50})
+        self.assertEqual((rep["filled_bars"]["sessions"], rep["filled_bars"]["bars"]), (1, 1))
+        self.assertIn("Yahoo left out 1 bar in 1 stock-session (INFY.NS 2026-11-05 (1))", "\n".join(edge.report(rep)))
 
 
 class Report(unittest.TestCase):

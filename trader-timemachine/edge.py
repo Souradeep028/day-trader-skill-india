@@ -134,6 +134,7 @@ SENSITIVITY_BP = (0.0, 3.0, 6.0)
 BOOTSTRAP = 1000
 ALPHA = 0.05
 MIN_RISK_PCT = 0.05
+MAX_FILLED = 15           # a session missing more bars than this (a fifth of the day) is left out as bad data
 GAP_PCT = 1.0
 TICKS, TOP_TICK = tradercore.ticks()  # NSE tick sizes: core/nse.json
 CHARGES = tradercore.charges("zerodha")  # equity intraday on the NSE: core/brokers/zerodha.json
@@ -331,10 +332,35 @@ def context(index_days, vix_days, day, prev_day=None):
     return nifty, n_open, calm
 
 
+def fill_gaps(bars, n_bars, trailing=True):
+    """(bars, filled) with each missing slot under n_bars replaced by a flat bar at the close before it (no
+    volume), or (None, 0) when the session cannot be used: no 9:15 bar, or more than MAX_FILLED bars missing.
+    A flat bar at the last close cannot trigger an entry, a stop or a target the bar before had not, so a gap
+    neither makes nor saves a trade. trailing=False (a session still going): missing bars after the last one
+    Yahoo has posted are not filled; the session ends at the last real bar.
+    Dropping a session for any missing bar would choose sessions on what happened later in the day."""
+    if 0 not in bars:
+        return None, 0
+    last = n_bars if trailing else min(n_bars, max([k for k in bars if k < n_bars] or [0]) + 1)
+    missing = [k for k in range(last) if k not in bars]
+    if len(missing) > MAX_FILLED:
+        return None, 0
+    if not missing:
+        return bars, 0
+    out = dict(bars)
+    for k in range(1, last):
+        if k not in out:
+            c = out[k - 1][3]
+            out[k] = (c, c, c, c, 0)
+    return out, len(missing)
+
+
 def prepare(days, index_days, vix_days, cfg, partial=None):
     """One stock's sessions, ready for every rule: the bars to the flat-by, the tick it traded at, VWAP,
     the previous session's high, low and close, Nifty's bars, India VIX's mood and the expiry flag.
-    partial (date, n): that session is still going, with its first n bars closed; it is kept with those."""
+    partial (date, n): that session is still going, with its first n bars closed; it is kept with those.
+    A bar Yahoo left out is filled flat at the close before it (fill_gaps), so a gap later in the day does not
+    take the whole session out; "filled" says how many were."""
     last = cfg["flat_slot"]
     keep = cfg.get("dates")
     expiry = cfg.get("expiry") or set()
@@ -344,11 +370,16 @@ def prepare(days, index_days, vix_days, cfg, partial=None):
         bars = days[d]
         if keep is not None and d not in keep:
             continue
-        n_bars = partial[1] if partial and d == partial[0] else last + 1
-        if n_bars <= 0 or not all(k in bars for k in range(n_bars)):
+        live = bool(partial and d == partial[0])
+        n_bars = partial[1] if live else last + 1
+        if n_bars <= 0:
             continue
+        bars, filled = fill_gaps(bars, n_bars, trailing=not live)
+        if bars is None:
+            continue
+        n_bars = min(n_bars, max(k for k in bars if k < n_bars) + 1)
         B = [bars[k] for k in range(n_bars)]
-        if partial and d == partial[0]:
+        if live:
             bars = {k: bars[k] for k in range(n_bars)}
         prev = days[dates[di - 1]] if di else None
         vw, pv, v = [], 0.0, 0.0
@@ -362,7 +393,7 @@ def prepare(days, index_days, vix_days, cfg, partial=None):
                     "vwap": vw, "prev_close": prev[max(prev)][3] if prev else None,
                     "prev_high": max(b[1] for b in prev.values()) if prev else None,
                     "prev_low": min(b[2] for b in prev.values()) if prev else None,
-                    "nifty": nifty, "n_open": n_open, "calm": calm, "expiry": d in expiry})
+                    "nifty": nifty, "n_open": n_open, "calm": calm, "expiry": d in expiry, "filled": filled})
     return out
 
 
@@ -768,6 +799,7 @@ def edge_report(charts, index_text=None, vix_text=None, cfg=None):
     c["dates"] = dates
     c["expiry"] = expiry_dates(all_days, c["expiry_weekday"])
     prepared = {sym: prepare(days, index_days, vix_days, c) for sym, days in per_symbol.items()}
+    gaps = [(sym, s["date"], s["filled"]) for sym, sess in prepared.items() for s in sess if s.get("filled")]
     filters = [f for f in FILTERS if not (set(f.split("+")) & {"with_nifty", "stronger"} and not index_days)
                and not ("calm_vix" in f.split("+") and not vix_days)]
     rows = []
@@ -834,6 +866,8 @@ def edge_report(charts, index_text=None, vix_text=None, cfg=None):
         "in_sample": {"from": ins_span[0], "to": ins_span[1], "sessions": len(ins)},
         "out_of_sample": {"from": oos_span[0], "to": oos_span[1], "sessions": len(oos)} if oos_span else None,
         "expiry_sessions": sorted(d for d in c["expiry"] if d in dates),
+        "filled_bars": {"sessions": len(gaps), "bars": sum(g[2] for g in gaps),
+                        "examples": ["%s %s (%d)" % g for g in sorted(gaps)[:5]]},
         "settings": {k: c[k] for k in ("max_loss", "max_order", "slippage_ticks", "no_entries_before",
                                         "no_entries_after", "flat_by", "max_cost_pct", "expiry_weekday",
                                         "bootstrap", "fills", "entry_delay", "target_through", "slippage_bp")},
@@ -1000,6 +1034,12 @@ def report(doc, top=12):
                          % bm["nifty_pct"])
         lines.append("  The best rules are picked with hindsight from %d tries: a fresh period usually gives back "
                      "much of it. Only the default was fixed in advance." % doc["combinations"])
+    fb = doc.get("filled_bars") or {}
+    if fb.get("sessions"):
+        lines.append("Yahoo left out %d bar%s in %d stock-session%s (%s): each filled flat at the close before it, "
+                     "which cannot make or save a trade." % (fb["bars"], "" if fb["bars"] == 1 else "s", fb["sessions"],
+                                                             "" if fb["sessions"] == 1 else "s",
+                                                             ", ".join(fb["examples"])))
     lines += realism_lines(doc)
     lines += ["", doc["verdict"],
               "A rule passes only when it made money after charges in both halves (%d+ trades each), its "

@@ -53,15 +53,12 @@ round trip's charges are a real slice of 1R. The same line takes off slippage:
 stop or the flat-by sale (a target is a limit order and fills at its price),
 on the NSE tick the stock traded at that day, as the edge report does.
 
-The verdict line looks at the replays that hit one side (target or stop) and
-compares the target's share of them, target / (target + stop), with the share
-that breaks even at the plan's target R: 1 / (1 + R), so 50 % at 1R and 33 % at
-2R. The gap, in percentage points:
-  less than 5 points    "Close to a coin flip" (1R) / "Close to break-even" (other R)
-  5 to 15 points        "Leans toward the target" / "Leans toward the stop"
-  15 points or more     "Strongly toward the target" / "Strongly toward the stop"
-Below it: a note when more than 40 % of the replays hit neither (the price at
---until decides those), and the average R when its sign goes against the lean.
+The last lines give the odds plainly (target first, stop first, neither by --until) and say what they are
+not. There is no "leans toward the target" verdict: each replay draws every bar independently from the same time
+of day in past sessions, which throws away trends, momentum and the breakout that triggered the plan. What is left
+is how far the stock moves in a day and its average drift over those sessions, so a long and a short on the same
+stock get mirror-image odds. That sizes a target and a stop against the stock's range; it says nothing about an
+edge. Whether a setup makes money is edge.py's question (and the forward test's), not this one's.
 
 5-minute bars only: Yahoo keeps 60 days of 5-min bars but only about 7 days of
 1-min bars, too few sessions for a fair pool. The run refuses with a plain
@@ -109,9 +106,6 @@ SAMPLE_PATHS = 160
 BAND_PATHS = 2000
 BAND_Q = (0.05, 0.25, 0.5, 0.75, 0.95)
 HIST_BINS = 24
-COIN_FLIP = 0.05     # verdict thresholds, see the docstring
-STRONG = 0.15
-MANY_NEITHER = 0.40
 EPOCH = datetime.datetime(1970, 1, 1)
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 NSE_EARLY_CLOSE = tradercore.early_close()  # NSE has no scheduled early closes
@@ -728,52 +722,25 @@ def _until12(mc):
     return clock12(int(t[:2]) * 60 + int(t[3:]))
 
 
-def lean(mc):
-    """(gap, share, break_even): the target's share of the replays that hit one side,
-    minus the share that breaks even at the target's R. None when nothing hit a side."""
-    pt, ps = mc["p_target"], mc["p_stop"]
-    if pt + ps <= 0:
-        return None
-    r = mc.get("r_at_target") or 1.0
-    share, even = pt / (pt + ps), 1.0 / (1.0 + r)
-    return share - even, share, even
+NOT_AN_EDGE = ("These odds shuffle the stock's own recent bars, each drawn on its own: they measure how far it "
+               "moves in a day and its recent drift, so a short on the same stock gets the mirror image. They size "
+               "the stop and target against its range; they say nothing about whether the setup has an edge. That "
+               "is edge.py's question, and the forward test's.")
 
 
 def verdict(mc):
-    """One line from the numbers, see the docstring for the thresholds."""
+    """The odds in one plain line, with no lean drawn from them (see the docstring for why)."""
     pt, ps = mc["p_target"], mc["p_stop"]
-    lv = lean(mc)
-    if lv is None:
+    if pt + ps <= 0:
         return "No replay reached the target or the stop by %s: the price at %s decides every one." % (
             _until12(mc), _until12(mc))
-    d, share, even = lv
-    r = mc.get("r_at_target") or 1.0
-    one_r = abs(r - 1.0) < 0.005
-    if abs(d) < COIN_FLIP:
-        head = "Close to a coin flip" if one_r else "Close to break-even"
-    elif abs(d) < STRONG:
-        head = "Leans toward the target" if d > 0 else "Leans toward the stop"
-    else:
-        head = "Strongly toward the target" if d > 0 else "Strongly toward the stop"
-    odds = "target first %.1f %% vs stop first %.1f %%" % (100 * pt, 100 * ps)
-    if one_r:
-        return "%s: %s." % (head, odds)
-    return ("%s: at %gR the target has to come first in %.0f %% of the replays that hit one side; "
-            "it did in %.0f %% (%s)." % (head, round(r, 2), 100 * even, 100 * share, odds))
+    return ("Odds by %s: target first %.1f %%, stop first %.1f %%, neither %.1f %%."
+            % (_until12(mc), 100 * pt, 100 * ps, 100 * mc.get("p_neither", max(0.0, 1 - pt - ps))))
 
 
 def verdict_notes(mc):
-    """The lines printed right below the verdict, so nothing reads as one-sided."""
-    notes = []
-    pn = mc.get("p_neither", 0)
-    if pn > MANY_NEITHER and lean(mc) is not None:
-        notes.append("%.1f %% of the replays hit neither by %s; the price at %s decides those."
-                     % (100 * pn, _until12(mc), _until12(mc)))
-    lv = lean(mc)
-    avg = mc.get("avg_R")
-    if lv and abs(lv[0]) >= COIN_FLIP and avg is not None and avg != 0 and (avg > 0) != (lv[0] > 0):
-        notes.append("Average R is %+.3f all the same: the replays that hit neither pull it the other way." % avg)
-    return notes
+    """The line printed under the odds, every time: what they are not."""
+    return [NOT_AN_EDGE]
 
 
 def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=None, source="yahoo",

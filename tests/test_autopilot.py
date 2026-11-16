@@ -269,6 +269,58 @@ class Hardening(unittest.TestCase):
         self.assertFalse(os.path.exists(self.p["state"]))                  # it touched nothing
         self.assertIn("BUY", self.pass_at("09:45")[1])                       # free again
 
+    def test_the_broker_log_lock(self):
+        import fcntl
+        import threading
+        lock = os.path.join(self.d, "broker.lock")
+        # a pass that cannot get the broker log gives up cleanly and touches nothing; so does a ticket.py writer
+        old = autopilot.STATE_WAIT
+        autopilot.STATE_WAIT = 0.3
+        try:
+            with open(lock, "a+") as held:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                code, _, err = self.pass_at("09:45")
+                self.assertEqual(code, 1)
+                self.assertIn("the broker log is busy", err)
+                self.assertFalse(os.path.exists(self.p["state"]))
+                with self.assertRaises(ticket.TicketError):
+                    with ticket.state_lock(self.p["state"], wait=0.3):
+                        pass
+        finally:
+            autopilot.STATE_WAIT = old
+        # re-entrant in one thread: the autopilot calls ticket's writers while it holds the lock
+        with ticket.state_lock(self.p["state"]):
+            with ticket.state_lock(self.p["state"]):
+                pass
+        # the lost update this prevents: a fill recorded by hand while a pass runs. The pass read the log at its
+        # start and writes it at its end; the hand fill waits for it, then appends to what the pass wrote
+        waiting = threading.Event()
+        tk = autopilot.ticket
+
+        def by_hand():
+            with tk.state_lock(self.p["state"], wait=30, say=lambda m: waiting.set()):
+                tk.log_fill(self.p["state"], tk.parse_now("%s 09:45" % DAY), DAY, "TCS.NS", "buy", 1, 3000.0)
+
+        hand = threading.Thread(target=by_hand)
+        real = autopilot.one_pass
+
+        def one_pass(a, now):
+            hand.start()
+            waiting.wait(10)                 # the hand fill is blocked on the lock the pass holds
+            return real(a, now)
+        autopilot.one_pass = one_pass
+        try:
+            code, out, err = self.pass_at("09:45")
+        finally:
+            autopilot.one_pass = real
+        hand.join(30)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(waiting.is_set())
+        with open(self.p["state"]) as fh:
+            orders = json.load(fh)["orders"]
+        self.assertIn("BUY 32 INFY.NS", " | ".join(r.get("plain", "") for r in orders))
+        self.assertIn("BUY 1 TCS.NS at 3000.00", [r.get("plain") for r in orders])
+
     def test_the_heartbeat(self):
         self.pass_at("09:40")
         self.pass_at("09:45")

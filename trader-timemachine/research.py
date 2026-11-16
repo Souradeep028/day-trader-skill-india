@@ -37,6 +37,13 @@ And the selection itself is tested: before each fold, pick the hypothesis with t
 trade only it in that fold. If that loses, picking winners from the past did not work here, however good the
 best hypothesis looks on the whole.
 
+Burned sessions (--burned FILE, default burned.json next to this file): sessions that already shaped the
+hypotheses, or that the forward test is judging, are left out of every run, whatever the data. The shipped list
+burns 13 August 2026 onward: edge.py's grid picked the example hypotheses from 13 August to 6 November, and the
+forward test frozen on 10 November judges the frozen rule from then on. So the data to test them on has to come
+from before 13 August 2026. --include-burned puts those sessions back to explore, says IN-SAMPLE, and lets nothing
+pass. A frozen plan records the burned list it was frozen with.
+
 Holdout (--holdout-from DATE): sessions from DATE are left out. --final puts them in and records it in
 trader/holdout.json; the next --final says the holdout has already been seen and is no longer untouched.
 A past edge is not a promise. Not financial advice.
@@ -60,6 +67,7 @@ import archive  # noqa: E402  (bars -> the Yahoo chart format edge.py reads)
 
 HYPOTHESES = os.path.join(HERE, "hypotheses.example.json")
 HOLDOUT = os.path.join("trader", "holdout.json")
+BURNED = os.path.join(HERE, "burned.json")
 FOLD_SESSIONS = 60
 MIN_FOLD_TRADES = 10
 EPOCH = datetime.datetime(1970, 1, 1)
@@ -238,6 +246,38 @@ def member_on(members, sym, day):
     return any(f <= day and (t is None or day <= t) for f, t in members.get(sym, []))
 
 
+def read_burned(path):
+    """burned.json -> [(from, to or None, why)]: the sessions no test may count."""
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    rows = doc.get("windows", []) if isinstance(doc, dict) else doc
+    return windows_of(rows)
+
+
+def windows_of(rows):
+    out = []
+    for r in rows or []:
+        if isinstance(r, dict):
+            r = (r.get("from"), r.get("to"), r.get("why", ""))
+        frm, to, why = (list(r) + [None, None, ""])[:3]
+        if not frm:
+            raise ResearchError("a burned window needs a from date: %r" % (r,))
+        out.append((str(frm), str(to) if to else None, why or ""))
+    return out
+
+
+def burned_on(windows, day):
+    """The reason this session is burned, or None."""
+    for frm, to, why in windows or ():
+        if frm <= day and (to is None or day <= to):
+            return why or "burned"
+    return None
+
+
+def burned_text(windows):
+    return "; ".join("%s to %s: %s" % (f, t or "now", w) for f, t, w in windows)
+
+
 # ---------------------------------------------------------------- the test
 
 def parse_rule(text):
@@ -268,8 +308,11 @@ def summary(ts):
             "net": round(sum(t["pnl"] for t in ts), 2)}
 
 
-def run_research(charts, minutes, hypotheses, cfg=None, members=None, holdout_from=None, final=False, exclude=None):
-    """exclude: {(sym, date)} sessions the data checker refused (check_data)."""
+def run_research(charts, minutes, hypotheses, cfg=None, members=None, holdout_from=None, final=False, exclude=None,
+                 burned=None, include_burned=False):
+    """exclude: {(sym, date)} sessions the data checker refused (check_data).
+    burned: [(from, to or None, why)] sessions that shaped the hypotheses (read_burned): left out, unless
+    include_burned, which keeps them and marks the run in-sample, so that no hypothesis can pass."""
     c = {"max_loss": 500.0, "max_order": 75000.0, "slippage_ticks": 1, "no_entries_before": "09:30",
          "no_entries_after": "14:45", "flat_by": "15:10", "max_cost_pct": edge.MAX_COST_PCT,
          "slippage_bp": 3.0, "latency_min": 1, "fold_sessions": FOLD_SESSIONS, "bootstrap": edge.BOOTSTRAP}
@@ -294,10 +337,18 @@ def run_research(charts, minutes, hypotheses, cfg=None, members=None, holdout_fr
         dates |= {d for d, b in days.items() if all(k in b for k in range(c["flat_slot"] + 1))}
     if index_days:
         dates &= set(index_days)
+    burned = windows_of(burned)
+    burnt = sorted(d for d in dates if burned_on(burned, d))
+    if not include_burned:
+        dates -= set(burnt)
     held_out = sorted(d for d in dates if holdout_from and d >= holdout_from)
     if not final:
         dates -= set(held_out)
     if len(dates) < 20:
+        if burnt and not include_burned:
+            raise ResearchError("only %d full sessions to test on after leaving out %d burned ones (%s). The data "
+                                "has to come from before them; --include-burned explores them, but nothing can pass"
+                                % (len(dates), len(burnt), burned_text(burned)))
         raise ResearchError("only %d full sessions to test on" % len(dates))
     all_days = set(index_days)
     for d in per.values():
@@ -336,6 +387,8 @@ def run_research(charts, minutes, hypotheses, cfg=None, members=None, holdout_fr
             "most_folds": bool(len(judged) >= 3 and up >= 2.0 * len(judged) / 3),
             "beats_baseline": bool(pooled["avg_R"] is not None and base["avg_R"] is not None
                                    and pooled["avg_R"] > base["avg_R"]),
+            # sessions that picked the hypotheses cannot test them
+            "fresh_data": not (include_burned and burnt),
         }
         # break-even slippage: R falls about linearly with the bp, so the line through 0 bp and the tested bp
         r0 = summary(edge.rerun(prepared, rule, filt, dict(c, slippage_bp=0.0)))["avg_R"]
@@ -371,6 +424,8 @@ def run_research(charts, minutes, hypotheses, cfg=None, members=None, holdout_fr
            "from": min(dates), "to": max(dates), "data": "1-minute" if one_min else "5-minute",
            "survivorship": members is None, "hypotheses": n_h, "excluded_sessions": len(exclude or ()), "significance": float("%.3g" % bar),
            "folds": [{"from": f[0], "to": f[-1], "sessions": len(f)} for f in folds],
+           "burned": {"windows": [{"from": f, "to": t, "why": w} for f, t, w in burned], "sessions": len(burnt),
+                      "included": bool(include_burned and burnt)},
            "holdout": {"from": holdout_from, "sessions": len(held_out), "included": bool(final)} if holdout_from
            else None,
            "settings": {k: c[k] for k in ("slippage_bp", "latency_min", "slippage_ticks", "max_loss", "max_order",
@@ -395,6 +450,11 @@ def verdict(doc):
     if sel["trades"] and sel["avg_R"] is not None and sel["avg_R"] <= 0:
         tail.append("Picking the best hypothesis so far before each fold LOST (%+.3f R over %d trades): choosing "
                     "winners from the past did not carry forward here." % (sel["avg_R"], sel["trades"]))
+    bn = doc.get("burned") or {}
+    if bn.get("included"):
+        return " ".join(["IN-SAMPLE: %d of these sessions are burned (they shaped the hypotheses, or are the forward "
+                         "test's), so nothing here is a test and nothing passes. Explore with it; judge on data from "
+                         "before them." % bn["sessions"]] + tail)
     if passed:
         head = ("%d of %d hypotheses passed: after charges and %g bp of slippage they made money by more than luck, "
                 "in most folds, and beat the baseline: %s. Next: freeze one (forward.py start) and let the sequential "
@@ -421,6 +481,11 @@ def report(doc):
         h = doc["holdout"]
         L.append("Holdout from %s (%d sessions): %s." % (h["from"], h["sessions"], "INCLUDED (--final)"
                                                           if h["included"] else "left out, untouched"))
+    bn = doc.get("burned") or {}
+    if bn.get("sessions"):
+        L.append("Burned sessions (burned.json): %d %s: %s." % (
+            bn["sessions"], "INCLUDED (--include-burned): in-sample, nothing can pass" if bn["included"]
+            else "left out", burned_text(windows_of(bn["windows"]))))
     if doc.get("excluded_sessions"):
         L.append("Left out: %d stock-sessions the data check refused (check)." % doc["excluded_sessions"])
     L += ["", "%-30s %7s %8s %9s %9s %7s %9s  %s" % ("hypothesis", "trades", "avg R", "baseline", "break-even",
@@ -815,7 +880,7 @@ DECISION = ("If no hypothesis passes, with the measured slippage, the ₹1,00,00
             "gate judges it on paper before any live order.")
 
 
-def freeze_plan(path, hypotheses, settings, today, decision=None):
+def freeze_plan(path, hypotheses, settings, today, decision=None, burned=None):
     """Write the plan down before the data is seen: the hypotheses themselves, the fills, the folds, the
     holdout and the code that will judge them."""
     import hashlib
@@ -825,6 +890,7 @@ def freeze_plan(path, hypotheses, settings, today, decision=None):
     doc = {"created_by": "trader-timemachine research.py plan", "frozen": today, "hypotheses": hypotheses,
            "hypotheses_sha": hashlib.sha256(body).hexdigest()[:12], "settings": settings,
            "decision": decision or DECISION,
+           "burned": [{"from": f, "to": t, "why": w} for f, t, w in windows_of(burned)],
            "code": forward.code_version()}
     d = os.path.dirname(path)
     if d:
@@ -878,6 +944,9 @@ def main(argv=None):
     p.add_argument("--final", action="store_true", help="include the holdout (recorded in trader/holdout.json)")
     p.add_argument("--holdout-file", default=HOLDOUT)
     p.add_argument("--no-check", action="store_true", help="test every session, even those the data check refuses")
+    p.add_argument("--burned", default=BURNED, help="sessions no test may count (default: burned.json here)")
+    p.add_argument("--include-burned", action="store_true",
+                   help="put the burned sessions back to explore: the run is in-sample and nothing can pass")
     p.add_argument("--bootstrap", type=int, default=edge.BOOTSTRAP)
     p.add_argument("--json", action="store_true")
     p.add_argument("--write", nargs="?", const="trader/research.json", metavar="PATH")
@@ -917,6 +986,7 @@ def main(argv=None):
     p.add_argument("--holdout-from", metavar="DATE")
     p.add_argument("--file", default=PLAN)
     p.add_argument("--replace", action="store_true")
+    p.add_argument("--burned", default=BURNED, help="the burned sessions to record with the plan")
     a = ap.parse_args(argv)
     if a.cmd not in ("run", "check", "power", "bhavcopy", "plan", "budget", "crosscheck"):
         ap.print_help()
@@ -972,7 +1042,7 @@ def main(argv=None):
                 parse_rule(h["rule"])
             doc = freeze_plan(a.file, hyps, {"slippage_bp": a.slippage_bp, "latency_min": a.latency_min,
                                              "fold_sessions": a.fold_sessions, "holdout_from": a.holdout_from}, today,
-                              a.decision)
+                              a.decision, read_burned(a.burned))
             print("Frozen on %s: %d hypotheses (%s), %g bp, folds of %d sessions, holdout from %s, code %s. Run with "
                   "--plan %s; nothing in it can change without a new, dated plan." % (
                       today, len(hyps), doc["hypotheses_sha"], a.slippage_bp, a.fold_sessions,
@@ -986,6 +1056,7 @@ def main(argv=None):
             a.slippage_bp, a.latency_min, a.fold_sessions = st["slippage_bp"], st["latency_min"], st["fold_sessions"]
             a.holdout_from = st.get("holdout_from")
             notes.append("Plan frozen %s (%s): its hypotheses and settings." % (plan["frozen"], plan["hypotheses_sha"]))
+            burned = windows_of(plan["burned"]) if "burned" in plan else read_burned(a.burned)
             if plan.get("decision"):
                 notes.append("What you decided to do with the answer, before seeing it: " + plan["decision"])
         else:
@@ -995,6 +1066,7 @@ def main(argv=None):
                 hyps = hyps.get("hypotheses", [])
             notes.append("No frozen plan (research.py plan): fine for exploring, but a result is only a test if the "
                          "hypotheses were written down before the data was seen.")
+            burned = read_burned(a.burned)
         charts, minutes, _ = load_folder(a.data, [s.strip().upper() for s in a.symbols.split(",")]
                                          if a.symbols else None)
         members = read_members(a.members) if a.members else None
@@ -1005,7 +1077,7 @@ def main(argv=None):
         doc = run_research(charts, minutes, hyps, {"slippage_bp": a.slippage_bp, "latency_min": a.latency_min,
                                                    "fold_sessions": a.fold_sessions, "max_loss": a.max_loss,
                                                    "bootstrap": a.bootstrap},
-                           members, a.holdout_from, a.final, exclude)
+                           members, a.holdout_from, a.final, exclude, burned, a.include_burned)
     except (ResearchError, edge.EdgeError, OSError, ValueError, KeyError) as e:
         print("research.py: %s" % e, file=sys.stderr)
         return 1
