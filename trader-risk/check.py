@@ -453,12 +453,20 @@ def placed_today(state, today):
 
 # ---------------------------------------------------------------- the check
 
+def fills_by_time(state):
+    """The filled records, each day's in the order they filled ("at"; stable for records without one). The log is
+    append-only and a fill can arrive late (ticket.py sync logs Kite's trades after a fill typed in by hand), so
+    pairing in file order could match an exit before its entry."""
+    rows = [r for r in (state or {}).get("orders", []) if r.get("status") == "filled"]
+    return sorted(rows, key=lambda r: (rec_day(r), str(r.get("at") or "")))
+
+
 def losing_streak(state, today, rates=None):
     """Losing trades in a row at the end of today: each symbol's fills paired back to flat, P&L after
     charges, in the order they closed. (paper and live alike: a loss is a loss)"""
     per, closed = {}, []
-    for r in (state or {}).get("orders", []):
-        if r.get("status") != "filled" or rec_day(r) != today:
+    for r in fills_by_time(state):
+        if rec_day(r) != today:
             continue
         sym = str(r.get("symbol", "")).upper()
         d = per.setdefault(sym, {"pos": 0.0, "cash": 0.0})
@@ -480,9 +488,9 @@ def closed_trades(state, date_from, date_to, rates=None):
     """[(date, symbol, net P&L after charges)] for every round trip closed between the two dates: each day's
     fills per symbol paired back to flat (paper and live alike)."""
     per, out = {}, []
-    for r in (state or {}).get("orders", []):
+    for r in fills_by_time(state):
         d = rec_day(r)
-        if r.get("status") != "filled" or not date_from <= d <= date_to:
+        if not date_from <= d <= date_to:
             continue
         sym = str(r.get("symbol", "")).upper()
         x = per.setdefault((d, sym), {"pos": 0.0, "cash": 0.0})

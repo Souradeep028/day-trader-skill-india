@@ -47,6 +47,7 @@ python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol INFY.NS --side sell --qty 
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol INFY.NS --qty 41
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" reconcile --paper        # every position has its stop, nothing orphaned
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" reconcile --positions pos.json --broker-orders ord.json   # live
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" sync --trades trades.json   # live: Kite's get_trades into the log, once each
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" log                      # today's decisions and P&L after charges
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" journal --paper          # every closed trade: win rate, R, P&L
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" tax --fy FY27 --csv trader/tax-FY27.csv   # the year, as a worksheet
@@ -595,8 +596,12 @@ position still open at about 3:20 PM, for 50 rupees plus GST an order: the
 - Paper: `ticket.py paper-check` after each `alerts.py check` fills the stop
   or the target when the price gets there.
 - Live: when the stop-loss or the target fills, cancel the other one, then
-  record the fill: `ticket.py fill --symbol INFY.NS --side sell --qty 41
-  --price 1149.80`.
+  log the fills: call Kite's read-only `get_trades`, save the answer as JSON,
+  and run `ticket.py sync --trades trades.json`. It logs each Kite trade once
+  (by trade id, one record per order) in the broker log and the portfolio, so
+  trader-risk's daily, weekly, streak and drawdown limits count it; fills
+  already typed in with `ticket.py fill` or `result` are not counted twice.
+  With the guardian armed, every pass syncs by itself.
 - By `flat_by` (15:10 IST), anything still open gets closed:
   1. Live: ask Kite how many shares are held: `get_positions` (read only).
   2. `ticket.py flatten --symbol INFY.NS --qty 41` writes a market sell to

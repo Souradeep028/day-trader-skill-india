@@ -10,6 +10,13 @@ Fixes from a review of the research and the paper autopilot. A forward test runn
 paper fills get worse by the test's own slippage, so start a new test (`forward.py start --replace`) rather than
 mixing the two.
 
+- **Live fills reach the risk check.** The daily, weekly, losing-streak and drawdown limits read fills from
+  `trader/state/broker.json`, and on a live account those only got there when typed in by hand, so a stop the
+  guardian placed could fill and the limits never saw the loss. `ticket.py sync --trades <get_trades JSON>` logs
+  each Kite trade once (by trade id; the trades of one order become one record, as Zerodha caps brokerage per
+  order) in the log and the portfolio; fills already typed in are matched, not doubled. The guardian syncs after
+  every pass on a live account (`--no-sync` to turn it off). The risk check and the journal now pair each day's
+  fills in the order they filled, so a fill logged late cannot be paired as the wrong side.
 - **The live guardian** (`trader-broker/guardian.py`). Kite has no bracket order for stocks, so a live entry
   had no stop at the broker until someone placed it, and nothing cancelled the stop when the target filled. The
   guardian, armed by the user (`run --arm`, live accounts only), reads Kite every 5 seconds and may only protect or
