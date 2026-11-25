@@ -52,7 +52,9 @@ What blocks an entry (on top):
   charges       the round trip's charges at the stop over max_charges_pct_of_risk
                 (15) % of the loss on price: a stop too close for the charges
   daily loss    the max losses at the stops of today's entries plus this one
-                over max_daily_loss_inr (win or lose, each counts in full)
+                over max_daily_loss_inr (win or lose, each counts in full); a
+                trade that lost MORE than planned (a stop that slipped) counts
+                its realised loss after charges instead
   trades        max_trades_per_day entries already placed today
   live          on a live account ("paper": false): no PASSED forward test (trader-broker's
                 forward.py, trader/forward.json) on the shadow replay AND your paper
@@ -501,6 +503,36 @@ def open_today(state, today):
     return {k: v for k, v in pos.items() if abs(v) > 1e-9}
 
 
+def day_loss_used(entries_today, state, today, rates=None):
+    """(rupees, warnings): what today's trades count against max_daily_loss_inr. Each symbol counts the larger of
+    its entries' planned max losses (win or lose, each counts in full) and what it really lost: the realised loss
+    of its round trips closed today, after charges, plus the planned max loss of a position still open. A stop
+    that slipped past its plan counts what it cost, not what was planned."""
+    planned, last, warns = {}, {}, []
+    for r in entries_today:
+        sym = str(r.get("symbol", "")).upper()
+        ml = _f(r.get("max_loss"))
+        if ml is None:
+            warns.append("an entry placed today (%s %s) has no max loss in the log; only its realised loss counts "
+                         "in the daily loss" % (r.get("side"), r.get("symbol")))
+            continue
+        planned[sym] = planned.get(sym, 0.0) + ml
+        last[sym] = ml
+    realised = {}
+    for _d, sym, net in closed_trades(state, today, today, rates):
+        realised[sym] = realised.get(sym, 0.0) + max(-net, 0.0)
+    still_open = open_today(state, today)
+    total = 0.0
+    for sym in sorted(set(planned) | set(realised)):
+        p = planned.get(sym, 0.0)
+        actual = realised.get(sym, 0.0) + (last.get(sym, 0.0) if sym in still_open else 0.0)
+        if actual > p + CENT:
+            warns.append("%s lost %s today against %s planned (a stop that slipped, or a fill past the plan): the "
+                         "daily loss counts %s" % (sym, money(realised.get(sym, 0.0)), money(p), money(actual)))
+        total += max(p, actual)
+    return round(total, 2), warns
+
+
 def drawdown(state, start_equity, rates=None):
     """(peak, equity, percent under the peak) from every round trip closed so far, in order, after charges,
     starting from start_equity (the budget). Each day's fills per symbol are paired back to flat."""
@@ -748,14 +780,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     done_today = placed_today(state, today)
     count_today = len(done_today)
     entries_today = [r for r in done_today if rec_is_entry(r)]
-    loss_today = 0.0
-    for r in entries_today:
-        ml = _f(r.get("max_loss"))
-        if ml is None:
-            top_warn.append("an entry placed today (%s %s) has no max loss in the log; not counted in "
-                            "the daily loss" % (r.get("side"), r.get("symbol")))
-        else:
-            loss_today += ml
+    loss_today, loss_warns = day_loss_used(entries_today, state, today, c.get("charges"))
+    top_warn.extend(loss_warns)
     placed_keys = {(str(r.get("symbol", "")).upper(), r.get("side")) for r in done_today}
     win_reasons, win_warns = window_check(now_ist, c)
     halt = stop_reason() if stop is None else (stop or None)

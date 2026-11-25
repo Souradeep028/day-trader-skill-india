@@ -805,6 +805,40 @@ class LossLimits(unittest.TestCase):
         self.assertIn("direction: ₹600 already at risk in open longs today, plus ₹489 = ₹1,089", reasons(res))
         self.assertNotIn("direction", reasons(self.one({"orders": [placed, buy, sell]})))   # closed: off the hook
 
+    def test_a_slipped_stop_counts_its_real_loss_in_the_daily_limit(self):
+        # planned 500, but the stop slipped: 100 bought at 100, sold at 89 = -1,100 less charges, over 1,000 more than
+        # planned. The daily check used to count the 500 plan: 500 + 489 = 989 passed a 1,500 limit
+        placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
+                  "max_loss": 500.0}
+        st = {"orders": [placed] + self.fills(TODAY, 100.0, 89.0)}
+        lost = -check.closed_trades(st, TODAY, TODAY)[0][2]
+        self.assertGreater(lost, 1100)
+        res = self.one(st)
+        self.assertEqual(res["today"]["loss_at_risk"], round(lost, 2))
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("daily loss: %s already at risk today" % check.money(round(lost, 2)), reasons(res))
+        self.assertTrue(any(w.startswith("ABC.NS lost %s today against ₹500 planned" % check.money(round(lost, 2)))
+                            for w in res["warnings"]))
+
+    def test_a_win_or_a_loss_inside_the_plan_still_counts_the_plan(self):
+        placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
+                  "max_loss": 500.0}
+        for sell in (130.0, 97.0):                                     # a win, and a loss of about 300
+            res = self.one({"orders": [placed] + self.fills(TODAY, 100.0, sell)})
+            self.assertEqual(res["today"]["loss_at_risk"], 500.0)
+            self.assertEqual(verdicts(res), ["PASS"])
+
+    def test_an_open_position_after_a_slipped_round_trip(self):
+        # ABC slipped (-1,100 odd) and was bought again (planned 200, still open): both count
+        placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
+                  "max_loss": 500.0}
+        again = dict(placed, max_loss=200.0)
+        rebuy = {"status": "filled", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "qty": "10", "price": 90.0}
+        st = {"orders": [placed, again] + self.fills(TODAY, 100.0, 89.0) + [rebuy]}
+        lost = -check.closed_trades(st, TODAY, TODAY)[0][2]
+        used, _ = check.day_loss_used([placed, again], st, TODAY)
+        self.assertEqual(used, round(lost + 200.0, 2))
+
 
 class Calendar(unittest.TestCase):
     def one(self, now=NOW, events=None, prices=None, prev=None, times=None, **over):

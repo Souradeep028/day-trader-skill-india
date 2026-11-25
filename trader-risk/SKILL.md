@@ -86,7 +86,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | loss | (entries) qty x (entry minus stop) plus the round trip's charges over `max_loss_per_trade_inr` |
 | reward:risk | (entries) the win at the target after charges / the loss at the stop with charges, under `min_reward_risk` |
 | charges | (entries) the round trip's charges at the stop over `max_charges_pct_of_risk` (15) % of the loss on price: the stop is too close for the charges, and it says how far it needs to be |
-| daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_inr` |
+| daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_inr`; a trade that lost more than planned (a slipped stop) counts its realised loss |
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) before `no_entries_before` (09:30) or after `no_entries_after` (14:45), or the NSE is closed |
 | band | (entries) a buy within 1% of the upper price band, or a short within 1% of the lower one: the previous close plus or minus the stock's band (2, 5, 10 or 20%) from `trader/bands.json` |

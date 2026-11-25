@@ -10,6 +10,10 @@ Fixes from a review of the research and the paper autopilot. A forward test runn
 paper fills get worse by the test's own slippage, so start a new test (`forward.py start --replace`) rather than
 mixing the two.
 
+- **The daily loss limit counts what a trade really lost.** It added up today's entries' PLANNED max losses only,
+  so a stop that slipped past its plan went uncounted: realised -1,132 on a 500 plan left room for another entry
+  under a 1,500 limit. Each symbol now counts the larger of its planned max losses and its realised loss today
+  after charges (plus the planned max loss of a position still open), with a warning naming the slip.
 - **Paper fills like the shadow.** The autopilot charged no basis points of slippage: entries at Yahoo's last trade
   and stops at the stop, a tick worse. Every paper market fill (entry, stop, flat-by) now pays the frozen test's
   `slippage_bp` (3 by default) and a tick, exactly as the shadow replay does, so paper is never kinder than the
