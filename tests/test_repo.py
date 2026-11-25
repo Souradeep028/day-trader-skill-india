@@ -186,10 +186,13 @@ class SharedTables(unittest.TestCase):
         for m in mods[1:]:
             self.assertEqual(m.CHARGES, mods[0].CHARGES, m.__name__)
 
-    def test_ci_runs_the_tests(self):
-        with open(os.path.join(ROOT, ".github", "workflows", "tests.yml")) as fh:
-            wf = fh.read()
-        self.assertIn("python -m unittest discover -s tests", wf)
+    def test_the_docker_build_is_the_test_gate(self):
+        # no hosted CI: the image runs the whole suite before it builds
+        with open(os.path.join(ROOT, "docker", "Dockerfile")) as fh:
+            df = fh.read()
+        self.assertIn("RUN python3 -m unittest discover -s tests", df)
+        self.assertIn("COPY --from=test /tmp/tests-passed", df)
+        self.assertFalse(os.path.isdir(os.path.join(ROOT, ".github", "workflows")))
 
 
 if __name__ == "__main__":

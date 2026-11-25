@@ -212,8 +212,8 @@ python3 congress-trades/trader-pelosi/ptr.py index --member pelosi     # her PTR
 python3 -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs the same tests on every push, on Python 3.8 to 3.13 and
-on macOS (`.github/workflows/tests.yml`).
+Run them before every merge: the project has no hosted CI. The Docker image
+runs the same suite as its first build step and does not build if one fails.
 
 ## One command, a health check and an MCP server
 
@@ -257,10 +257,9 @@ broker's charges live once, in `core/nse.json` and `core/brokers/`, and every
 skill reads them from there. A new year's holidays or a charges change is one
 edit, and it changes the code fingerprint, so a forward test shows it.
 
-**Versions.** Releases are tagged (`v3.0.0`, see CHANGELOG.md). A tag runs
-the tests, then builds the Docker image for amd64 and arm64 and publishes it
-as `ghcr.io/souradeep028/day-trader-india:<version>`. Pin a version for the
-daily run (below) and upgrade between forward tests, never during one.
+**Versions.** Releases are tagged (`v3.0.0`, see CHANGELOG.md). Pin a
+version for the daily run by building the image from its tag (below), and
+upgrade between forward tests, never during one.
 
 The tests run offline, on fixtures cut from real data: Infosys's 5-minute bars
 for the 60 sessions to 6 November 2026, the Nifty 50's 5-minute and daily
@@ -422,11 +421,12 @@ docker compose -f docker/compose.yaml run --rm trader now daily   # one job righ
 docker compose -f docker/compose.yaml exec trader trader doctor   # the health check, inside the container
 ```
 
-Or a released image, no build, pinned to a version (amd64, or arm64 for a
-Raspberry Pi 4 or 5 or an Apple-silicon Mac that stays on all day):
+Or pinned to a release: check out its tag and build from it (the build runs
+the tests first; it works on amd64 and on arm64, such as a Raspberry Pi 4 or
+5 or an Apple-silicon Mac that stays on all day):
 
 ```bash
-TRADER_VERSION=3.0.0 docker compose -f docker/compose.release.yaml up -d
+git checkout v3.0.0 && docker compose -f docker/compose.yaml up -d --build
 ```
 
 Freeze a rule first (`forward.py start`, run in the container with
@@ -605,7 +605,7 @@ core/               trader.py (one command), doctor.py, mcp_server.py, package.p
                     nse.json (holidays, ticks), brokers/zerodha.json (charges): shared by every skill
 congress-trades/    the second plugin: trader-pelosi/ (SKILL.md, ptr.py), US only
 trader/             nifty50.txt, nifty100.txt, banknifty.txt, sectors.json (NSE's index lists and industries)
-docker/             Dockerfile, compose.yaml (build here), compose.release.yaml (a pinned release)
+docker/             Dockerfile (runs the tests before it builds), compose.yaml
 tests/              unittest suite + offline fixtures
 ```
 

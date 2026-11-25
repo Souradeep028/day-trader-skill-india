@@ -1,10 +1,14 @@
 # Changelog
 
-Versions follow semver. A release is a git tag `v<version>`; the tag builds and publishes the Docker image
-`ghcr.io/souradeep028/day-trader-india:<version>` (amd64 and arm64) once the tests pass. Pin a version for the
-daily run and upgrade between forward tests, never during one: the code fingerprint shows a mid-test change.
+Versions follow semver. A release is a git tag `v<version>`; build the Docker image from the tag to pin it (the
+build runs the tests first). Upgrade between forward tests, never during one: the code fingerprint shows a
+mid-test change.
 
 ## Unreleased
+
+- **No hosted CI.** The GitHub Actions workflows (the test matrix and the tag-built GHCR image) and
+  `docker/compose.release.yaml` are removed. The tests run locally before each merge, and the Docker image still
+  runs the whole suite before it builds; pin a release by building from its tag.
 
 Fixes from a review of the research and the paper autopilot. A forward test running now sees a code change:
 paper fills get worse by the test's own slippage, so start a new test (`forward.py start --replace`) rather than
