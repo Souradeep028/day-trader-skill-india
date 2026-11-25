@@ -23,9 +23,12 @@ Adapted for India from Jake Schincariol's
 the NSE calendar, ticks, price bands, charges, Kite orders, paper trading,
 Indian data sources and the tests on NSE data are this fork's.
 
-And no trade goes through until you say yes. Nothing in this pack can place
-an order on its own. Paper trading is the default, and on paper the pack is
-its own broker: nothing leaves your computer.
+And no trade goes through until you say yes. Nothing in this pack can open
+a position on its own. The one exception to "on its own" is the live
+guardian (`trader-broker/guardian.py`), which you arm yourself: it can only
+put a stop on, trim, or close a live intraday position that is already open.
+Paper trading is the default, and on paper the pack is its own broker:
+nothing leaves your computer.
 
 > **Looking for the original Trader skill?** Copy an investor's 13F, the
 > stock screener, tax lots and rebalancing live in
