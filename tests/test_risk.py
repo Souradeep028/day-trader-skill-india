@@ -924,11 +924,22 @@ def live_trades(results, start="2026-11-06"):
     return {"orders": orders}
 
 
+def live_inputs(now, **drop):
+    """Everything a live entry needs checked, fresh at now: prices, bands, sectors, surveillance."""
+    t = at(now)
+    out = {"prices": {"INFY.NS": 1160.5, "^NSEI": 25800.0}, "price_times": {"INFY.NS": t, "^NSEI": t},
+           "prev_close": {"INFY.NS": 1150.0, "^NSEI": 25750.0}, "bands": {"INFY.NS": None},
+           "sectors": SECTORS, "surveillance": {"symbols": {}, "updated": now[:10]}}
+    for k, v in drop.items():
+        out[k] = v
+    return out
+
+
 class LiveLock(unittest.TestCase):
     def one(self, forward=None, state=None, now="2026-12-15 10:00", **over):
         c = dict(cfg(**over))
         c["paper"] = over.get("paper", False)
-        return check.check([infy()], c, now=at(now), forward=forward, state=state, surveillance={"symbols": {}})
+        return check.check([infy()], c, now=at(now), forward=forward, state=state, **live_inputs(now))
 
     def test_locked_without_a_passed_forward_test(self):
         r = self.one()
@@ -972,6 +983,44 @@ class LiveLock(unittest.TestCase):
         self.assertIn("fell 6.0 R from their best, past 5 R", deep["stop"])
         r = self.one(fw, live_trades([-1.0] * 6, "2026-12-10"), max_loss_per_trade_inr=2000)
         self.assertIn("live: live stop: the live trades fell 6.0 R from their best", reasons(r))
+
+
+class LiveFailsClosed(unittest.TestCase):
+    """Live, a check that cannot run blocks the entry; on paper it stays a warning."""
+    NOW = "2026-12-15 10:00"
+
+    def run_with(self, paper=False, **drop):
+        c = cfg(paper=paper, max_loss_per_trade_inr=2000)
+        return check.check([infy()], c, now=at(self.NOW), forward=passed("2026-12-10"),
+                           **live_inputs(self.NOW, **drop))
+
+    def test_everything_there_passes(self):
+        self.assertEqual(verdicts(self.run_with()), ["PASS"])
+
+    def test_each_missing_input_blocks_live_and_warns_on_paper(self):
+        stale = at(self.NOW) - datetime.timedelta(minutes=30)
+        cases = {
+            "no trader/sectors.json": dict(sectors=None),
+            "INFY.NS is not in trader/sectors.json": dict(sectors={"TCS.NS": "Information Technology"}),
+            "no trader/surveillance.json": dict(surveillance=None),
+            "trader/surveillance.json is 14 days old": dict(surveillance={"symbols": {}, "updated": "2026-12-01"}),
+            "the price band of INFY.NS is unknown": dict(bands={"TCS.NS": 20}),
+            "no Nifty 50 price and previous close": dict(prices={"INFY.NS": 1160.5}),
+            "no INFY.NS price under 15 minutes old": dict(price_times={"INFY.NS": stale, "^NSEI": at(self.NOW)}),
+        }
+        for why, drop in cases.items():
+            with self.subTest(why):
+                live = self.run_with(**drop)
+                self.assertEqual(verdicts(live), ["BLOCK"])
+                self.assertIn("live: " + why, reasons(live))
+                self.assertEqual(verdicts(self.run_with(paper=True, **drop)), ["PASS"])
+
+    def test_exits_are_never_blocked_by_missing_inputs(self):
+        sell = dict(infy(), side="sell", order_class=None, take_profit_limit_price=None, stop_loss_stop_price=None)
+        port = {"cash": 50000, "positions": [{"ticker": "INFY.NS", "shares": 41}]}
+        res = check.check([sell], cfg(paper=False), now=at(self.NOW), portfolio=port,
+                          **live_inputs(self.NOW, sectors=None, surveillance=None, bands=None))
+        self.assertEqual(verdicts(res), ["PASS"])
 
 
 class HeldLimits(unittest.TestCase):

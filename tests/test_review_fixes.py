@@ -16,7 +16,7 @@ EDGE = os.path.join(FIX, "trader-timemachine", "edge")
 FIVE = ("INFY.NS", "TCS.NS", "HDFCBANK.NS", "RELIANCE.NS", "SBIN.NS")
 
 
-def test_doc(rules=None):
+def forward_doc(rules=None):
     return {"rule": {"setup": "orb30", "side": "short", "stop": "tight", "target_r": 2.0}, "filter": "none",
             "started": "2026-11-10", "expected": {"avg_R": 0.076, "low": -0.145},
             "stop_rules": rules or forward.sequential_rules(), "signals": []}
@@ -31,7 +31,7 @@ def trades(rs):
 
 class SequentialGate(unittest.TestCase):
     def verdict(self, rs, **rules):
-        return forward.evaluate(test_doc(forward.sequential_rules(**rules)), trades(rs))
+        return forward.evaluate(forward_doc(forward.sequential_rules(**rules)), trades(rs))
 
     def test_no_pass_before_300_and_then_only_when_the_whole_range_is_above_zero(self):
         good = [1.6, -1.0] * 150                       # +0.30 R a trade, SD 1.30: 2.5 SE = 0.19
@@ -66,8 +66,8 @@ class SequentialGate(unittest.TestCase):
         spread = trades([1.6, -1.0] * 150)
         together = [{"date": "d%03d" % (i // 3), "symbol": "X%d.NS" % i, "R": r, "net": r * 400}
                     for i, r in enumerate(rs)]
-        self.assertEqual(forward.evaluate(test_doc(), spread)["state"], "passed")
-        res = forward.evaluate(test_doc(), together)
+        self.assertEqual(forward.evaluate(forward_doc(), spread)["state"], "passed")
+        res = forward.evaluate(forward_doc(), together)
         self.assertEqual(res["state"], "running")
         self.assertAlmostEqual(forward.standard_error(rs, [t["date"] for t in together]), 0.1307, places=3)
         self.assertAlmostEqual(forward.standard_error(rs), 0.0752, places=3)
@@ -82,7 +82,7 @@ class SequentialGate(unittest.TestCase):
         self.assertIn("past the 30 R limit", res["verdict"])
 
     def test_old_tests_keep_their_40_trade_verdict(self):
-        res = forward.evaluate(test_doc({"min_trades": 40, "max_drawdown_R": 8.0}), trades([1.6, -1.0] * 20))
+        res = forward.evaluate(forward_doc({"min_trades": 40, "max_drawdown_R": 8.0}), trades([1.6, -1.0] * 20))
         self.assertEqual((res["state"], res["gate"]), ("passed", "legacy-40"))
 
 
@@ -103,7 +103,7 @@ class LiveLock(unittest.TestCase):
         self.assertEqual(check.live_gate(self.fw("sequential"), self.TODAY), (True, ""))
 
     def test_record_keeps_the_gate(self):
-        test = test_doc()
+        test = forward_doc()
         res = forward.evaluate(test, trades([1.6, -1.0] * 150))
         forward.record(test, "shadow", res, self.TODAY)
         self.assertEqual(test["verdicts"]["shadow"]["gate"], "sequential")
@@ -199,7 +199,7 @@ class ShadowFills(unittest.TestCase):
         charts = {s: edge.read_offline(EDGE, s) for s in FIVE}
         idx, vix = edge.read_offline(EDGE, edge.INDEX), edge.read_offline(EDGE, edge.VIX)
         days = sorted(edge.sessions_of(idx, edge.INDEX))[-20:]
-        old = dict(test_doc(), filter="none")
+        old = dict(forward_doc(), filter="none")
         new = dict(old, fills={"model": "realistic", "slippage_bp": 3.0})
         a = forward.shadow_trades(old, charts, idx, vix, days)
         b = forward.shadow_trades(new, charts, idx, vix, days)

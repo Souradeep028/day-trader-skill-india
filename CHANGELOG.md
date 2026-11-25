@@ -14,6 +14,14 @@ mixing the two.
   so a stop that slipped past its plan went uncounted: realised -1,132 on a 500 plan left room for another entry
   under a 1,500 limit. Each symbol now counts the larger of its planned max losses and its realised loss today
   after charges (plus the planned max loss of a position still open), with a warning naming the slip.
+- **Live fails closed.** On a live account, a check that cannot run blocked nothing: no `trader/sectors.json`, no
+  or a stale `trader/surveillance.json`, an unknown price band, no Nifty price, or no fresh price for a market order
+  only printed a warning. Each now blocks a live entry (exits are never blocked); paper keeps the warnings.
+- **One answer for the copied arithmetic.** `tests/test_parity.py` holds the five copies of Zerodha's charges, the
+  four round trips, the two order fingerprints (trader-broker only shows an order trader-risk passed by its
+  fingerprint) and the tick sizes and rounding to one result, so a copy cannot drift unnoticed.
+- **Tests run clean under pytest too:** the repo-layout test ignores `.pytest_cache` and the like, and a helper
+  pytest took for a test is renamed.
 - **Paper fills like the shadow.** The autopilot charged no basis points of slippage: entries at Yahoo's last trade
   and stops at the stop, a tick worse. Every paper market fill (entry, stop, flat-by) now pays the frozen test's
   `slippage_bp` (3 by default) and a tick, exactly as the shadow replay does, so paper is never kinder than the

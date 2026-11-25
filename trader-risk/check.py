@@ -61,7 +61,11 @@ What blocks an entry (on top):
                 trades, both within 30 days; or the live stop (a 20-trade live block
                 under the backtest's low end, or the live trades 5 R under their best).
                 Locked in the code (LIVE_NEEDS_FORWARD_PASS), not the config. Live size
-                ramps 25 %, 50 %, 100 % of the max loss over good 20-trade blocks
+                ramps 25 %, 50 %, 100 % of the max loss over good 20-trade blocks.
+                Live also fails closed: an input a check needs that is missing or stale
+                (trader/sectors.json, trader/surveillance.json or one over 7 days old,
+                the stock's price band, Nifty's price and previous close, a fresh price
+                for a market order) blocks the entry; on paper it is a warning
   held limits   the day's first check records the limits (trader/state/limits.json);
                 a limit loosened later that day keeps the morning's stricter value
                 until the next day, with a warning. Tightening applies at once
@@ -794,8 +798,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         sec = sectors.get(str(r.get("symbol", "")).upper())
         if sec:
             sector_count[sec] = sector_count.get(sec, 0) + 1
+    is_live = not c.get("paper", True)
+    blind = []       # live only: a safety input is missing, so every new entry is blocked instead of unchecked
     if c.get("max_entries_per_sector") and not sectors:
-        top_warn.append("no trader/sectors.json: the sector cap (max_entries_per_sector) is off")
+        if is_live:
+            blind.append("no trader/sectors.json, so the sector cap cannot be checked (scan.py sectors)")
+        else:
+            top_warn.append("no trader/sectors.json: the sector cap (max_entries_per_sector) is off")
     day_warn = []
     today_d = datetime.date.fromisoformat(today)
     day_before = previous_trading_day(today_d).isoformat()
@@ -803,14 +812,21 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     surv = (surveillance or {}).get("symbols") or {}
     surv = {str(k).upper(): v for k, v in surv.items()}
     if c.get("block_surveillance") and surveillance is None:
-        day_warn.append("no trader/surveillance.json: NSE's ASM and GSM lists are not checked "
-                        "(trader-scanner: scan.py surveillance)")
+        if is_live:
+            blind.append("no trader/surveillance.json, so NSE's ASM and GSM lists cannot be checked "
+                         "(scan.py surveillance)")
+        else:
+            day_warn.append("no trader/surveillance.json: NSE's ASM and GSM lists are not checked "
+                            "(trader-scanner: scan.py surveillance)")
     elif surveillance and surveillance.get("updated"):
         try:
             age = (today_d - datetime.date.fromisoformat(str(surveillance["updated"])[:10])).days
         except ValueError:
             age = None
-        if age is not None and age > STALE_SURVEILLANCE_DAYS:
+        if age is not None and age > STALE_SURVEILLANCE_DAYS and is_live and c.get("block_surveillance"):
+            blind.append("trader/surveillance.json is %d days old, over %d: refresh it (scan.py surveillance)"
+                         % (age, STALE_SURVEILLANCE_DAYS))
+        elif age is not None and age > STALE_SURVEILLANCE_DAYS:
             day_warn.append("trader/surveillance.json is %d days old: NSE changes the ASM and GSM lists every "
                             "week, refresh it (scan.py surveillance)" % age)
     is_expiry = expiry_day(today_d)
@@ -857,6 +873,11 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     elif cap_idx and prices and INDEX not in prices:
         day_warn.append("no Nifty 50 price in trader/prices.json: the index-move check is off "
                         "(alerts.py quote ^NSEI INFY.NS --write)")
+    if cap_idx and is_live and (not n_px or not n_pc or (price_times is not None and (
+            price_times.get(INDEX) is None
+            or (now_utc - price_times[INDEX]).total_seconds() > FRESH_MINUTES * 60))):
+        blind.append("no Nifty 50 price and previous close under %d minutes old, so the index-move check cannot "
+                     "run (alerts.py quote ^NSEI --write)" % FRESH_MINUTES)
     rates = c.get("charges") or {}
     bands = {str(k).upper(): v for k, v in (bands or {}).items()}
     prev_close = {str(k).upper(): _f(v) for k, v in (prev_close or {}).items() if _f(v)}
@@ -868,13 +889,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     seen = set()
     results = []
     batch_entries, batch_loss = 0, 0.0
-    live = not c.get("paper", True)
-    if live:
+    if is_live:
         top_warn.append("LIVE account (\"paper\": false): these orders use real money")
     top_warn.extend(held_warns)
     gate_open, gate_why = (True, "")
     ramp = None
-    if live and LIVE_NEEDS_FORWARD_PASS:
+    if is_live and LIVE_NEEDS_FORWARD_PASS:
         gate_open, gate_why = live_gate(forward, today)
         if gate_open:
             ramp = live_ramp(forward, state, today, c.get("charges"))
@@ -1223,8 +1243,19 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     warns.append("the stop %s is over the upper price band %s: if %s locks at the band, the stop "
                                  "cannot fill and the short cannot be bought back until it reopens"
                                  % (_p(stop), _p(upper), sym))
-            elif bands and sym not in bands:
+            elif bands and sym not in bands and not is_live:
                 warns.append("%s is not in trader/bands.json: its price band is unknown (run scan.py universe)" % sym)
+            if is_live:
+                # a live entry is never placed with a safety check silently off: missing data blocks it
+                later.extend("live: " + b for b in blind)
+                if sym not in bands:
+                    later.append("live: the price band of %s is unknown (trader/bands.json: scan.py universe)" % sym)
+                if cap_sec and sectors and not sec:
+                    later.append("live: %s is not in trader/sectors.json, so the sector cap cannot be checked" % sym)
+                if typ == "market" and live is None:
+                    later.append("live: no %s price under %d minutes old for a market order: the risk would be "
+                                 "measured from the plan alone (alerts.py quote %s --write)"
+                                 % (sym, FRESH_MINUTES, sym))
             if stop and ref and risk_ps:
                 info.append("entry %s (%s), stop %s, target %s: risk %s a share"
                             % (_p(ref), REF_WORDS.get(ref_from, ref_from), _p(stop),

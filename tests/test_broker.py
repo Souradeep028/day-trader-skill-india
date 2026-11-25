@@ -161,6 +161,19 @@ class FlowBase(unittest.TestCase):
             json.dump({"expected": {"avg_R": 0.08, "low": -0.1}, "verdicts": {
                 "shadow": {"state": "passed", "date": TODAY, "passed_on": TODAY, "gate": "sequential"},
                 "paper": {"state": "passed", "date": TODAY, "passed_on": TODAY, "gate": "sequential"}}}, fh)
+        # live fails closed without its inputs: a fresh price for the stock and Nifty, the band, the lists
+        files = {"prices": {"prices": {"INFY.NS": 1160.5, "^NSEI": 25800.0}, "detail": {
+                     "INFY.NS": {"time": "2026-11-05T04:08:00Z", "prev_close": 1150.0},
+                     "^NSEI": {"time": "2026-11-05T04:08:00Z", "prev_close": 25750.0}}},
+                 "bands": {"bands": {"INFY.NS": None}},
+                 "sectors": {"sectors": {"INFY.NS": "Information Technology"}},
+                 "surveillance": {"symbols": {}, "updated": TODAY}}
+        self.live_inputs = {}
+        for name, doc in files.items():
+            path = os.path.join(self.d, name + ".json")
+            with open(path, "w") as fh:
+                json.dump(doc, fh)
+            self.live_inputs["--" + name] = path
 
     def args(self, *extra, **kw):
         return list(extra) + ["--orders", self.orders, "--config", self.cfg, "--risk", self.risk,
@@ -168,10 +181,12 @@ class FlowBase(unittest.TestCase):
 
     def run_risk(self, now=NOW):
         with redirect_stdout(io.StringIO()):
+            files = {"--prices": self.none, "--bands": self.none}
+            files.update(getattr(self, "live_inputs", {}))
             return check.main(["--orders", self.orders, "--config", self.cfg, "--portfolio", self.pf,
-                               "--prices", self.none, "--state", self.state, "--bands", self.none, "--now", now,
+                               "--state", self.state, "--now", now,
                                "--out", self.risk, "--limits-state", os.path.join(self.d, "limits.json"),
-                               "--forward", self.forward])
+                               "--forward", self.forward] + [x for kv in sorted(files.items()) for x in kv])
 
     def state_doc(self):
         with open(self.state) as fh:
