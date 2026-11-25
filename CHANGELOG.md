@@ -10,6 +10,13 @@ Fixes from a review of the research and the paper autopilot. A forward test runn
 paper fills get worse by the test's own slippage, so start a new test (`forward.py start --replace`) rather than
 mixing the two.
 
+- **The live guardian** (`trader-broker/guardian.py`). Kite has no bracket order for stocks, so a live entry
+  had no stop at the broker until someone placed it, and nothing cancelled the stop when the target filled. The
+  guardian, armed by the user (`run --arm`, live accounts only), reads Kite every 5 seconds and may only protect or
+  reduce: an SL-M at the approved stop for any uncovered shares, a moved-away stop restored, the pack's extra or
+  orphaned legs cancelled, a market close past an approved stop, and everything closed at the flat-by. Every
+  action is re-checked against a fresh read of Kite before it is sent; it never opens, adds, widens a stop or
+  touches delivery. Dry run by default; `plan` works offline on saved Kite answers. Standard library only.
 - **The daily loss limit counts what a trade really lost.** It added up today's entries' PLANNED max losses only,
   so a stop that slipped past its plan went uncounted: realised -1,132 on a 500 plan left room for another entry
   under a 1,500 limit. Each symbol now counts the larger of its planned max losses and its realised loss today

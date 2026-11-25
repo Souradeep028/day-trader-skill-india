@@ -455,6 +455,44 @@ reads the paper account. Run it after every fill, after every stop or target
 fills, before any retry of an order that timed out, and at the flat-by.
 Exit code 1 means fix something before anything else.
 
+## The live guardian (guardian.py): stops without anyone at the keyboard
+
+The gap reconcile can only report, the guardian closes. Run by the USER, on a
+live account, it reads Kite's positions and orders every 5 seconds from 9:15
+to 15:30 and may only protect or reduce what is already open:
+
+- **protect**: a MIS position with stops for fewer shares than it holds gets
+  an SL-M for the shortfall at the stop the user approved (an unplanned one at
+  `max_loss_per_trade_inr` from its average price; `"guardian_unplanned":
+  "alert"` only alerts)
+- **restore** a stop moved further away (only ever tighter); **trim** the
+  pack's stops or targets for more shares than are held; cancel the pack's
+  **orphans** on a flat symbol (an entry still waiting is left alone)
+- **through**: past the approved stop and not covered: cancel the closing
+  orders, close at market (never for a position the pack did not plan)
+- **flat-by**: cancel every pending MIS order, close every MIS position
+
+It never opens or adds, never touches CNC or another exchange, never widens a
+stop, re-checks every action against a fresh read of Kite before sending it,
+gives up on a symbol after 2 rejections (and alerts), and never re-sends a
+timed-out order blind. Without `--arm` it is a dry run.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/guardian.py" plan --positions pos.json --broker-orders ord.json   # offline, what it would do
+python3 "${CLAUDE_SKILL_DIR}/guardian.py" run           # dry run against Kite: prints, sends nothing
+```
+
+**Claude runs only `plan` and the dry run.** The user runs, in their own
+terminal, `guardian.py login --request-token ...` (with `KITE_API_KEY` and
+`KITE_API_SECRET` in their environment, never in the chat) and `guardian.py
+run --arm` (or a cron line at 9:14 IST). Arming needs `"paper": false`.
+Alerts go to `NOTIFY_URL`, actions to `trader/state/guardian-log.jsonl`, the
+heartbeat to `trader/state/guardian.json`. Before arming: check
+developers.kite.trade for the rules on orders sent through the API (a
+registered static IP, market protection on market orders; set
+`"guardian_market_protection"` if Kite asks for it). It sends orders with the
+user's own Kite Connect app, not through Claude's Kite connector.
+
 ## Live: Zerodha Kite, self-hosted MCP server
 
 Zerodha's server is github.com/zerodha/kite-mcp-server. Its hosted version
@@ -548,7 +586,9 @@ position still open at about 3:20 PM, for 50 rupees plus GST an order: the
 ## Steps: while it is open, and out by 15:10
 
 0. After the entry fills and the stop and target are in: `ticket.py reconcile`.
-   Again whenever either one fills, and before retrying any order.
+   Again whenever either one fills, and before retrying any order. With the
+   live guardian armed, it puts the stop in and cancels the leftover leg by
+   itself within seconds; reconcile still shows what it did.
 
 - trader-alerts watches the stop, the target and the flat-by time
   (`alerts.py add --from-plan`, then `alerts.py check`).
@@ -598,7 +638,10 @@ than a quarter of the move.
 ## What it never does
 
 - Never places an order without the gates above, and never two orders on one yes.
-- Never places orders from a scheduled or background task: nobody is there to say yes.
+- Never places orders from a scheduled or background task: nobody is there to say yes. The one
+  exception is the live guardian, which the USER arms in their own terminal and which can only
+  protect or close a position already open, never open or add to one.
+- Never runs `guardian.py login` or `guardian.py run --arm` for the user.
 - Never asks for, reads, stores or repeats API keys, secrets, passwords or a Kite login.
 - Never switches `"paper"` to live. The user does that themselves.
 - Never fills a paper order at a price better than the market's at that moment.
@@ -609,7 +652,10 @@ than a quarter of the move.
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
 - Paper trading by default (`"paper": true`): ticket.py fills paper orders itself and no broker sees
   them. Going live is the user's own decision, in their own config.
-- Nothing in this pack places a real order except trader-broker, and only when all three hold:
+- The live guardian (armed by the user) may place, modify and cancel orders that only protect or close
+  an open intraday position: a stop for the shares held, a tighter stop, a market close past the stop or
+  at the flat-by. Nothing else in the pack sends a real order on its own.
+- Nothing in this pack opens a real position except trader-broker, and only when all three hold:
   trader-risk passed that exact order today, the user typed an explicit yes for that one order in the
   chat, and the user clicked Allow once on Claude's own card because the order tool is set to "Needs
   approval" (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
