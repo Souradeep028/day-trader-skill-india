@@ -39,9 +39,24 @@ mixing the two.
   fill) and the autopilot's whole pass hold `trader/state/broker.lock`, so a record written by hand during a
   pass is no longer overwritten by the pass's last write.
 - **A missing bar no longer drops a stock's day.** edge.py fills a bar Yahoo left out flat at the close before
-  it (which cannot make or save a trade) instead of leaving out the whole session, which chose sessions on what
+  it (it adds no move of its own; a stop only the missing bar reached is missed) instead of leaving out the whole
+  session, which chose sessions on what
   happened later. A session missing its 9:15 bar or more than 15 bars is still left out; the report says what
   it filled.
+
+- **The gap-up test decides on what an order can see.** openclose.py's one passing rule (short a 2 % gap-up in
+  the pre-open auction) picked its stocks on the official open, which is fixed at 9:08 after the last pre-open
+  order. Its ten-year +0.28 R is now labelled an upper end. `trader-broker/preopen.py` saves a snapshot of the
+  indicative prices taken from 9:00 to 9:08 (NSE's pre-open JSON saved from a browser, a Kite `get_quote` reply,
+  or a CSV; it never fetches), and a gap test frozen now (`gapshadow.py start --replace`) decides on it and fills
+  at the official open. A day without a snapshot is skipped with the reason; an older test warns in every status.
+  The Docker scheduler alerts at 9:03 when today's snapshot is missing.
+- **An off switch for the paper autopilot.** `"paper_autopilot": false` in trader/config.json makes every pass do
+  nothing; the shadow replay after the close then judges the frozen rule, the machine need not be awake from 9:15
+  to 15:30, and the pre-flight and the daily report know it is off.
+- **The Time Machine's history keeps days with missing bars**, filled flat as edge.py does, instead of leaving them
+  out (which picked days on what happened later). On the INFY fixture it adds 15 October: 21 trades, not 20,
+  -0.37 R, not -0.35. The replays' pool still uses complete days only, since flat bars would understate the moves.
 
 ## 3.0.0
 

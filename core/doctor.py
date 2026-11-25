@@ -37,7 +37,7 @@ import check  # noqa: E402  (trader-risk: the calendar, the defaults, the stop s
 CONFIG = os.path.join("trader", "config.json")
 EXAMPLE = os.path.join(CODE, "trader-budget", "config.example.json")
 CONFIG_VERSION = 3          # 3: the platform release (core/ tables, config_version itself)
-OTHER_KEYS = {"config_version", "slippage_ticks"}
+OTHER_KEYS = {"config_version", "slippage_ticks", "paper_autopilot"}
 STATE_FILES = ("trader/state/scheduler.json", "trader/state/autopilot.json", "trader/state/preflight.json")
 OK, WARN, FAIL = "OK", "WARN", "FAIL"
 

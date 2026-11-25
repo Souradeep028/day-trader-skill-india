@@ -174,7 +174,7 @@ def run_checks(now_utc, cfg, test, state, portfolio, events_doc, surveillance_do
                       for dd_, w, k in rows if dd_ == today or (k == "results" and dd_ == prev))
         add("events", True, ("stocks off limits today: " + ", ".join(mine)) if mine else "no market event today")
     doc["notes"] += check.staleness(d)
-    if heartbeat and heartbeat.get("date") == prev:
+    if heartbeat and heartbeat.get("date") == prev and c.get("paper_autopilot", True) is not False:
         flat = c.get("flat_by") or "15:10"
         if (heartbeat.get("last_pass") or "00:00") < flat:
             doc["notes"].append("the autopilot's last pass on %s was at %s, before the %s flat-by: check the "

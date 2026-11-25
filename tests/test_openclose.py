@@ -112,8 +112,11 @@ class Report(unittest.TestCase):
         self.assertIn("Charged against every trade, entering in the pre-open auction: at the open all 0.000 %", out)
         self.assertIn("Baselines (every stock, every day, no filter):", out)
         self.assertIn("in at the auction price, out at a real 3:10", out)
+        # the auction's own price picks the trades: no order can know it, and the report says so
+        self.assertIn("no order can know it, so these results are an upper end", out)
         code, out, _ = quiet(oc.main, ["run", "--offline", DAILY, "--symbols", SYMS, "--today", "2026-11-10",
                                        "--top", "1"])
+        self.assertNotIn("upper end", out)
         self.assertIn("No 5-minute bars to check the daily bars against: the default is charged.", out)
         self.assertIn("at the open all 0.150 %; at the close all 0.150 %", out)
 

@@ -380,6 +380,38 @@ def full_sessions(days, before, need=SESSION_BARS):
     return full, short
 
 
+MAX_FILLED = 15     # a session missing more bars than this (a fifth of the day) is bad data, not a gap
+
+
+def history_sessions(days, before, need=SESSION_BARS):
+    """The sessions the history replay runs on: every session before the plan's date with its 9:15 bar, each bar
+    Yahoo left out filled flat at the close before it (no volume), and at most MAX_FILLED of them. A flat bar
+    cannot trigger an entry, a stop or a target the bar before had not (though it misses one only the real bar
+    reached). Leaving a session out for a missing bar would pick sessions on what happened later in the day,
+    which biases the history; edge.py fills them the same way.
+    -> ([(date, [bar, ...])], [{"date", "filled"}])"""
+    out, filled = [], []
+    for d in sorted(days):
+        if d >= before:
+            continue
+        s = days[d]
+        missing = [i for i in range(need) if i not in s]
+        if 0 not in s or len(missing) > MAX_FILLED:
+            continue
+        bars = []
+        for i in range(need):
+            if i in s:
+                bars.append(s[i])
+            else:
+                c = bars[-1]["c"]
+                bars.append({"date": d, "slot": i, "start": clock24(OPEN_MIN + 5 * i), "o": c, "h": c, "l": c,
+                             "c": c, "v": 0, "filled": True})
+        out.append((d, bars))
+        if missing:
+            filled.append({"date": d, "filled": len(missing)})
+    return out, filled
+
+
 # ---------------------------------------------------------------- the simulation (sim.py)
 
 def build_pool(sessions):
@@ -804,7 +836,9 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     plan_out = {kk: v for kk, v in plan.items() if v is not None}
     if rule:
         plan_out["stop_rule"] = rule["stop_rule"]
-        history = history_replay(sessions, rule, last, plan["side"])
+        hist, filled = history_sessions(days, plan["date"], last + 1)
+        history = history_replay(hist, rule, last, plan["side"])
+        history["filled"] = filled
     else:
         history = {"sessions": len(sessions), "triggered": 0, "rule": None, "trades": [],
                    "note": "skipped: the history replay knows the opening-range breakout (orb) only, "
@@ -906,7 +940,7 @@ def report(doc):
                                                            "%.2f %% from the entry" % ru.get("stop_pct", 0))
         if h["triggered"]:
             lines.append("History: the same rule (%d-min opening range, stop at the %s, %gR target) on each of "
-                         "those %d real sessions fired %d times: %d target, %d stop, %d neither. Average R %+.3f%s."
+                         "%d real sessions before it fired %d times: %d target, %d stop, %d neither. Average R %+.3f%s."
                          % (ru["or_minutes"], stop_words, ru["target_r"], h["sessions"], h["triggered"],
                             h["target"], h["stop"], h["close"], h["avg_R"],
                             (", %+.3f after charges%s" % (h["avg_R_net"], " and slippage" if (m.get("slippage") or {})
@@ -924,9 +958,14 @@ def report(doc):
     for w in doc.get("warnings") or []:
         lines.append("Note: " + w + ".")
     if doc["data"]["short_sessions_left_out"]:
-        lines.append("Left out %d session(s) with missing bars: %s."
+        lines.append("The replays' pool leaves out %d session(s) with missing bars: %s."
                      % (len(doc["data"]["short_sessions_left_out"]),
                         ", ".join(x["date"] for x in doc["data"]["short_sessions_left_out"])))
+    if (doc.get("history") or {}).get("filled"):
+        f = doc["history"]["filled"]
+        lines.append("The history keeps %d session(s) with missing bars, each bar filled flat at the close before it "
+                     "(it adds no move of its own, so a stop or target only the missing bar reached is missed): %s."
+                     % (len(f), ", ".join("%s (%d)" % (x["date"], x["filled"]) for x in f)))
     lines.append(doc["note"] + " Repeat this run with --seed %d." % m["seed"])
     return lines
 

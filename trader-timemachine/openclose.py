@@ -39,8 +39,11 @@ squares MIS off from 3:20). On the days the 60-day 5-minute bars overlap the dai
 how far the daily open sits from the 9:15 bar's open and the daily close from the 3:05 bar's close, separately
 for days that opened 1 % or more up, 1 % or more down, and the rest (on big gap days the auction price is
 further out than the first trade), and charges each day's average gap AGAINST the trade, long or short.
-With --auction (you place the entry in the pre-open auction, at its price) the open is not adjusted. Without
-5-minute bars it charges 0.15 % at the open and the close.
+With --auction (you place the entry in the pre-open auction, at its price) the open is not adjusted. But the gap
+that picks the trade is then the official open itself, which is fixed at 9:08, after the last pre-open order: no
+order can know it. So --auction results are an upper end: a real pre-open order decides on the indicative price
+shown at about 9:07, and gapshadow.py with preopen.py's snapshots tests that, on sessions after its freeze.
+Without 5-minute bars it charges 0.15 % at the open and the close.
 
 The verdict. A rule PASSES only when all of these hold:
   both halves  the first two thirds of the days and the last third each averaged above 0 R (30+ trades each)
@@ -487,6 +490,10 @@ def report(doc, top=12):
              % ("entering in the pre-open auction" if s["auction"] else "entering at the first trade after 9:15",
                 ", ".join("%s %.3f %%" % kv for kv in sorted(s["open_adj"].items())),
                 ", ".join("%s %.3f %%" % kv for kv in sorted(s["close_adj"].items()))))
+    if s["auction"]:
+        L.append("With --auction the gap that picks each trade is the official open itself, fixed at 9:08 after the "
+                 "last pre-open order: no order can know it, so these results are an upper end. A real pre-open "
+                 "order decides on the indicative price at about 9:07 (gapshadow.py with preopen.py snapshots).")
     L += ["", "%-44s %7s %6s %7s %8s  %s" % ("rule", "trades", "win %", "avg R", "base R",
                                              "earlier / later, good years")]
     shown = [r for r in doc["rows"] if r["all"]["trades"] and not r["baseline"]][:top]

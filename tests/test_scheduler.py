@@ -18,16 +18,20 @@ DT = datetime.datetime
 class Plan(unittest.TestCase):
     def test_a_weekday_and_a_weekend(self):
         p = sch.plan(datetime.date(2026, 11, 11))
-        # the brief, 76 passes from 9:16 to 15:31 every 5 minutes, the archive and the daily report
-        self.assertEqual(len(p), 79)
+        # the brief, the pre-open reminder, 76 passes from 9:16 to 15:31 every 5 minutes, the archive and the report
+        self.assertEqual(len(p), 80)
         self.assertEqual([j for _, j in p].count("pass"), 76)
-        self.assertEqual((p[0], p[1][0].strftime("%H:%M"), p[-3][0].strftime("%H:%M")),
-                         ((DT(2026, 11, 11, 8, 40), "morning"), "09:16", "15:31"))
+        self.assertEqual((p[0], p[1], p[2][0].strftime("%H:%M"), p[-3][0].strftime("%H:%M")),
+                         ((DT(2026, 11, 11, 8, 40), "morning"), (DT(2026, 11, 11, 9, 3), "preopen"), "09:16", "15:31"))
         self.assertEqual(p[-2:], [(DT(2026, 11, 11, 15, 45), "archive"), (DT(2026, 11, 11, 15, 50), "daily")])
         self.assertEqual(sch.plan(datetime.date(2026, 11, 14)), [])
 
     def test_what_is_due(self):
-        self.assertEqual(sch.due(DT(2026, 11, 11, 8, 59), {}), (["morning"], DT(2026, 11, 11, 9, 16)))
+        self.assertEqual(sch.due(DT(2026, 11, 11, 8, 59), {}), (["morning"], DT(2026, 11, 11, 9, 3)))
+        # the pre-open reminder runs from 9:03 until the auction closes at 9:08, never later
+        self.assertEqual(sch.due(DT(2026, 11, 11, 9, 4), {"morning": "2026-11-11"}),
+                         (["preopen"], DT(2026, 11, 11, 9, 16)))
+        self.assertEqual(sch.due(DT(2026, 11, 11, 9, 9), {"morning": "2026-11-11"})[0], [])
         # a late start: no brief after 9:15, but this slot's pass (the autopilot runs the pre-flight first)
         self.assertEqual(sch.due(DT(2026, 11, 11, 9, 17), {}), (["pass"], DT(2026, 11, 11, 9, 21)))
         self.assertEqual(sch.due(DT(2026, 11, 11, 9, 19), {"pass_at": "2026-11-11 09:16"})[0], [])
@@ -89,7 +93,7 @@ class Jobs(unittest.TestCase):
         finally:
             sch.ist_now = real
         st = sch.read_state()
-        self.assertEqual((st["done"]["morning"], st["next"]), ("2026-11-11", "2026-11-11 09:16"))
+        self.assertEqual((st["done"]["morning"], st["next"]), ("2026-11-11", "2026-11-11 09:03"))
 
 
 class Hardening(unittest.TestCase):
@@ -144,6 +148,12 @@ class Hardening(unittest.TestCase):
         # a new day starts the count again
         sch.alerts("archive", [1], DT(2026, 11, 12, 15, 45), done)
         self.assertEqual(len(got), 4)
+        # the pre-open reminder: exit 3 (a snapshot is needed and missing) is a reminder, once; exit 0 says nothing
+        sch.alerts("preopen", [0], DT(2026, 11, 12, 9, 3), done)
+        sch.alerts("preopen", [3], DT(2026, 11, 12, 9, 3), done)
+        sch.alerts("preopen", [3], DT(2026, 11, 12, 9, 4), done)
+        self.assertEqual(len(got), 5)
+        self.assertIn("save the pre-open snapshot before 9:08", got[4])
 
     def test_notify_posts_plain_text_and_never_raises(self):
         import http.server

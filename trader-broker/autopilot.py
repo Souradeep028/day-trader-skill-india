@@ -23,6 +23,10 @@ Each pass, on the bars that have CLOSED by now (Yahoo's 5-minute bars):
               target, in trader-broker's log and the paper portfolio, so ticket.py journal, forward.py status
               and daily.py see them like any paper trade, and the forward test's PAPER verdict comes from them.
 
+OFF SWITCH. With "paper_autopilot": false in trader/config.json every pass does nothing: the frozen rule is then
+judged by the shadow replay alone (forward.py shadow, after the close, in the daily report), so the machine does
+not need to stay awake from 9:15 to 15:30. The pre-flight and the daily report know it is off.
+
 PAPER ONLY. With "paper": false in trader/config.json it refuses to run: a live order always needs your own
 yes in the chat, one order at a time, and Kite's Allow once card. The autopilot never talks to a broker.
 
@@ -259,6 +263,9 @@ def one_pass(a, now_utc):
     if n < 1:
         return ["%s %s: the session has not closed a bar yet." % (today, now_ist.strftime("%H:%M"))]
     cfg = forward.read(a.config, "config", required=False) or {}
+    if cfg.get("paper_autopilot", True) is False:
+        return ["%s %s: the paper autopilot is off (\"paper_autopilot\": false in trader/config.json): the shadow "
+                "replay after the close judges the frozen rule." % (today, now_ist.strftime("%H:%M"))]
     if not cfg.get("paper", True):
         raise AutopilotError("trader/config.json says \"paper\": false. The autopilot trades paper only: a live "
                              "order needs your yes in the chat, one at a time")

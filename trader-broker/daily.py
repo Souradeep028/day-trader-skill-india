@@ -165,8 +165,11 @@ def trading_part(state, cfg, day, forward_doc):
     return out
 
 
-def autopilot_part(hb, day, flat_by="15:10"):
-    """The autopilot's heartbeat for the day: None when it has never run here."""
+def autopilot_part(hb, day, flat_by="15:10", off=False):
+    """The autopilot's heartbeat for the day: None when it has never run here. off: "paper_autopilot": false."""
+    if off:
+        return ("Autopilot: off (\"paper_autopilot\": false in trader/config.json). The shadow replay above is "
+                "the forward test; no paper trades are taken.")
     if not hb:
         return None
     if hb.get("date") != day:
@@ -326,6 +329,7 @@ def main(argv=None):
     ap.add_argument("--surveillance", default="trader/surveillance.json")
     ap.add_argument("--out", help="default trader/daily/<date>.md")
     ap.add_argument("--gap-forward", default=gapshadow.FILE, help="the gap-up shadow test (gapshadow.py start)")
+    ap.add_argument("--preopen", default=gapshadow.preopen.DIR, help="the pre-open snapshots (preopen.py save)")
     ap.add_argument("--offline-daily", metavar="DIR", help="<SYMBOL>.json(.gz) daily charts for the gap-up test")
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args(argv)
@@ -382,7 +386,7 @@ def main(argv=None):
             if not a.no_write:
                 forward.write(a.forward, test)
         hb_line = autopilot_part(forward.read(a.heartbeat, "heartbeat", required=False), day,
-                                 cfg.get("flat_by") or "15:10")
+                                 cfg.get("flat_by") or "15:10", off=cfg.get("paper_autopilot", True) is False)
         if hb_line:
             tr = tr or {"trades": {}, "open": [], "limits": [], "live": None}
             tr["autopilot"] = hb_line
@@ -410,7 +414,7 @@ def main(argv=None):
                         daily_t[s] = gapshadow.fetch_daily(s)
                 except (gapshadow.GapError, swing.SwingError):
                     continue
-            gres = gapshadow.update(gtest, daily_t, charts, day)
+            gres = gapshadow.update(gtest, daily_t, charts, day, gapshadow.snaps_for(a.preopen, gtest["started"], day))
             gap = gapshadow.lines(gtest, gres, day) + ["- " + forward.code_text(gtest)]
             if not a.no_write:
                 forward.write(a.gap_forward, gtest)

@@ -5,6 +5,8 @@ Run it from the trading folder (in Docker, /data, the folder mounted from your m
 India time whatever the machine's clock zone:
 
     08:40           the morning brief (trader-scanner morning.py), with the pre-flight's GO or NO-GO
+    09:03           when a gap-up test decides on pre-open snapshots and today's is not saved yet, an alert:
+                    save it before 9:08 (preopen.py save FILE), or the test skips the day
     09:16 - 15:31   a paper autopilot pass a minute after each 5-minute bar closes (the pre-flight first, if
                     today's is missing, so a late start still trades on a GO only)
     15:45           today's 5-minute and 1-minute bars saved (trader-timemachine archive.py)
@@ -51,13 +53,17 @@ JOBS = {
     "morning": [tool("trader-scanner", "morning.py")],
     "preflight": [tool("trader-broker", "preflight.py")],
     "pass": [tool("trader-broker", "autopilot.py") + ["run", "--once"]],
+    "preopen": [tool("trader-broker", "preopen.py") + ["remind"]],
     "archive": [tool("trader-timemachine", "archive.py") + ["save"],
                 tool("trader-timemachine", "archive.py") + ["save", "--interval", "1m"]],
     "daily": [tool("trader-broker", "daily.py"), tool("trader-broker", "audit.py")],
 }
-TIMEOUT = {"morning": 900, "preflight": 180, "pass": 240, "archive": 900, "daily": 1200}   # seconds a step
+TIMEOUT = {"morning": 900, "preflight": 180, "pass": 240, "archive": 900, "daily": 1200,
+           "preopen": 60}   # seconds a step
 LOG_MAX = 5 * 1024 * 1024
 MORNING = datetime.time(8, 40)
+PREOPEN = datetime.time(9, 3)       # the pre-open auction takes orders from 9:00 to 9:08
+PREOPEN_ENDS = datetime.time(9, 8)
 FIRST_PASS = datetime.time(9, 16)
 LAST_PASS = datetime.time(15, 31)
 ARCHIVE = datetime.time(15, 45)
@@ -73,7 +79,7 @@ def plan(day):
     if day.weekday() >= 5:
         return []
     at = lambda t: datetime.datetime.combine(day, t)  # noqa: E731
-    out = [(at(MORNING), "morning")]
+    out = [(at(MORNING), "morning"), (at(PREOPEN), "preopen")]
     t = at(FIRST_PASS)
     while t <= at(LAST_PASS):
         out.append((t, "pass"))
@@ -96,6 +102,8 @@ def due(now, done):
                 run = [j for j in run if j != "pass"] + ["pass"]
         elif done.get(job) != today:
             if job == "morning" and now.time() >= datetime.time(9, 15):
+                continue
+            if job == "preopen" and now.time() >= PREOPEN_ENDS:      # too late to save one: no use reminding
                 continue
             run.append(job)
     later = [t for t, _ in plan(now.date()) if t > now]
@@ -186,6 +194,14 @@ def alerts(job, codes, now, done):
     if sent.get("date") != today:
         sent.clear()
         sent["date"] = today
+    if job == "preopen":
+        if codes == [3] and not sent.get("preopen"):
+            sent["preopen"] = notify("%s: save the pre-open snapshot before 9:08 (preopen.py save FILE), or the "
+                                     "gap-up test skips today" % today) or True
+        elif any(c not in (0, 3) for c in codes) and not sent.get("fail_preopen"):
+            sent["fail_preopen"] = notify("%s %s: the pre-open reminder failed (exit %s): see trader/logs/preopen.log"
+                                          % (today, now.strftime("%H:%M"), codes)) or True
+        return
     if any(codes) and job != "pass" and not sent.get("fail_" + job):
         sent["fail_" + job] = notify("%s %s: the %s job failed (exit %s): see trader/logs/%s.log"
                                      % (today, now.strftime("%H:%M"), job, codes, job)) or True

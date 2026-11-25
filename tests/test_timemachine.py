@@ -34,7 +34,7 @@ PLAN = {"created_by": "trader-exit", "symbol": "INFY.NS", "side": "buy", "date":
 # replay is checked against a separate implementation in Reel.test_history_matches_an_independent_replay.
 SIM_BANDS = "54267ac677bf2208"
 SIM_PATHS = "6689b32b9f49c76e"
-SIM_TRADES = "01db48fcfd1643fe"
+SIM_TRADES = "6bf0ac6473e3f9b2"   # 01db48fcfd1643fe before 15 October (2 bars missing) was filled and kept
 SIM_HIST = {"lo": 1127.32, "hi": 1185.76,
             "bins": [118, 101, 133, 205, 287, 376, 476, 529, 624, 761, 763, 760, 794, 734, 661, 570, 474, 413,
                      325, 262, 175, 142, 106, 58]}
@@ -102,8 +102,13 @@ def replay_by_hand(text, before, last_slot, target_r=2.0):
     out = []
     for d in sorted(days):
         bars = days[d]
-        if d >= before or not all(k in bars for k in range(last_slot + 1)):
+        missing = [k for k in range(last_slot + 1) if k not in bars]
+        if d >= before or 0 not in bars or len(missing) > 15:
             continue
+        for k in range(1, last_slot + 1):               # a bar Yahoo left out: flat at the close before it
+            if k not in bars:
+                c = bars[k - 1][2]
+                bars[k] = (c, c, c, c)
         sessions += 1
         oh, ol = max(bars[k][0] for k in range(3)), min(bars[k][1] for k in range(3))
         k = next((k for k in range(3, last_slot + 1) if bars[k][2] > oh), None)
@@ -161,7 +166,7 @@ class Reel(unittest.TestCase):
         self.assertEqual(tm.round_trip(41, 1160.5, 1160.5), 50.57)
         # the history: 19 of its 20 trades left by a stop or at the flat-by: 0.10 / 10.70 x 1.95 = 0.0182 R
         self.assertEqual(self.doc["history"]["slippage_r"], 0.0182)
-        self.assertEqual(self.doc["history"]["avg_R_net"], round(-0.349 - 0.1153 - 0.0182, 4))
+        self.assertEqual(self.doc["history"]["avg_R_net"], round(-0.369 - 0.1153 - 0.0182, 4))
         none = machine(replays=200, slippage_ticks=0)
         self.assertEqual(none["mc"]["slippage"]["r"], 0.0)
         self.assertEqual(none["mc"]["charges"]["avg_R_net"], round(none["mc"]["avg_R"] - 0.1153, 4))
@@ -185,9 +190,11 @@ class Reel(unittest.TestCase):
 
     def test_the_history_replay(self):
         h = self.doc["history"]
-        self.assertEqual((h["sessions"], h["triggered"]), (57, 20))
-        self.assertEqual((h["target"], h["stop"], h["close"], h["green"]), (1, 10, 9, 6))
-        self.assertEqual(h["avg_R"], -0.349)
+        # 58: 15 October's two missing bars are filled flat, so the day counts (the replays' pool has 57)
+        self.assertEqual((h["sessions"], h["triggered"]), (58, 21))
+        self.assertEqual(h["filled"], [{"date": "2026-10-15", "filled": 2}])
+        self.assertEqual((h["target"], h["stop"], h["close"], h["green"]), (1, 10, 10, 6))
+        self.assertEqual(h["avg_R"], -0.369)
         self.assertEqual(h["rule"], {"setup": "orb", "or_minutes": 15, "stop_rule": "or_mid", "target_r": 2.0})
         slim = [{"date": t["date"], "entry": t["entry"], "outcome": t["outcome"], "R": t["R"]} for t in h["trades"]]
         self.assertEqual(sha(slim), SIM_TRADES)
@@ -230,8 +237,9 @@ class Reel(unittest.TestCase):
                      "green          31.2 %", "median 1155.92, 90 % of replays between 1135.79 and 1177.07",
                      "Average R: -0.316", "After charges and slippage: -0.450 R. A round trip of 41 shares costs about ₹50.57, 0.115 R; 1 tick of "
                      "slippage (0.10) on the entry and on a stop or flat-by exit, 0.018 R",
-                     "fired 20 times: 1 target, 10 stop, 9 neither. Average R -0.349, -0.482 after charges and slippage",
-                     "Left out 1 session(s) with missing bars: 2026-10-15.", "not a prediction", "--seed 19"):
+                     "58 real sessions before it fired 21 times: 1 target, 10 stop, 10 neither. Average R -0.369, -0.502 after "
+                     "charges and slippage", "The history keeps 1 session(s) with missing bars",
+                     "The replays' pool leaves out 1 session(s) with missing bars: 2026-10-15.", "not a prediction", "--seed 19"):
             self.assertIn(line, text)
         for word in ("profit", "P&L", "guarantee", "real time", "tick by tick", "$"):
             self.assertNotIn(word, text)
@@ -331,16 +339,18 @@ class Bars(unittest.TestCase):
         self.assertEqual(machine(plan(flat_by=None), replays=10)["mc"]["until"], "15:10")
         self.assertEqual(machine(plan(flat_by=None), replays=10, flat_by="15:00")["mc"]["until"], "15:00")
 
-    def test_a_session_with_a_gap_is_left_out(self):
+    def test_a_session_with_a_gap(self):
         def cut(res):  # take one bar out of 2026-09-04, like a halt
             keep_bars(res, lambda ts: not (ist(ts).date().isoformat() == "2026-09-04" and
                                            ist(ts).strftime("%H:%M") == "12:00"))
         doc = machine(text=edited(cut), replays=300)
+        # the replays' pool leaves it out (a flat bar would understate the stock's moves) ...
         self.assertEqual(doc["mc"]["pool_sessions"], 56)
         left = [x["date"] for x in doc["data"]["short_sessions_left_out"]]
         self.assertEqual(left, ["2026-09-04", "2026-10-15"])
-        self.assertEqual(doc["history"]["sessions"], 56)
-        self.assertNotIn("2026-09-04", [t["date"] for t in doc["history"]["trades"]])
+        # ... the history keeps it, filled: leaving out a day for a later gap would pick days on the future
+        self.assertEqual(doc["history"]["sessions"], 58)
+        self.assertEqual([x["date"] for x in doc["history"]["filled"]], ["2026-09-04", "2026-10-15"])
 
     def test_today_is_not_in_the_pool(self):
         doc = machine(replays=200)
@@ -589,7 +599,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(doc["source"], "offline")
         self.assertEqual((doc["mc"]["p_target"], doc["mc"]["avg_R"]), (0.0486, -0.316))
         self.assertEqual(sha(doc["mc"]["sample_paths"]), SIM_PATHS)
-        self.assertEqual((doc["history"]["triggered"], doc["history"]["avg_R"]), (20, -0.349))
+        self.assertEqual((doc["history"]["triggered"], doc["history"]["avg_R"]), (21, -0.369))
         self.assertEqual(doc["plan"]["from"], self.plan)
 
     def test_the_config_sets_the_size_for_the_charges(self):
@@ -618,7 +628,7 @@ class Cli(unittest.TestCase):
         doc = json.loads(text)
         self.assertEqual((doc["mc"]["p_target"], doc["mc"]["p_green"], doc["mc"]["until"]), (0.0486, 0.3125, "15:10"))
         self.assertEqual(doc["plan"]["stop_rule"], "or_mid")
-        self.assertEqual((doc["history"]["target"], doc["history"]["stop"], doc["history"]["avg_R"]), (1, 10, -0.349))
+        self.assertEqual((doc["history"]["target"], doc["history"]["stop"], doc["history"]["avg_R"]), (1, 10, -0.369))
         code, _, err = run(["run", "--symbol", "INFY.NS", "--entry", "1160.50", "--offline", INFY])
         self.assertEqual(code, 1)
         self.assertIn("--stop", err)

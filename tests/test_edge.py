@@ -83,11 +83,9 @@ class Pieces(unittest.TestCase):
         # long and short
         text, days = self._infy()
         last = edge.hhmm_slot("15:10", "x")
-        # the complete sessions, as edge_report picks them: the time machine leaves out days with missing bars
-        # (15 October lost 11:45 and 11:50 for every stock and Nifty), which prepare would now fill
-        full = {d for d, b in days.items() if all(k in b for k in range(last + 1))}
+        # both fill a bar Yahoo left out (15 October lost 11:45 and 11:50 for every stock and Nifty) the same way
         cfg = {"slippage_ticks": 0, "first_slot": 3, "last_entry_slot": last, "flat_slot": last,
-               "max_loss": 500, "max_order": 1e9, "max_cost_pct": 15, "dates": {d for d in full if d <= "2026-11-04"}}
+               "max_loss": 500, "max_order": 1e9, "max_cost_pct": 15, "dates": {d for d in days if d <= "2026-11-04"}}
         sess = edge.prepare(days, {}, {}, cfg)
         for side, tm_side, entry, target in (("long", "buy", 1160.5, 1181.9), ("short", "sell", 1140.0, 1120.4)):
             mine = edge.trades_for("INFY.NS", sess, "orb15", side, "tight", 2.0, cfg)
@@ -96,7 +94,7 @@ class Pieces(unittest.TestCase):
                                       "opening_range": {"high": 1154.7, "low": 1144.9, "minutes": 15},
                                       "stop": 1149.8, "stop_rule": "or_mid", "target": target, "flat_by": "15:10"})
             hist = tm.time_machine(text, plan, tm.parse_now("2026-11-05 09:45"), replays=10)["history"]["trades"]
-            self.assertEqual(len(mine), {"long": 20, "short": 42}[side])
+            self.assertEqual(len(mine), {"long": 21, "short": 42}[side])
             self.assertEqual([(t["date"], t["entry"], t["stop"], t["target"], t["outcome"], round(t["R_gross"], 2))
                               for t in mine],
                              [(t["date"], t["entry"], t["stop"], t["target"], t["outcome"], t["R"]) for t in hist])
@@ -268,7 +266,8 @@ class Gaps(unittest.TestCase):
         rep = edge.edge_report(ch, edge.read_offline(DIR, edge.INDEX), None,
                                {"setups": ("orb15",), "sides": ("long",), "bootstrap": 50})
         self.assertEqual((rep["filled_bars"]["sessions"], rep["filled_bars"]["bars"]), (1, 1))
-        self.assertIn("Yahoo left out 1 bar in 1 stock-session (INFY.NS 2026-11-05 (1))", "\n".join(edge.report(rep)))
+        self.assertIn("Yahoo left out 1 bar in 1 stock-session (INFY.NS 2026-11-05 (1)): each filled flat at the "
+                      "close before it (it adds no move of its own", "\n".join(edge.report(rep)))
 
 
 class Report(unittest.TestCase):

@@ -178,6 +178,21 @@ class Autopilot(unittest.TestCase):
         lines = self.whole_day()
         self.assertTrue(lines and all("short: selling more" in x for x in lines if "BLOCKED" in x), lines)
 
+    def test_the_off_switch(self):
+        # "paper_autopilot": false: every pass does nothing, the shadow replay alone judges the rule, and the daily
+        # report says so instead of "did NOT run today"
+        self.config(paper_autopilot=False)
+        self.start()
+        code, out, err = self.pass_at("09:45")
+        self.assertEqual(code, 0, err)
+        self.assertIn("the paper autopilot is off", out)
+        self.assertFalse(os.path.exists(self.p["state"]))
+        daily = load("trader-broker", "daily")
+        self.assertIn("Autopilot: off", daily.autopilot_part({"date": "2026-11-04"}, DAY, off=True))
+        self.assertIn("did NOT run today", daily.autopilot_part({"date": "2026-11-04"}, DAY))
+        doctor = load("core", "doctor")
+        self.assertIn("paper_autopilot", doctor.known_keys())
+
     def test_paper_only(self):
         self.config(paper=False)
         self.start()

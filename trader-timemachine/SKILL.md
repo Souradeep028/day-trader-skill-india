@@ -148,17 +148,21 @@ INFY.NS, Thursday 5 November 2026. The 15-minute opening range is 1144.90 to
   After charges and slippage: -0.450 R. A round trip of 41 shares costs about ₹50.57, 0.115 R;
   1 tick of slippage (0.10) on the entry and on a stop or flat-by exit, 0.018 R.
 History: the same rule (15-min opening range, stop at the opening-range midpoint, 2R target) on each
-of those 57 real sessions fired 20 times: 1 target, 10 stop, 9 neither. Average R -0.349, -0.482 after
-charges and slippage.
+of 58 real sessions before it fired 21 times: 1 target, 10 stop, 10 neither. Average R -0.369, -0.502
+after charges and slippage.
 Odds by 3:10 PM: target first 4.9 %, stop first 53.5 %, neither 41.6 %.
 These odds shuffle the stock's own recent bars, each drawn on its own: they measure how far it moves in a
 day and its recent drift, so a short on the same stock gets the mirror image. They size the stop and
 target against its range; they say nothing about whether the setup has an edge. That is edge.py's
 question, and the forward test's.
+
+The replays' pool leaves out 1 session(s) with missing bars: 2026-10-15.
+The history keeps 1 session(s) with missing bars, each bar filled flat at the close before it (it adds no
+move of its own, so a stop or target only the missing bar reached is missed): 2026-10-15 (2).
 ```
 
 So a 2R target is a long way for INFY to travel by 3:10 on its recent
-range, and the rule itself lost on those 57 sessions (the history line).
+range, and the rule itself lost on the 58 sessions before it (the history line).
 That is what the user should hear before `/trader-budget` sizes 41 shares;
 whether opening-range breaks pay at all is the edge report's answer, below. On
 the day itself the trade hit neither side and closed at 15:10 for a small

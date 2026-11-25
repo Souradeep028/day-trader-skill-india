@@ -335,8 +335,8 @@ def context(index_days, vix_days, day, prev_day=None):
 def fill_gaps(bars, n_bars, trailing=True):
     """(bars, filled) with each missing slot under n_bars replaced by a flat bar at the close before it (no
     volume), or (None, 0) when the session cannot be used: no 9:15 bar, or more than MAX_FILLED bars missing.
-    A flat bar at the last close cannot trigger an entry, a stop or a target the bar before had not, so a gap
-    neither makes nor saves a trade. trailing=False (a session still going): missing bars after the last one
+    A flat bar at the last close cannot trigger an entry, a stop or a target the bar before had not (it misses
+    one only the real bar reached: data lost, not a bias). trailing=False (a session still going): missing bars after the last one
     Yahoo has posted are not filled; the session ends at the last real bar.
     Dropping a session for any missing bar would choose sessions on what happened later in the day."""
     if 0 not in bars:
@@ -1036,8 +1036,8 @@ def report(doc, top=12):
                      "much of it. Only the default was fixed in advance." % doc["combinations"])
     fb = doc.get("filled_bars") or {}
     if fb.get("sessions"):
-        lines.append("Yahoo left out %d bar%s in %d stock-session%s (%s): each filled flat at the close before it, "
-                     "which cannot make or save a trade." % (fb["bars"], "" if fb["bars"] == 1 else "s", fb["sessions"],
+        lines.append("Yahoo left out %d bar%s in %d stock-session%s (%s): each filled flat at the close before it "
+                     "(it adds no move of its own, so a stop or target only the missing bar reached is missed)." % (fb["bars"], "" if fb["bars"] == 1 else "s", fb["sessions"],
                                                              "" if fb["sessions"] == 1 else "s",
                                                              ", ".join(fb["examples"])))
     lines += realism_lines(doc)
