@@ -225,6 +225,22 @@ def run(today=None, online=False, now_utc=None):
             add(WARN if age > 600 else OK, "scheduler", "last alive %s ago%s" % (
                 _age_text(age), ": is the container running? (docker compose -f docker/compose.yaml ps)"
                 if age > 600 else ", next job %s" % sched.get("next")))
+    if cfg and cfg.get("paper", True) is False and cfg.get("require_guardian", True) is not False:
+        g_ok, g_why = check.guardian_state(_read(check.GUARDIAN_FILE), now_utc)
+        t = now_ist.time()
+        session = (now_ist.weekday() < 5 and not check.NSE_HOLIDAYS.get(now_ist.date().isoformat())
+                   and datetime.time(9, 15) <= t < datetime.time(15, 30))
+        if g_ok:
+            add(OK, "guardian", g_why)
+        elif session:
+            add(FAIL, "guardian", "%s: live positions are not being guarded and live entries are blocked "
+                                  "(trader-broker/guardian.py run --arm)" % g_why)
+        else:
+            add(OK, "guardian", "not running outside the session; start it before 9:15 (guardian.py run --arm)")
+        sess = _read(os.path.join("trader", "state", "kite_session.json")) or {}
+        if not os.environ.get("KITE_ACCESS_TOKEN") and sess.get("date") != now_ist.date().isoformat():
+            add(WARN, "kite session", "no Kite session for today: the guardian cannot read Kite until you run "
+                                      "guardian.py login --request-token ... (Kite's token expires each morning)")
     hb = _read("trader/state/autopilot.json")
     lag = (hb or {}).get("lag") or []
     if lag:

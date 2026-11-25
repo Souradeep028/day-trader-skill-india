@@ -929,7 +929,8 @@ def live_inputs(now, **drop):
     t = at(now)
     out = {"prices": {"INFY.NS": 1160.5, "^NSEI": 25800.0}, "price_times": {"INFY.NS": t, "^NSEI": t},
            "prev_close": {"INFY.NS": 1150.0, "^NSEI": 25750.0}, "bands": {"INFY.NS": None},
-           "sectors": SECTORS, "surveillance": {"symbols": {}, "updated": now[:10]}}
+           "sectors": SECTORS, "surveillance": {"symbols": {}, "updated": now[:10]},
+           "guardian": {"date": now[:10], "alive": now + ":00", "armed": True, "error": None, "stopped": None}}
     for k, v in drop.items():
         out[k] = v
     return out
@@ -1007,6 +1008,10 @@ class LiveFailsClosed(unittest.TestCase):
             "the price band of INFY.NS is unknown": dict(bands={"TCS.NS": 20}),
             "no Nifty 50 price and previous close": dict(prices={"INFY.NS": 1160.5}),
             "no INFY.NS price under 15 minutes old": dict(price_times={"INFY.NS": stale, "^NSEI": at(self.NOW)}),
+            "the guardian has not run": dict(guardian=None),
+            "the guardian last checked in 120 seconds ago": dict(guardian={"alive": "2026-12-15 09:58:00",
+                                                                           "armed": True}),
+            "the guardian is running as a dry run": dict(guardian={"alive": "2026-12-15 10:00:00", "armed": False}),
         }
         for why, drop in cases.items():
             with self.subTest(why):
@@ -1015,11 +1020,17 @@ class LiveFailsClosed(unittest.TestCase):
                 self.assertIn("live: " + why, reasons(live))
                 self.assertEqual(verdicts(self.run_with(paper=True, **drop)), ["PASS"])
 
+    def test_the_guardian_can_be_made_optional(self):
+        c = cfg(paper=False, max_loss_per_trade_inr=2000, require_guardian=False)
+        res = check.check([infy()], c, now=at(self.NOW), forward=passed("2026-12-10"),
+                          **live_inputs(self.NOW, guardian=None))
+        self.assertEqual(verdicts(res), ["PASS"])
+
     def test_exits_are_never_blocked_by_missing_inputs(self):
         sell = dict(infy(), side="sell", order_class=None, take_profit_limit_price=None, stop_loss_stop_price=None)
         port = {"cash": 50000, "positions": [{"ticker": "INFY.NS", "shares": 41}]}
         res = check.check([sell], cfg(paper=False), now=at(self.NOW), portfolio=port,
-                          **live_inputs(self.NOW, sectors=None, surveillance=None, bands=None))
+                          **live_inputs(self.NOW, sectors=None, surveillance=None, bands=None, guardian=None))
         self.assertEqual(verdicts(res), ["PASS"])
 
 

@@ -43,6 +43,12 @@ Fills. On a live account each pass also logs Kite's executed trades in trader/st
 trader/portfolio.json (ticket.py sync: once each, by trade id), so the risk check's daily, weekly, streak and
 drawdown limits count the stops and closes it placed, not only the fills typed in by hand. --no-sync turns it off.
 
+Liveness. Every pass writes trader/state/guardian.json; trader-risk blocks live entries unless it is armed and
+checked in within 60 seconds ("require_guardian"), the scheduler alerts when it goes quiet during the session,
+and doctor reports it. A crash, Ctrl-C or docker stop during the session sends an alert on the way down. For an
+alert even when this machine dies, set GUARDIAN_PING_URL to a dead-man's switch (a healthchecks.io check, say):
+it is pinged once a minute while armed, and the service tells you when the pings stop.
+
 Alerts go to NOTIFY_URL (as the scheduler's), the actions to trader/state/guardian-log.jsonl, the heartbeat to
 trader/state/guardian.json. Check SEBI's and Zerodha's rules for orders sent through the API (a registered static IP,
 market protection on market orders) at developers.kite.trade before arming it. Not financial advice.
@@ -577,17 +583,42 @@ def notify(text):
         return False
 
 
-def heartbeat(path, now_utc, armed, res=None, error=None):
-    doc = ticket.read_json(path, "guardian heartbeat", required=False) or {}
+def heartbeat(path, now_utc, armed, res=None, error=None, stopped=None):
+    """trader/state/guardian.json: when it last checked in (IST), armed or not, the last error, and why it stopped.
+    trader-risk blocks live entries unless it is armed and fresh; the scheduler and doctor read it too."""
+    try:
+        doc = ticket.read_json(path, "guardian heartbeat", required=False) or {}
+    except ticket.TicketError:
+        doc = {}
     today = check.to_ist(now_utc).date().isoformat()
     if doc.get("date") != today:
         doc = {"date": today, "actions": 0}
-    doc.update({"alive": check.to_ist(now_utc).strftime("%Y-%m-%d %H:%M:%S"), "armed": armed, "error": error})
+    doc.update({"alive": check.to_ist(now_utc).strftime("%Y-%m-%d %H:%M:%S"), "armed": armed, "error": error,
+                "stopped": stopped})
     if res:
         doc["actions"] = doc.get("actions", 0) + sum(1 for r in res["actions"] if r["result"] not in ("dry run",)
                                                      and not r["result"].startswith("skipped"))
         doc["alerts"] = res["alerts"][-10:]
     ticket.write_json(path, doc)
+
+
+def ping(url):
+    """A dead-man's switch (GUARDIAN_PING_URL, e.g. a healthchecks.io check): a GET each minute while armed and
+    passing. The service alerts you when the pings stop, even if this machine is off. Never raises."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "day-trader-guardian"}),
+                                    timeout=5):
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def stop_reason_of(e):
+    if isinstance(e, KeyboardInterrupt):
+        return "stopped by hand (Ctrl-C)"
+    if isinstance(e, SystemExit):
+        return "stopped by a signal (exit %s)" % e.code
+    return "crashed: %s: %s" % (type(e).__name__, e)
 
 
 def acquire(path):
@@ -653,7 +684,13 @@ def run(a, loop):
     lock = acquire(os.path.join(STATE_DIR, "guardian.lock"))
     print("guardian %s, every %ss, flat-by %s" % ("ARMED" if armed else "DRY RUN (add --arm to act)", a.every,
                                                     cfg.get("flat_by")), flush=True)
-    fails, told = 0, set()
+    fails, told, last_ping = 0, set(), 0.0
+    ping_url = os.environ.get("GUARDIAN_PING_URL", "")
+    try:
+        import signal
+        old_term = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))    # docker stop: say so, then go
+    except (ImportError, ValueError):
+        signal, old_term = None, None
     try:
         while True:
             now = check.parse_now(a.now) if a.now else check.parse_now(None)
@@ -661,6 +698,7 @@ def run(a, loop):
             if not a.now and not session_open(now_ist):
                 if loop and now_ist.time() >= CLOSE:
                     print("the session is over", flush=True)
+                    heartbeat(HEARTBEAT, now, armed, stopped="the session is over")
                     return 0
                 if not loop:
                     print("the market is not open (%s IST): nothing to guard" % now_ist.strftime("%a %H:%M"))
@@ -679,19 +717,38 @@ def run(a, loop):
                         print("ALERT  " + x, flush=True)
                         notify(x)
                 heartbeat(HEARTBEAT, now, armed, res)
+                if armed and ping_url and time.time() - last_ping >= 60:
+                    last_ping = time.time() if ping(ping_url) else last_ping
             except KiteError as e:
                 fails += 1
                 heartbeat(HEARTBEAT, now, armed, error=str(e))
                 print("Kite: %s" % e, flush=True)
                 if e.kind == "TokenException":
                     notify("the Kite session has expired: run guardian.py login. Positions are NOT being guarded")
+                    heartbeat(HEARTBEAT, now, armed, error=str(e), stopped="the Kite session expired")
                     return 1
                 if fails == FAIL_ALERT:
                     notify("cannot read Kite (%s), %d passes in a row: positions are NOT being guarded" % (e, fails))
             if not loop:
                 return 0
             time.sleep(a.every)
+    except BaseException as e:            # a crash, Ctrl-C or docker stop: say so before going
+        why = stop_reason_of(e)
+        now = check.parse_now(a.now) if a.now else check.parse_now(None)
+        try:
+            heartbeat(HEARTBEAT, now, armed, error=why if not isinstance(e, (KeyboardInterrupt, SystemExit)) else None,
+                      stopped=why)
+        except Exception:  # noqa: BLE001  (the alert below matters more than the file)
+            pass
+        if armed and (a.now or session_open(check.to_ist(now))):
+            notify("STOPPED during the session, %s: live positions are NOT being guarded" % why)
+        print("guardian %s" % why, file=sys.stderr, flush=True)
+        if isinstance(e, Exception):
+            raise
+        return 130 if isinstance(e, KeyboardInterrupt) else 143
     finally:
+        if signal is not None and old_term is not None:
+            signal.signal(signal.SIGTERM, old_term)
         lock.close()
 
 

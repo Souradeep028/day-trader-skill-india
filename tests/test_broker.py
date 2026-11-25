@@ -167,7 +167,8 @@ class FlowBase(unittest.TestCase):
                      "^NSEI": {"time": "2026-11-05T04:08:00Z", "prev_close": 25750.0}}},
                  "bands": {"bands": {"INFY.NS": None}},
                  "sectors": {"sectors": {"INFY.NS": "Information Technology"}},
-                 "surveillance": {"symbols": {}, "updated": TODAY}}
+                 "surveillance": {"symbols": {}, "updated": TODAY},
+                 "guardian": {"date": TODAY, "alive": NOW + ":00", "armed": True, "error": None, "stopped": None}}
         self.live_inputs = {}
         for name, doc in files.items():
             path = os.path.join(self.d, name + ".json")

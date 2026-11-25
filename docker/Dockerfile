@@ -2,8 +2,8 @@
 #   docker compose -f docker/compose.yaml up -d --build      (from the repo root; see the README, "Run it in Docker")
 # The code is baked into the image; your trading folder (config, frozen tests, broker log, saved bars, reports)
 # is mounted at /data from your machine, so it survives rebuilds and stays yours. Standard library only.
-# The image only builds when the whole test suite passes on it (GitHub's CI is not running): broken code
-# never reaches the daily run.
+# The image only builds when the whole test suite passes on it (there is no hosted CI: this is the gate):
+# broken code never reaches the daily run.
 FROM python:3.12.8-slim-bookworm AS base
 
 ENV PYTHONUNBUFFERED=1 \
