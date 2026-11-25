@@ -441,8 +441,9 @@ stuck download never holds up the next pass. The image only builds when the
 whole test suite passes inside it, so broken code never reaches the daily
 run. For alerts on your phone, set `NOTIFY_URL` to an ntfy.sh topic URL only
 you know (`NOTIFY_URL=https://ntfy.sh/<topic> docker compose ... up -d`): one
-line on a NO-GO morning, on a failed job, and after the daily report; that
-service then sees those lines. Off by default. Back up the trading folder
+line on a NO-GO morning, on a failed job, and after the daily report, and on
+a live account when the live guardian goes quiet during the session (and when
+it is back); that service then sees those lines. Off by default. Back up the trading folder
 like any folder you care about: it is the only copy of the run.
 
 Every daily report fingerprints the code (each tool in the trader-* folders and the shared tables in core/)

@@ -6,6 +6,12 @@ mid-test change.
 
 ## Unreleased
 
+- **You are told when the live guardian is not running.** trader-risk blocks live entries unless the guardian
+  is armed and checked in within 60 seconds (`require_guardian`, on by default, held all day like the other
+  limits). The guardian alerts on its way down (a crash, Ctrl-C, `docker stop`) and records why in its heartbeat;
+  `GUARDIAN_PING_URL` adds a dead-man's switch that alerts even when the machine dies. The scheduler alerts once
+  when the guardian goes quiet during a live session and once when it is back (it wakes every 30 seconds then),
+  and `doctor` reports it and whether today's Kite session exists.
 - **No hosted CI.** The GitHub Actions workflows (the test matrix and the tag-built GHCR image) and
   `docker/compose.release.yaml` are removed. The tests run locally before each merge, and the Docker image still
   runs the whole suite before it builds; pin a release by building from its tag.

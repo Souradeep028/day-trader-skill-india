@@ -20,7 +20,8 @@ so a stuck download cannot hold up the next pass; the tools write their files at
 leaves no half-written file.
 
 Alerts (off unless NOTIFY_URL is set, e.g. an ntfy.sh topic URL only you know): one line on a NO-GO morning,
-on a job that failed, and after the daily report. Whatever service the URL points at receives those lines.
+on a job that failed, and after the daily report. On a live account it also watches the live guardian
+(guardian.py, which you start yourself): an alert when it goes quiet during the session, one when it is back. Whatever service the URL points at receives those lines.
 
     python3 scheduler.py run                  # forever (the container's command)
     python3 scheduler.py setup                # a new trading folder: the lists, and a config from the example
@@ -221,6 +222,59 @@ def alerts(job, codes, now, done):
         sent["daily"] = notify(summary_line(today)) or True
 
 
+GUARDIAN_GRACE = datetime.time(9, 16)     # the guardian starts at 9:14 (cron) or by hand: a minute to check in
+SESSION = (datetime.time(9, 15), datetime.time(15, 30))
+
+
+def _check():
+    p = os.path.join(CODE, "trader-risk")
+    if p not in sys.path:
+        sys.path.append(p)
+    import check
+    return check
+
+
+def guardian_watch(now, done, cfg_path=os.path.join("trader", "config.json"),
+                   hb_path=os.path.join("trader", "state", "guardian.json")):
+    """The watchdog: on a live account ("paper": false, "require_guardian" on), during the session, one alert when
+    the live guardian goes quiet (not armed, not checked in for a minute, failing, stopped) and one when it is back.
+    Returns True while it is watching (the loop then wakes every 30 seconds)."""
+    try:
+        with open(cfg_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if cfg.get("paper", True) is not False or cfg.get("require_guardian", True) is False:
+        return False
+    if now.weekday() >= 5 or not SESSION[0] <= now.time() < SESSION[1]:
+        return False
+    check = _check()
+    if check.NSE_HOLIDAYS.get(now.date().isoformat()):
+        return False
+    if now.time() < GUARDIAN_GRACE:
+        return True
+    try:
+        with open(hb_path, encoding="utf-8") as fh:
+            hb = json.load(fh)
+    except (OSError, ValueError):
+        hb = None
+    ok, why = check.guardian_state(hb, now - datetime.timedelta(hours=5, minutes=30))
+    sent = done.setdefault("guardian", {})
+    if sent.get("date") != now.date().isoformat():
+        sent.clear()
+        sent["date"] = now.date().isoformat()
+    if not ok and not sent.get("down"):
+        notify("%s %s: guardian DOWN: %s. Live positions are not being guarded and new live entries are blocked; "
+               "start it: guardian.py run --arm" % (now.date().isoformat(), now.strftime("%H:%M"), why))
+        sent["down"] = now.strftime("%H:%M:%S")
+        print("%s IST guardian DOWN: %s" % (now.strftime("%H:%M"), why), flush=True)
+    elif ok and sent.get("down"):
+        notify("%s %s: guardian is back (down since %s)" % (now.date().isoformat(), now.strftime("%H:%M"), sent["down"]))
+        print("%s IST guardian back" % now.strftime("%H:%M"), flush=True)
+        sent["down"] = None
+    return True
+
+
 def read_state():
     try:
         with open(STATE, encoding="utf-8") as fh:
@@ -252,13 +306,14 @@ def loop(once=False):
             st.setdefault("last", {})[job] = {"at": now.strftime("%Y-%m-%d %H:%M"), "exit_codes": codes}
             print("%s IST %s: exit %s" % (now.strftime("%H:%M"), job, codes), flush=True)
             alerts(job, codes, now, done)
+        watching = guardian_watch(ist_now(), done)
         st["alive"] = ist_now().strftime("%Y-%m-%d %H:%M:%S")
         st["code"] = code_version()
         st["next"] = wake.strftime("%Y-%m-%d %H:%M")
         write_state(st)
         if once:
             return 0
-        time.sleep(max(5.0, min(300.0, (wake - ist_now()).total_seconds() + 5)))
+        time.sleep(max(5.0, min(30.0 if watching else 300.0, (wake - ist_now()).total_seconds() + 5)))
 
 
 def setup():

@@ -65,7 +65,10 @@ What blocks an entry (on top):
                 Live also fails closed: an input a check needs that is missing or stale
                 (trader/sectors.json, trader/surveillance.json or one over 7 days old,
                 the stock's price band, Nifty's price and previous close, a fresh price
-                for a market order) blocks the entry; on paper it is a warning
+                for a market order) blocks the entry; on paper it is a warning.
+                And a live entry needs the guardian (trader-broker's guardian.py) armed and
+                checked in within 60 seconds ("require_guardian", on): without it
+                nothing puts the stop in at the broker after the entry fills
   held limits   the day's first check records the limits (trader/state/limits.json);
                 a limit loosened later that day keeps the morning's stricter value
                 until the next day, with a warning. Tightening applies at once
@@ -135,7 +138,7 @@ DEFAULTS = {
     "max_weekly_loss_inr": 3000, "max_monthly_loss_inr": 6000, "max_same_side_risk_inr": 1000,
     "skip_ex_dates": True, "skip_market_event_days": True, "max_index_move_pct": 3,
     "drawdown_cut_pct": 5, "drawdown_size_factor": 0.5,
-    "block_surveillance": True,
+    "block_surveillance": True, "require_guardian": True,
 }
 EXPIRY_WEEKDAY = 1         # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
 STALE_SURVEILLANCE_DAYS = 7
@@ -185,7 +188,7 @@ LIMIT_RULES = {
     "drawdown_size_factor": "low", "min_reward_risk": "high", "cash_buffer_pct": "high",
     "require_stop": True, "paper": True, "skip_results_days": True, "skip_ex_dates": True,
     "skip_market_event_days": True, "block_surveillance": True, "skip_expiry_days": True,
-    "allow_short": False, "allow_margin": False, "allow_options": False,
+    "allow_short": False, "allow_margin": False, "allow_options": False, "require_guardian": True,
 }
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
@@ -744,6 +747,32 @@ def load_events(doc):
     return out
 
 
+GUARDIAN_FILE = os.path.join("trader", "state", "guardian.json")
+GUARDIAN_STALE = 60        # seconds: a guardian that has not checked in for this long is not guarding anything
+
+
+def guardian_state(doc, now_utc, stale=GUARDIAN_STALE):
+    """(ok, why) from the live guardian's heartbeat (trader-broker's guardian.py, trader/state/guardian.json): ok
+    only when it is ARMED, checked in within `stale` seconds, and its last pass did not fail."""
+    if not doc:
+        return False, "the guardian has not run (no %s): start it with guardian.py run --arm" % GUARDIAN_FILE
+    try:
+        alive = datetime.datetime.strptime(str(doc.get("alive")), "%Y-%m-%d %H:%M:%S")   # IST wall clock
+    except ValueError:
+        return False, "the guardian's heartbeat has no time in it"
+    age = (to_ist(now_utc) - alive).total_seconds()
+    if doc.get("stopped"):
+        return False, "the guardian stopped at %s (%s)" % (alive.strftime("%H:%M:%S"), doc["stopped"])
+    if age > stale:
+        return False, "the guardian last checked in %d seconds ago (%s), over %d: it is not running" % (
+            age, alive.strftime("%Y-%m-%d %H:%M:%S"), stale)
+    if not doc.get("armed"):
+        return False, "the guardian is running as a dry run, not armed (guardian.py run --arm)"
+    if doc.get("error"):
+        return False, "the guardian's last pass failed: %s" % str(doc["error"])[:160]
+    return True, "the guardian is armed and checked in %d seconds ago" % max(age, 0)
+
+
 STOP_FILE = os.path.join("trader", "STOP")   # the stop switch: while this file exists, no new entries
 
 
@@ -764,7 +793,7 @@ def stop_reason(path=None):
 
 def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None,
           bands=None, prev_close=None, sectors=None, events=None, surveillance=None, forward=None, morning=None,
-          stop=None):
+          stop=None, guardian=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
     now          naive UTC (default: the real clock); its IST date is "today"
@@ -776,7 +805,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     surveillance {"symbols": {SYM: list}, "updated": date}, from trader/surveillance.json
     forward      trader-broker's forward test (trader/forward.json): its verdicts unlock live trading
     morning      {"date", "limits"}: the limits at the day's first check (trader/state/limits.json)
-    stop         the stop switch's reason; None reads trader/STOP (stop_reason), False ignores it"""
+    stop         the stop switch's reason; None reads trader/STOP (stop_reason), False ignores it
+    guardian     the live guardian's heartbeat (trader/state/guardian.json): live entries need it armed and alive"""
     c = dict(DEFAULTS)
     c.update(inr_keys(cfg or {}))
     prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
@@ -1207,6 +1237,11 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 warns.append("%s is not in trader/sectors.json: its sector is unknown" % sym)
             if not gate_open:
                 later.append("live: %s. Live entries are locked; paper trading is open" % gate_why)
+            if is_live and c.get("require_guardian", True):
+                g_ok, g_why = guardian_state(guardian, now_utc)
+                if not g_ok:
+                    later.append("live: %s. Without it a live entry has no stop at the broker until someone "
+                                 "places one" % g_why)
             if index_reason:
                 later.append(index_reason)
             for d, what, ekind in events.get("MARKET", []):
@@ -1445,6 +1480,7 @@ def main(argv=None):
     ap.add_argument("--events", default="trader/events.json", help="results dates (trader-analyst: results.py event)")
     ap.add_argument("--surveillance", default="trader/surveillance.json",
                     help="NSE's ASM and GSM lists (trader-scanner: scan.py surveillance)")
+    ap.add_argument("--guardian", default=GUARDIAN_FILE, help="the live guardian's heartbeat (guardian.py)")
     ap.add_argument("--forward", default="trader/forward.json",
                     help="trader-broker's forward test: its verdicts unlock live trading")
     ap.add_argument("--limits-state", default="trader/state/limits.json",
@@ -1487,7 +1523,8 @@ def main(argv=None):
                     sdoc.get("sectors", sdoc) if isinstance(sdoc, dict) else {},
                     load_events(read_json(a.events, "events", required=False)),
                     read_json(a.surveillance, "surveillance lists", required=False),
-                    read_json(a.forward, "forward test", required=False), morning)
+                    read_json(a.forward, "forward test", required=False), morning,
+                    guardian=read_json(a.guardian, "guardian heartbeat", required=False))
         if pdoc.get("as_of"):
             res["prices_as_of"] = pdoc["as_of"]
         if not a.no_write:

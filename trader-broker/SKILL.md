@@ -488,7 +488,19 @@ terminal, `guardian.py login --request-token ...` (with `KITE_API_KEY` and
 `KITE_API_SECRET` in their environment, never in the chat) and `guardian.py
 run --arm` (or a cron line at 9:14 IST). Arming needs `"paper": false`.
 Alerts go to `NOTIFY_URL`, actions to `trader/state/guardian-log.jsonl`, the
-heartbeat to `trader/state/guardian.json`. Before arming: check
+heartbeat to `trader/state/guardian.json`.
+
+**Knowing it is running.** trader-risk blocks every live entry unless the
+guardian is armed and checked in within 60 seconds (`"require_guardian"`,
+on; turning it off waits until the next day, like any loosened limit). A
+crash, Ctrl-C or `docker stop` during the session sends an alert on the way
+down. The scheduler (the Docker container) alerts once when it goes quiet
+during a live session and once when it is back. `trader.py doctor` shows it
+(FAIL during the session when it is not guarding) and whether today's Kite
+session exists. For an alert even when the machine itself dies, set
+`GUARDIAN_PING_URL` to a dead-man's switch such as a healthchecks.io check:
+the guardian pings it once a minute while armed, and the service tells you
+when the pings stop. Before arming: check
 developers.kite.trade for the rules on orders sent through the API (a
 registered static IP, market protection on market orders; set
 `"guardian_market_protection"` if Kite asks for it). It sends orders with the
