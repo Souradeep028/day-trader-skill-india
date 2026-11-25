@@ -225,7 +225,7 @@ def main(argv=None):
         c["id"] = i
     doc = {"built": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC"), "today": today,
            "orb_rule": forward.rule_text(test), "orb_started": test["started"],
-           "gap_rule": gapshadow.rule_text(), "gap_started": gtest["started"] if gtest else None,
+           "gap_rule": gapshadow.rule_text(gtest), "gap_started": gtest["started"] if gtest else None,
            "replay_from": rep.get("from"), "summary": summary(cards), "trades": cards}
     with open(TEMPLATE, encoding="utf-8") as fh:
         page = fh.read()

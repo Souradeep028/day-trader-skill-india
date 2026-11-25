@@ -50,6 +50,8 @@ class AuditPage(unittest.TestCase):
         test["shadow"] = {"sessions": forward.shadow_trades(test, stocks, charts[edge.INDEX], charts[edge.VIX], days)}
         forward.write("trader/forward.json", test)
         quiet(gap.main, ["start", "--file", "trader/forward-gap.json", "--today", "2026-10-01"])
+        from test_gapshadow import snaps         # a pre-open snapshot each morning, at the official opens
+        snaps(os.path.join("trader", "preopen"), "2026-10-01", "2026-11-06")
         quiet(gap.main, ["shadow", "--file", "trader/forward-gap.json", "--today", "2026-11-06", "--watchlist",
                          "trader/nifty50.txt", "--offline", DAILY, "--offline-5m", FIVE])
         self.orb = [t for d in test["shadow"]["sessions"].values() for t in d]

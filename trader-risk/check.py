@@ -52,14 +52,20 @@ What blocks an entry (on top):
   charges       the round trip's charges at the stop over max_charges_pct_of_risk
                 (15) % of the loss on price: a stop too close for the charges
   daily loss    the max losses at the stops of today's entries plus this one
-                over max_daily_loss_inr (win or lose, each counts in full)
+                over max_daily_loss_inr (win or lose, each counts in full); a
+                trade that lost MORE than planned (a stop that slipped) counts
+                its realised loss after charges instead
   trades        max_trades_per_day entries already placed today
   live          on a live account ("paper": false): no PASSED forward test (trader-broker's
                 forward.py, trader/forward.json) on the shadow replay AND your paper
                 trades, both within 30 days; or the live stop (a 20-trade live block
                 under the backtest's low end, or the live trades 5 R under their best).
                 Locked in the code (LIVE_NEEDS_FORWARD_PASS), not the config. Live size
-                ramps 25 %, 50 %, 100 % of the max loss over good 20-trade blocks
+                ramps 25 %, 50 %, 100 % of the max loss over good 20-trade blocks.
+                Live also fails closed: an input a check needs that is missing or stale
+                (trader/sectors.json, trader/surveillance.json or one over 7 days old,
+                the stock's price band, Nifty's price and previous close, a fresh price
+                for a market order) blocks the entry; on paper it is a warning
   held limits   the day's first check records the limits (trader/state/limits.json);
                 a limit loosened later that day keeps the morning's stricter value
                 until the next day, with a warning. Tightening applies at once
@@ -501,6 +507,36 @@ def open_today(state, today):
     return {k: v for k, v in pos.items() if abs(v) > 1e-9}
 
 
+def day_loss_used(entries_today, state, today, rates=None):
+    """(rupees, warnings): what today's trades count against max_daily_loss_inr. Each symbol counts the larger of
+    its entries' planned max losses (win or lose, each counts in full) and what it really lost: the realised loss
+    of its round trips closed today, after charges, plus the planned max loss of a position still open. A stop
+    that slipped past its plan counts what it cost, not what was planned."""
+    planned, last, warns = {}, {}, []
+    for r in entries_today:
+        sym = str(r.get("symbol", "")).upper()
+        ml = _f(r.get("max_loss"))
+        if ml is None:
+            warns.append("an entry placed today (%s %s) has no max loss in the log; only its realised loss counts "
+                         "in the daily loss" % (r.get("side"), r.get("symbol")))
+            continue
+        planned[sym] = planned.get(sym, 0.0) + ml
+        last[sym] = ml
+    realised = {}
+    for _d, sym, net in closed_trades(state, today, today, rates):
+        realised[sym] = realised.get(sym, 0.0) + max(-net, 0.0)
+    still_open = open_today(state, today)
+    total = 0.0
+    for sym in sorted(set(planned) | set(realised)):
+        p = planned.get(sym, 0.0)
+        actual = realised.get(sym, 0.0) + (last.get(sym, 0.0) if sym in still_open else 0.0)
+        if actual > p + CENT:
+            warns.append("%s lost %s today against %s planned (a stop that slipped, or a fill past the plan): the "
+                         "daily loss counts %s" % (sym, money(realised.get(sym, 0.0)), money(p), money(actual)))
+        total += max(p, actual)
+    return round(total, 2), warns
+
+
 def drawdown(state, start_equity, rates=None):
     """(peak, equity, percent under the peak) from every round trip closed so far, in order, after charges,
     starting from start_equity (the budget). Each day's fills per symbol are paired back to flat."""
@@ -748,14 +784,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     done_today = placed_today(state, today)
     count_today = len(done_today)
     entries_today = [r for r in done_today if rec_is_entry(r)]
-    loss_today = 0.0
-    for r in entries_today:
-        ml = _f(r.get("max_loss"))
-        if ml is None:
-            top_warn.append("an entry placed today (%s %s) has no max loss in the log; not counted in "
-                            "the daily loss" % (r.get("side"), r.get("symbol")))
-        else:
-            loss_today += ml
+    loss_today, loss_warns = day_loss_used(entries_today, state, today, c.get("charges"))
+    top_warn.extend(loss_warns)
     placed_keys = {(str(r.get("symbol", "")).upper(), r.get("side")) for r in done_today}
     win_reasons, win_warns = window_check(now_ist, c)
     halt = stop_reason() if stop is None else (stop or None)
@@ -768,8 +798,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         sec = sectors.get(str(r.get("symbol", "")).upper())
         if sec:
             sector_count[sec] = sector_count.get(sec, 0) + 1
+    is_live = not c.get("paper", True)
+    blind = []       # live only: a safety input is missing, so every new entry is blocked instead of unchecked
     if c.get("max_entries_per_sector") and not sectors:
-        top_warn.append("no trader/sectors.json: the sector cap (max_entries_per_sector) is off")
+        if is_live:
+            blind.append("no trader/sectors.json, so the sector cap cannot be checked (scan.py sectors)")
+        else:
+            top_warn.append("no trader/sectors.json: the sector cap (max_entries_per_sector) is off")
     day_warn = []
     today_d = datetime.date.fromisoformat(today)
     day_before = previous_trading_day(today_d).isoformat()
@@ -777,14 +812,21 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     surv = (surveillance or {}).get("symbols") or {}
     surv = {str(k).upper(): v for k, v in surv.items()}
     if c.get("block_surveillance") and surveillance is None:
-        day_warn.append("no trader/surveillance.json: NSE's ASM and GSM lists are not checked "
-                        "(trader-scanner: scan.py surveillance)")
+        if is_live:
+            blind.append("no trader/surveillance.json, so NSE's ASM and GSM lists cannot be checked "
+                         "(scan.py surveillance)")
+        else:
+            day_warn.append("no trader/surveillance.json: NSE's ASM and GSM lists are not checked "
+                            "(trader-scanner: scan.py surveillance)")
     elif surveillance and surveillance.get("updated"):
         try:
             age = (today_d - datetime.date.fromisoformat(str(surveillance["updated"])[:10])).days
         except ValueError:
             age = None
-        if age is not None and age > STALE_SURVEILLANCE_DAYS:
+        if age is not None and age > STALE_SURVEILLANCE_DAYS and is_live and c.get("block_surveillance"):
+            blind.append("trader/surveillance.json is %d days old, over %d: refresh it (scan.py surveillance)"
+                         % (age, STALE_SURVEILLANCE_DAYS))
+        elif age is not None and age > STALE_SURVEILLANCE_DAYS:
             day_warn.append("trader/surveillance.json is %d days old: NSE changes the ASM and GSM lists every "
                             "week, refresh it (scan.py surveillance)" % age)
     is_expiry = expiry_day(today_d)
@@ -831,6 +873,11 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     elif cap_idx and prices and INDEX not in prices:
         day_warn.append("no Nifty 50 price in trader/prices.json: the index-move check is off "
                         "(alerts.py quote ^NSEI INFY.NS --write)")
+    if cap_idx and is_live and (not n_px or not n_pc or (price_times is not None and (
+            price_times.get(INDEX) is None
+            or (now_utc - price_times[INDEX]).total_seconds() > FRESH_MINUTES * 60))):
+        blind.append("no Nifty 50 price and previous close under %d minutes old, so the index-move check cannot "
+                     "run (alerts.py quote ^NSEI --write)" % FRESH_MINUTES)
     rates = c.get("charges") or {}
     bands = {str(k).upper(): v for k, v in (bands or {}).items()}
     prev_close = {str(k).upper(): _f(v) for k, v in (prev_close or {}).items() if _f(v)}
@@ -842,13 +889,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     seen = set()
     results = []
     batch_entries, batch_loss = 0, 0.0
-    live = not c.get("paper", True)
-    if live:
+    if is_live:
         top_warn.append("LIVE account (\"paper\": false): these orders use real money")
     top_warn.extend(held_warns)
     gate_open, gate_why = (True, "")
     ramp = None
-    if live and LIVE_NEEDS_FORWARD_PASS:
+    if is_live and LIVE_NEEDS_FORWARD_PASS:
         gate_open, gate_why = live_gate(forward, today)
         if gate_open:
             ramp = live_ramp(forward, state, today, c.get("charges"))
@@ -1197,8 +1243,19 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     warns.append("the stop %s is over the upper price band %s: if %s locks at the band, the stop "
                                  "cannot fill and the short cannot be bought back until it reopens"
                                  % (_p(stop), _p(upper), sym))
-            elif bands and sym not in bands:
+            elif bands and sym not in bands and not is_live:
                 warns.append("%s is not in trader/bands.json: its price band is unknown (run scan.py universe)" % sym)
+            if is_live:
+                # a live entry is never placed with a safety check silently off: missing data blocks it
+                later.extend("live: " + b for b in blind)
+                if sym not in bands:
+                    later.append("live: the price band of %s is unknown (trader/bands.json: scan.py universe)" % sym)
+                if cap_sec and sectors and not sec:
+                    later.append("live: %s is not in trader/sectors.json, so the sector cap cannot be checked" % sym)
+                if typ == "market" and live is None:
+                    later.append("live: no %s price under %d minutes old for a market order: the risk would be "
+                                 "measured from the plan alone (alerts.py quote %s --write)"
+                                 % (sym, FRESH_MINUTES, sym))
             if stop and ref and risk_ps:
                 info.append("entry %s (%s), stop %s, target %s: risk %s a share"
                             % (_p(ref), REF_WORDS.get(ref_from, ref_from), _p(stop),

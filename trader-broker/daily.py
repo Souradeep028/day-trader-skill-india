@@ -165,8 +165,11 @@ def trading_part(state, cfg, day, forward_doc):
     return out
 
 
-def autopilot_part(hb, day, flat_by="15:10"):
-    """The autopilot's heartbeat for the day: None when it has never run here."""
+def autopilot_part(hb, day, flat_by="15:10", off=False):
+    """The autopilot's heartbeat for the day: None when it has never run here. off: "paper_autopilot": false."""
+    if off:
+        return ("Autopilot: off (\"paper_autopilot\": false in trader/config.json). The shadow replay above is "
+                "the forward test; no paper trades are taken.")
     if not hb:
         return None
     if hb.get("date") != day:
@@ -258,11 +261,12 @@ def report(day, mk, fw, fw_today, test, tr, core, tm, paper=None, gap=None):
             L.append("- Paper: " + ticket.performance_text(paper["performance"]) + ".")
         sl = paper.get("slippage")
         if sl:
-            L.append("- Entry slippage: %+.2f a share, %+.1f bp, %+.3f R a trade on average (%s over %d trades): what "
-                     "acting a little after the signal costs. Backtests and new shadow tests assume 3 bp: use the "
-                     "measured figure (edge.py run --fills realistic --slippage-bp %.1f)%s." % (
+            L.append("- Entry slippage: %+.2f a share, %+.1f bp, %+.3f R a trade on average (%s over %d trades): the "
+                     "price's drift from the signal to the pass, on top of the bp the paper fills already pay. It "
+                     "is not a measured cost: the spread and the queue only show on live fills, so do not feed it "
+                     "back into a backtest as the slippage%s." % (
                          sl["per_share"], sl.get("bp", 0), sl["R"], ticket._money(sl["rupees"]), sl["trades"],
-                         max(sl.get("bp", 0), 0), "" if sl["trades"] >= 30 else ", once it rests on 30+ trades"))
+                         "" if sl["trades"] >= 30 else " (and it rests on under 30 trades)"))
         m = paper.get("matched") or {}
         if fw and fw.get("avg_R") is not None and paper.get("avg_R") is not None:
             L.append("- Execution gap: paper %+.2f R a trade against the shadow's %+.2f R (%+.2f)%s." % (
@@ -325,6 +329,7 @@ def main(argv=None):
     ap.add_argument("--surveillance", default="trader/surveillance.json")
     ap.add_argument("--out", help="default trader/daily/<date>.md")
     ap.add_argument("--gap-forward", default=gapshadow.FILE, help="the gap-up shadow test (gapshadow.py start)")
+    ap.add_argument("--preopen", default=gapshadow.preopen.DIR, help="the pre-open snapshots (preopen.py save)")
     ap.add_argument("--offline-daily", metavar="DIR", help="<SYMBOL>.json(.gz) daily charts for the gap-up test")
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args(argv)
@@ -381,7 +386,7 @@ def main(argv=None):
             if not a.no_write:
                 forward.write(a.forward, test)
         hb_line = autopilot_part(forward.read(a.heartbeat, "heartbeat", required=False), day,
-                                 cfg.get("flat_by") or "15:10")
+                                 cfg.get("flat_by") or "15:10", off=cfg.get("paper_autopilot", True) is False)
         if hb_line:
             tr = tr or {"trades": {}, "open": [], "limits": [], "live": None}
             tr["autopilot"] = hb_line
@@ -409,7 +414,7 @@ def main(argv=None):
                         daily_t[s] = gapshadow.fetch_daily(s)
                 except (gapshadow.GapError, swing.SwingError):
                     continue
-            gres = gapshadow.update(gtest, daily_t, charts, day)
+            gres = gapshadow.update(gtest, daily_t, charts, day, gapshadow.snaps_for(a.preopen, gtest["started"], day))
             gap = gapshadow.lines(gtest, gres, day) + ["- " + forward.code_text(gtest)]
             if not a.no_write:
                 forward.write(a.gap_forward, gtest)

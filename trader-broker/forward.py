@@ -20,13 +20,19 @@ start   freezes the rule in trader/forward.json with what the backtest expects: 
           --kill-r 0.05        from 300 trades on, STOP while the average is under +0.05 R
           --z 2.5              PASS when the average less 2.5 standard errors is above 0; STOP (from 40
                                trades) when the average plus 2.5 standard errors is under 0. 2.5, not 1.96,
-                               because the test is looked at after every session
+                               because the test is looked at after every session. The standard error is the
+                               larger of the per-trade one and the one from whole days (the trades of one
+                               day move together: same market, same side), so 3 correlated trades a day do
+                               not count as 3 independent ones
           --max-drawdown-r 30  STOP if the trades since the start are ever 30 R under their best
-        Simulated on the R spread of these rules (SD about 1 R a trade): a rule with no edge passes about 3 %
-        of the time and one losing 0.10 R a trade almost never; one making +0.15 R passes about 94 %; one
-        making +0.076 R about half the time (any test of a small edge needs many trades).
+        Simulated on the R spread of these rules (SD about 1 R a trade, 3 trades a day): a rule with no edge
+        passes about 2 to 3 % of the time, whether a day's trades are independent or move together (with a
+        per-trade standard error alone it was 5 % at a same-day correlation of 0.15, the fixtures' figure, and
+        7 % at 0.3), and one losing 0.10 R a trade almost never; one making +0.15 R passes 84 to 92 % of the
+        time; one making +0.076 R only 35 to 42 % (any test of a small edge needs many trades).
         --fills realistic (the default) replays the shadow the way the paper autopilot fills: the next bar's
-        open, --slippage-bp (3, or the measured figure) on market fills, targets traded through.
+        open, --slippage-bp (3, or a measured figure from live fills, or bid and ask logged at each signal) on market fills, targets traded through.
+        The paper autopilot charges the same bp on its own fills, so paper is never kinder than the shadow.
         Tests frozen before this gate (no "gate" in their stop rules) keep their 40-trade verdict, but it
         no longer unlocks live trading: trader-risk's live lock needs a sequential PASS.
 signal  logs each signal of the rule: --taken or --skipped (with --reason). Taking some and skipping others
@@ -178,6 +184,7 @@ def evaluate(test, trades):
     exp = test["expected"]
     rules = test["stop_rules"]
     rs = [t["R"] for t in trades if t.get("R") is not None]
+    days = [t.get("date") for t in trades if t.get("R") is not None]
     cum = peak = worst = 0.0
     for r in rs:
         cum += r
@@ -205,7 +212,7 @@ def evaluate(test, trades):
         verdict, state = ("STOP: the trades since the start fell %.1f R from their best, past the %.0f R limit "
                           "set at the start" % (worst, rules["max_drawdown_R"])), "stop"
     elif rules.get("gate") == "sequential":
-        verdict, state = sequential_verdict(rs, rules)
+        verdict, state = sequential_verdict(rs, rules, days)
     elif n < EARLY:
         verdict, state = "Too early: %d trade%s of %d. Keep taking every signal." % (
             n, "" if n == 1 else "s", rules["min_trades"]), "running"
@@ -336,19 +343,40 @@ def cmd_shadow(a):
     return 0 if res["state"] != "stop" else 1
 
 
-def sequential_verdict(rs, rules):
-    """(verdict, state) for the sequential gate, from the R of every trade so far (the drawdown stop is
-    checked before this)."""
+def standard_error(rs, days=None):
+    """The standard error of the average R: the larger of the per-trade one (SD / root n) and the one that treats
+    each day's trades as one draw (a cluster-robust standard error over days). The trades of one day share the
+    market's move, and with a filter like with_nifty they are on the same side of it, so they are not independent:
+    counting them as independent understates the error and lets a rule with no edge pass more often."""
     import math
+    n = len(rs)
+    if n < 2:
+        return 0.0
+    avg = sum(rs) / n
+    se = math.sqrt(sum((r - avg) ** 2 for r in rs) / (n - 1)) / math.sqrt(n)
+    if days and len(days) == n:
+        dev = {}
+        for r, d in zip(rs, days):
+            dev[d] = dev.get(d, 0.0) + (r - avg)
+        g = len(dev)
+        if g > 1:
+            se = max(se, math.sqrt(g / (g - 1.0) * sum(x * x for x in dev.values())) / n)
+    return se
+
+
+def sequential_verdict(rs, rules, days=None):
+    """(verdict, state) for the sequential gate, from the R of every trade so far and, when given, each trade's
+    date (the standard error then allows for trades on the same day moving together). The drawdown stop is
+    checked before this."""
     n = len(rs)
     early, lo_n, hi_n = rules.get("early", 40), rules["min_trades"], rules.get("max_trades", 1300)
     if n < early:
         return ("Too early: %d trade%s of the %d before any verdict (no PASS before %d). Keep taking every signal."
                 % (n, "" if n == 1 else "s", early, lo_n)), "running"
     avg = sum(rs) / n
-    sd = math.sqrt(sum((r - avg) ** 2 for r in rs) / (n - 1)) if n > 1 else 0.0
+    se = standard_error(rs, days)
     z = rules.get("z", 2.5)
-    lo, hi = avg - z * sd / math.sqrt(n), avg + z * sd / math.sqrt(n)
+    lo, hi = avg - z * se, avg + z * se
     band = "average %+.3f R, range %+.2f to %+.2f R" % (avg, lo, hi)
     if hi < 0:
         return ("STOP: after %d trades it is losing by more than chance (%s). Drop it; do not re-tune it on "
@@ -403,7 +431,7 @@ def cmd_start(a):
               rules["min_trades"], rules["z"], rules["early"], rules["z"], rules["min_trades"], rules["kill_R"],
               rules["max_trades"], rules["max_drawdown_R"]))
     print("Shadow fills: %s." % ("realistic, %g bp on market fills" % fills["slippage_bp"]
-                                 if fills["model"] == "realistic" else "at the signal bar's close (an upper bound)"))
+                                 if fills["model"] == "realistic" else "at the signal bar's close, no slippage (optimistic)"))
     print("Log every signal: forward.py signal SYMBOL.NS --taken (or --skipped --reason ...).")
     return 0
 
@@ -490,9 +518,9 @@ def main(argv=None):
     p.add_argument("--z", type=float, default=SEQUENTIAL["z"], help="standard errors for PASS and early STOP")
     p.add_argument("--max-drawdown-r", type=float, default=SEQUENTIAL["max_drawdown_R"])
     p.add_argument("--fills", choices=("realistic", "close"), default="realistic",
-                   help="how the shadow replay fills: realistic (the autopilot's way) or close (the old upper bound)")
-    p.add_argument("--slippage-bp", type=float, help="bp on market fills in the shadow (default 3; use the paper "
-                   "autopilot's measured figure once it has one)")
+                   help="how the shadow replay fills: realistic (the autopilot's way) or close (the old, optimistic one: no slippage)")
+    p.add_argument("--slippage-bp", type=float, help="bp on market fills in the shadow and the paper autopilot (default 3; "
+                   "use a measured figure from live fills, or bid and ask logged at each signal once there is one)")
     p.add_argument("--live", action="store_true", help="test the live account's trades (default: paper)")
     p.add_argument("--replace", action="store_true")
     p = sub.add_parser("signal", help="log a signal of the rule, taken or skipped")

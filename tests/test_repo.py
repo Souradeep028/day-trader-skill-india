@@ -40,7 +40,8 @@ class Repo(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(CONGRESS, "trader-pelosi", "SKILL.md")))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
+        root = sorted(d for d in os.listdir(ROOT)
+                      if not d.startswith(".git") and d not in (".pytest_cache", "__pycache__", ".venv", "venv"))
         self.assertEqual(root, sorted([".claude-plugin", "CHANGELOG.md", "LICENSE", "README.md", "congress-trades", "core",
                                        "docker", "tests", "trader"] + SKILLS))
         # trader/ ships NSE's lists only: personal config and state stay out of git

@@ -4,6 +4,72 @@ Versions follow semver. A release is a git tag `v<version>`; the tag builds and 
 `ghcr.io/souradeep028/day-trader-india:<version>` (amd64 and arm64) once the tests pass. Pin a version for the
 daily run and upgrade between forward tests, never during one: the code fingerprint shows a mid-test change.
 
+## Unreleased
+
+Fixes from a review of the research and the paper autopilot. A forward test running now sees a code change:
+paper fills get worse by the test's own slippage, so start a new test (`forward.py start --replace`) rather than
+mixing the two.
+
+- **The daily loss limit counts what a trade really lost.** It added up today's entries' PLANNED max losses only,
+  so a stop that slipped past its plan went uncounted: realised -1,132 on a 500 plan left room for another entry
+  under a 1,500 limit. Each symbol now counts the larger of its planned max losses and its realised loss today
+  after charges (plus the planned max loss of a position still open), with a warning naming the slip.
+- **Live fails closed.** On a live account, a check that cannot run blocked nothing: no `trader/sectors.json`, no
+  or a stale `trader/surveillance.json`, an unknown price band, no Nifty price, or no fresh price for a market order
+  only printed a warning. Each now blocks a live entry (exits are never blocked); paper keeps the warnings.
+- **One answer for the copied arithmetic.** `tests/test_parity.py` holds the five copies of Zerodha's charges, the
+  four round trips, the two order fingerprints (trader-broker only shows an order trader-risk passed by its
+  fingerprint) and the tick sizes and rounding to one result, so a copy cannot drift unnoticed.
+- **Tests run clean under pytest too:** the repo-layout test ignores `.pytest_cache` and the like, and a helper
+  pytest took for a test is renamed.
+- **Paper fills like the shadow.** The autopilot charged no basis points of slippage: entries at Yahoo's last trade
+  and stops at the stop, a tick worse. Every paper market fill (entry, stop, flat-by) now pays the frozen test's
+  `slippage_bp` (3 by default) and a tick, exactly as the shadow replay does, so paper is never kinder than the
+  shadow. On the frozen ORB rule 3 bp is about 0.075 R a trade, the size of the edge it is testing.
+- **The autopilot's risk check sees the whole day.** It used to pass only the stock's price, so the 3 % Nifty
+  halt and the NSE price band never fired on paper. It now passes Nifty's price and previous close (from the bars
+  it already has) and the bands in `trader/bands.json` (`--bands`).
+- **The gate counts days, not just trades.** The sequential gate's standard error is now the larger of the
+  per-trade one and the one over whole days: a day's trades share the market's move. Simulated at a same-day
+  correlation of 0.15 (the fixtures' figure), a rule with no edge passed 4.7 % of the time; now 2.5 %.
+- **`trader/sectors.json` is in the repo**, with `scan.py sectors` to rebuild it from NSE's Nifty 500 list. It was
+  ignored by `.gitignore`, so a fresh clone failed three tests and the Docker build, and the sector cap was off.
+- **Honest wording.** Close fills are optimistic, not an upper bound. 5-minute research fills at the next bar's
+  open are no delay at all, not "harsher than a real order". Paper's "Entry slippage" is drift, not a measured
+  cost, and is no longer offered as the figure for backtests.
+- **New tests:** no look-ahead (every signal is identical on the day cut right after it), paper and shadow exits
+  are one rule, paper pays the shadow's slippage, the index halt and price band reach the autopilot, same-day
+  trades count as one draw.
+- **Burned sessions in research.py.** `trader-timemachine/burned.json` lists the sessions no test may count:
+  13 August to 6 November 2026 (edge.py's grid picked the hypotheses there) and 7 November onward (the forward
+  test's). `research.py run` leaves them out, refuses data that is all burned, and `--include-burned` explores
+  them as IN-SAMPLE with nothing able to pass. A frozen plan records the list.
+- **No verdict from the Monte Carlo.** timemachine.py no longer says "leans / strongly toward the target": its
+  replays draw each bar on its own, so the odds reflect the stock's range and recent drift (a short gets the
+  mirror image), not an edge. It prints the odds and a line saying what they are not.
+- **One lock on the broker log.** ticket.py's writing commands (approve, decline, result, paper, paper-check,
+  fill) and the autopilot's whole pass hold `trader/state/broker.lock`, so a record written by hand during a
+  pass is no longer overwritten by the pass's last write.
+- **A missing bar no longer drops a stock's day.** edge.py fills a bar Yahoo left out flat at the close before
+  it (it adds no move of its own; a stop only the missing bar reached is missed) instead of leaving out the whole
+  session, which chose sessions on what
+  happened later. A session missing its 9:15 bar or more than 15 bars is still left out; the report says what
+  it filled.
+
+- **The gap-up test decides on what an order can see.** openclose.py's one passing rule (short a 2 % gap-up in
+  the pre-open auction) picked its stocks on the official open, which is fixed at 9:08 after the last pre-open
+  order. Its ten-year +0.28 R is now labelled an upper end. `trader-broker/preopen.py` saves a snapshot of the
+  indicative prices taken from 9:00 to 9:08 (NSE's pre-open JSON saved from a browser, a Kite `get_quote` reply,
+  or a CSV; it never fetches), and a gap test frozen now (`gapshadow.py start --replace`) decides on it and fills
+  at the official open. A day without a snapshot is skipped with the reason; an older test warns in every status.
+  The Docker scheduler alerts at 9:03 when today's snapshot is missing.
+- **An off switch for the paper autopilot.** `"paper_autopilot": false` in trader/config.json makes every pass do
+  nothing; the shadow replay after the close then judges the frozen rule, the machine need not be awake from 9:15
+  to 15:30, and the pre-flight and the daily report know it is off.
+- **The Time Machine's history keeps days with missing bars**, filled flat as edge.py does, instead of leaving them
+  out (which picked days on what happened later). On the INFY fixture it adds 15 October: 21 trades, not 20,
+  -0.37 R, not -0.35. The replays' pool still uses complete days only, since flat bars would understate the moves.
+
 ## 3.0.0
 
 The platform release: the pack as something anyone with Claude Code can install, upgrade and trust.

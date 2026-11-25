@@ -128,9 +128,10 @@ example config (a 1 lakh budget, a 500 rupee max loss per trade).
    5-minute candle drawn from INFY's own candles at that time of day over the
    previous 57 sessions (seed 19, so anyone can repeat it): target first
    4.9 %, stop first 53.5 %, still open at 15:10 41.6 %. Average R -0.32, or
-   -0.43 after charges. The same rule on those 57 real sessions fired 20
-   times: 1 target, 10 stops, 9 neither. Its verdict: strongly toward the
-   stop. That is the point of looking before you risk a rupee.
+   -0.43 after charges. The same rule on the 58 real sessions before it
+   fired 21 times: 1 target, 10 stops, 10 neither, an average of -0.37 R.
+   The odds measure INFY's range, not an edge; the history says the rule
+   lost there. That is the point of looking before you risk a rupee.
 6. **`/trader-budget`**: 41 shares (₹47,580.50). If the stop fills at 1,149.80
    the loss is ₹438.70 plus ₹50.30 of charges, ₹489. 42 shares would be
    ₹500.91, over the limit. At the target it wins ₹826.27 after charges:
@@ -192,6 +193,7 @@ python3 trader-broker/daily.py                                         # the day
 python3 trader-broker/forward.py shadow                                # replay the rule on today's bars, every signal
 python3 trader-broker/forward.py status                                # the forward test's verdict
 python3 trader-broker/gapshadow.py start                               # freeze the gap-up short as a shadow test
+python3 trader-broker/preopen.py save preopen.json                     # each morning, 9:00 to 9:08: what a pre-open order sees
 python3 trader-broker/audit.py                                         # every paper and shadow trade on its chart, with costs
 trader-broker/day.sh 11:00                                             # the autopilot for a stretch of the day, without cron
 python3 trader-broker/ticket.py tax --fy FY27 --csv trader/tax.csv     # the year's P&L, charges, turnover
@@ -308,7 +310,14 @@ Entering at the first trade after 9:15, nothing passed. Entering in the
 pre-open auction, one did (short a 2 % gap-up, 1 % stop: +0.28 R a trade over
 2,275 trades), but it made only +0.11 R in the last third of the years and
 lost on the last 60 days: a lead for a forward test that can place pre-open
-orders, not an edge.
+orders, not an edge. And it picked the stocks on the official open, which is
+fixed at 9:08 after the last pre-open order: no order could pick them that
+way, so +0.28 R is an upper end. `gapshadow.py` now decides on a snapshot of
+the indicative prices you save each morning before 9:08 (`preopen.py save`,
+from NSE's pre-open page or a Kite quote) and fills at the official open, as
+a real pre-open order would; a day without a snapshot is skipped. At ₹500 a
+trade, about 227 trades a year make roughly ₹7,800 after tax at +0.11 R and
+₹19,800 at +0.28 R, against about ₹11,000 from the index on ₹1,00,000.
 
 **The turn of the month** (holding NIFTYBEES only over each month's last and
 first sessions, `tom.py`) is a real effect that does not pay: ₹1 lakh became
@@ -342,15 +351,25 @@ Why 300 and not 40: a trade's R spreads about 1 R either side, so 40 trades
 leave a range of about ±0.31 R around the average. Simulated on these rules'
 own spread, the old 40-trade gate passed a rule that loses 0.10 R a trade
 one time in four, and stopped a rule that makes +0.076 R more often than it
-passed it. The sequential gate passes a rule with no edge about 3 % of the
-time, one losing 0.10 R almost never, and one making +0.15 R about 94 % of
-the time. Telling +0.076 R from zero takes about 1,300 trades: there is no
-quick way to prove a small edge. The risk check's limits (cool-off, sector
+passed it. The sequential gate passes a rule with no edge about 2 to 3 % of
+the time, one losing 0.10 R almost never, and one making +0.15 R 84 to 92 %
+of the time. Its standard error counts each day's trades as one draw when
+they move together (they share the market's move): counted as independent,
+a same-day correlation of 0.15 (the fixtures' figure) would let a rule with
+no edge pass about 5 % of the time. A rule making +0.076 R passes only 35 to
+42 % of the time: at 1,300 trades the expected average is 2.7 standard
+errors above 0, and 80 % power needs about 2,000 trades, more when a day's
+trades move together. There is no quick way to prove a small edge. The risk check's limits (cool-off, sector
 cap, weekly and monthly losses, drawdown sizing, same-direction cap,
 charges, big-Nifty-day halt, results days, ex-dates, market events,
 surveillance) are there for the days it does not work.
 
 ## Hands off: what runs by itself
+
+To judge the rule by the shadow alone (the replay after the close, the same
+fills), set `"paper_autopilot": false` in trader/config.json: every pass then
+does nothing, the reports say it is off, and the machine need not stay awake
+from 9:15 to 15:30. The daily report still has to run after the close.
 
 Set it up once, in your trading folder:
 
@@ -575,7 +594,7 @@ trader-timemachine/ SKILL.md, timemachine.py, edge.py, swing.py, rotation.py, op
                     research.py, hypotheses.example.json
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, sip.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, forward.py, gapshadow.py, daily.py, autopilot.py, preflight.py, audit.py,
+trader-broker/      SKILL.md, ticket.py, forward.py, gapshadow.py, preopen.py, daily.py, autopilot.py, preflight.py, audit.py,
                     scheduler.py, day.sh, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, results.py

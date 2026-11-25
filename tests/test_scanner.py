@@ -636,6 +636,32 @@ class Surveillance(unittest.TestCase):
             self.assertIn("surveillance: PQR.NS is on NSE's GSM Stage 0 list", " | ".join(r["results"][0]["reasons"]))
 
 
+class Sectors(unittest.TestCase):
+    """scan.py sectors: NSE's Nifty 500 list (fixture: ind_nifty500list.csv, downloaded 16 November 2026) ->
+    trader/sectors.json, the sector cap's map. The shipped trader/sectors.json is this file's output."""
+    CSV = os.path.join(SDIR, "ind_nifty500list.csv")
+
+    def test_parse(self):
+        with open(self.CSV, encoding="utf-8") as fh:
+            got = scan.parse_sectors(fh.read())
+        self.assertEqual(len(got), 501)
+        self.assertEqual((got["INFY.NS"], got["M&M.NS"]), ("Information Technology", "Automobile and Auto Components"))
+        with self.assertRaises(scan.ScanError):
+            scan.parse_sectors("Company Name,Symbol\nAbc Ltd,ABC\n")
+
+    def test_cli_and_the_shipped_map(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "sectors.json")
+            code, text, err = run(["sectors", "--file", self.CSV, "--out", out, "--now", "2026-11-16 08:30"])
+            self.assertEqual(code, 0, err)
+            self.assertIn("501 stocks in 20 industries", text)
+            with open(out) as fh:
+                doc = json.load(fh)
+        with open(os.path.join(os.path.dirname(FIX), "..", "trader", "sectors.json")) as fh:
+            shipped = json.load(fh)
+        self.assertEqual(doc["sectors"], shipped["sectors"])
+
+
 class Morning(unittest.TestCase):
     """trader-scanner/morning.py: the routine runs the real tools on the real fixtures."""
 

@@ -805,6 +805,40 @@ class LossLimits(unittest.TestCase):
         self.assertIn("direction: ₹600 already at risk in open longs today, plus ₹489 = ₹1,089", reasons(res))
         self.assertNotIn("direction", reasons(self.one({"orders": [placed, buy, sell]})))   # closed: off the hook
 
+    def test_a_slipped_stop_counts_its_real_loss_in_the_daily_limit(self):
+        # planned 500, but the stop slipped: 100 bought at 100, sold at 89 = -1,100 less charges, over 1,000 more than
+        # planned. The daily check used to count the 500 plan: 500 + 489 = 989 passed a 1,500 limit
+        placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
+                  "max_loss": 500.0}
+        st = {"orders": [placed] + self.fills(TODAY, 100.0, 89.0)}
+        lost = -check.closed_trades(st, TODAY, TODAY)[0][2]
+        self.assertGreater(lost, 1100)
+        res = self.one(st)
+        self.assertEqual(res["today"]["loss_at_risk"], round(lost, 2))
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("daily loss: %s already at risk today" % check.money(round(lost, 2)), reasons(res))
+        self.assertTrue(any(w.startswith("ABC.NS lost %s today against ₹500 planned" % check.money(round(lost, 2)))
+                            for w in res["warnings"]))
+
+    def test_a_win_or_a_loss_inside_the_plan_still_counts_the_plan(self):
+        placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
+                  "max_loss": 500.0}
+        for sell in (130.0, 97.0):                                     # a win, and a loss of about 300
+            res = self.one({"orders": [placed] + self.fills(TODAY, 100.0, sell)})
+            self.assertEqual(res["today"]["loss_at_risk"], 500.0)
+            self.assertEqual(verdicts(res), ["PASS"])
+
+    def test_an_open_position_after_a_slipped_round_trip(self):
+        # ABC slipped (-1,100 odd) and was bought again (planned 200, still open): both count
+        placed = {"status": "placed", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "kind": "entry",
+                  "max_loss": 500.0}
+        again = dict(placed, max_loss=200.0)
+        rebuy = {"status": "filled", "date": TODAY, "symbol": "ABC.NS", "side": "buy", "qty": "10", "price": 90.0}
+        st = {"orders": [placed, again] + self.fills(TODAY, 100.0, 89.0) + [rebuy]}
+        lost = -check.closed_trades(st, TODAY, TODAY)[0][2]
+        used, _ = check.day_loss_used([placed, again], st, TODAY)
+        self.assertEqual(used, round(lost + 200.0, 2))
+
 
 class Calendar(unittest.TestCase):
     def one(self, now=NOW, events=None, prices=None, prev=None, times=None, **over):
@@ -890,11 +924,22 @@ def live_trades(results, start="2026-11-06"):
     return {"orders": orders}
 
 
+def live_inputs(now, **drop):
+    """Everything a live entry needs checked, fresh at now: prices, bands, sectors, surveillance."""
+    t = at(now)
+    out = {"prices": {"INFY.NS": 1160.5, "^NSEI": 25800.0}, "price_times": {"INFY.NS": t, "^NSEI": t},
+           "prev_close": {"INFY.NS": 1150.0, "^NSEI": 25750.0}, "bands": {"INFY.NS": None},
+           "sectors": SECTORS, "surveillance": {"symbols": {}, "updated": now[:10]}}
+    for k, v in drop.items():
+        out[k] = v
+    return out
+
+
 class LiveLock(unittest.TestCase):
     def one(self, forward=None, state=None, now="2026-12-15 10:00", **over):
         c = dict(cfg(**over))
         c["paper"] = over.get("paper", False)
-        return check.check([infy()], c, now=at(now), forward=forward, state=state, surveillance={"symbols": {}})
+        return check.check([infy()], c, now=at(now), forward=forward, state=state, **live_inputs(now))
 
     def test_locked_without_a_passed_forward_test(self):
         r = self.one()
@@ -938,6 +983,44 @@ class LiveLock(unittest.TestCase):
         self.assertIn("fell 6.0 R from their best, past 5 R", deep["stop"])
         r = self.one(fw, live_trades([-1.0] * 6, "2026-12-10"), max_loss_per_trade_inr=2000)
         self.assertIn("live: live stop: the live trades fell 6.0 R from their best", reasons(r))
+
+
+class LiveFailsClosed(unittest.TestCase):
+    """Live, a check that cannot run blocks the entry; on paper it stays a warning."""
+    NOW = "2026-12-15 10:00"
+
+    def run_with(self, paper=False, **drop):
+        c = cfg(paper=paper, max_loss_per_trade_inr=2000)
+        return check.check([infy()], c, now=at(self.NOW), forward=passed("2026-12-10"),
+                           **live_inputs(self.NOW, **drop))
+
+    def test_everything_there_passes(self):
+        self.assertEqual(verdicts(self.run_with()), ["PASS"])
+
+    def test_each_missing_input_blocks_live_and_warns_on_paper(self):
+        stale = at(self.NOW) - datetime.timedelta(minutes=30)
+        cases = {
+            "no trader/sectors.json": dict(sectors=None),
+            "INFY.NS is not in trader/sectors.json": dict(sectors={"TCS.NS": "Information Technology"}),
+            "no trader/surveillance.json": dict(surveillance=None),
+            "trader/surveillance.json is 14 days old": dict(surveillance={"symbols": {}, "updated": "2026-12-01"}),
+            "the price band of INFY.NS is unknown": dict(bands={"TCS.NS": 20}),
+            "no Nifty 50 price and previous close": dict(prices={"INFY.NS": 1160.5}),
+            "no INFY.NS price under 15 minutes old": dict(price_times={"INFY.NS": stale, "^NSEI": at(self.NOW)}),
+        }
+        for why, drop in cases.items():
+            with self.subTest(why):
+                live = self.run_with(**drop)
+                self.assertEqual(verdicts(live), ["BLOCK"])
+                self.assertIn("live: " + why, reasons(live))
+                self.assertEqual(verdicts(self.run_with(paper=True, **drop)), ["PASS"])
+
+    def test_exits_are_never_blocked_by_missing_inputs(self):
+        sell = dict(infy(), side="sell", order_class=None, take_profit_limit_price=None, stop_loss_stop_price=None)
+        port = {"cash": 50000, "positions": [{"ticker": "INFY.NS", "shares": 41}]}
+        res = check.check([sell], cfg(paper=False), now=at(self.NOW), portfolio=port,
+                          **live_inputs(self.NOW, sectors=None, surveillance=None, bands=None))
+        self.assertEqual(verdicts(res), ["PASS"])
 
 
 class HeldLimits(unittest.TestCase):

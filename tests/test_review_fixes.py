@@ -16,20 +16,22 @@ EDGE = os.path.join(FIX, "trader-timemachine", "edge")
 FIVE = ("INFY.NS", "TCS.NS", "HDFCBANK.NS", "RELIANCE.NS", "SBIN.NS")
 
 
-def test_doc(rules=None):
+def forward_doc(rules=None):
     return {"rule": {"setup": "orb30", "side": "short", "stop": "tight", "target_r": 2.0}, "filter": "none",
             "started": "2026-11-10", "expected": {"avg_R": 0.076, "low": -0.145},
             "stop_rules": rules or forward.sequential_rules(), "signals": []}
 
 
 def trades(rs):
-    return [{"date": "2026-11-%02d" % (1 + i % 28), "symbol": "X%d.NS" % i, "R": r, "net": r * 400} for i, r in
+    # one trade a day: these tests are about the size of the edge, not about trades on one day moving together
+    return [{"date": (datetime.date(2026, 11, 10) + datetime.timedelta(days=i)).isoformat(), "symbol": "X%d.NS" % i,
+             "R": r, "net": r * 400} for i, r in
             enumerate(rs)]
 
 
 class SequentialGate(unittest.TestCase):
     def verdict(self, rs, **rules):
-        return forward.evaluate(test_doc(forward.sequential_rules(**rules)), trades(rs))
+        return forward.evaluate(forward_doc(forward.sequential_rules(**rules)), trades(rs))
 
     def test_no_pass_before_300_and_then_only_when_the_whole_range_is_above_zero(self):
         good = [1.6, -1.0] * 150                       # +0.30 R a trade, SD 1.30: 2.5 SE = 0.19
@@ -56,13 +58,31 @@ class SequentialGate(unittest.TestCase):
         self.assertEqual(self.verdict(meh[:1298])["state"], "running")
         self.assertIn("still not proven", self.verdict(meh)["verdict"])
 
+    def test_trades_on_one_day_count_as_one_draw(self):
+        # +0.30 R a trade, SD 1.30, 300 trades: as 300 independent trades, 2.5 SE is 0.19 and it passes. Taken 3 a
+        # day on 100 days where a day's three trades all win or all lose together, it is 100 draws, not 300: the
+        # day-clustered SE is 0.13, 2.5 SE is 0.33, and it keeps running
+        rs = [1.6, 1.6, 1.6, -1.0, -1.0, -1.0] * 50
+        spread = trades([1.6, -1.0] * 150)
+        together = [{"date": "d%03d" % (i // 3), "symbol": "X%d.NS" % i, "R": r, "net": r * 400}
+                    for i, r in enumerate(rs)]
+        self.assertEqual(forward.evaluate(forward_doc(), spread)["state"], "passed")
+        res = forward.evaluate(forward_doc(), together)
+        self.assertEqual(res["state"], "running")
+        self.assertAlmostEqual(forward.standard_error(rs, [t["date"] for t in together]), 0.1307, places=3)
+        self.assertAlmostEqual(forward.standard_error(rs), 0.0752, places=3)
+        # never smaller than the per-trade standard error, even when a day's trades offset each other
+        hedged = [1.6, -1.0] * 150
+        days = ["d%03d" % (i // 2) for i in range(300)]
+        self.assertAlmostEqual(forward.standard_error(hedged, days), forward.standard_error(hedged), places=9)
+
     def test_the_drawdown_stop_is_30_R(self):
         self.assertEqual(self.verdict([-1.0] * 29 + [1.0])["state"], "running")   # 29 R down, under 40 trades
         res = self.verdict([-1.0] * 30)
         self.assertIn("past the 30 R limit", res["verdict"])
 
     def test_old_tests_keep_their_40_trade_verdict(self):
-        res = forward.evaluate(test_doc({"min_trades": 40, "max_drawdown_R": 8.0}), trades([1.6, -1.0] * 20))
+        res = forward.evaluate(forward_doc({"min_trades": 40, "max_drawdown_R": 8.0}), trades([1.6, -1.0] * 20))
         self.assertEqual((res["state"], res["gate"]), ("passed", "legacy-40"))
 
 
@@ -83,7 +103,7 @@ class LiveLock(unittest.TestCase):
         self.assertEqual(check.live_gate(self.fw("sequential"), self.TODAY), (True, ""))
 
     def test_record_keeps_the_gate(self):
-        test = test_doc()
+        test = forward_doc()
         res = forward.evaluate(test, trades([1.6, -1.0] * 150))
         forward.record(test, "shadow", res, self.TODAY)
         self.assertEqual(test["verdicts"]["shadow"]["gate"], "sequential")
@@ -179,7 +199,7 @@ class ShadowFills(unittest.TestCase):
         charts = {s: edge.read_offline(EDGE, s) for s in FIVE}
         idx, vix = edge.read_offline(EDGE, edge.INDEX), edge.read_offline(EDGE, edge.VIX)
         days = sorted(edge.sessions_of(idx, edge.INDEX))[-20:]
-        old = dict(test_doc(), filter="none")
+        old = dict(forward_doc(), filter="none")
         new = dict(old, fills={"model": "realistic", "slippage_bp": 3.0})
         a = forward.shadow_trades(old, charts, idx, vix, days)
         b = forward.shadow_trades(new, charts, idx, vix, days)

@@ -9,3 +9,4 @@ trader/daily/
 dist/
 trader/STOP
 trader/*.bak
+!trader/sectors.json

@@ -310,15 +310,30 @@ of daily bars, but only for entries in NSE's pre-open auction: short a Nifty
 50 stock that opened 2 % or more up, a 1 % stop, out at 15:10. It had faded
 in the later years, and a rule picked from 200 flatters itself, so
 `gapshadow.py` freezes it and judges it only on sessions after the freeze,
-by forward.py's rules (the test frozen on 11 November keeps the old 40-trade
-verdict; a new one is frozen with the sequential gate, 300+ trades). Nothing is traded: it needs pre-open orders and prices. After
-the close it works out what the rule would have done from Yahoo's daily bar
-(the official open is the auction price) and the day's 5-minute bars (the
-stop and the 15:10 exit), the 3 biggest gaps a day.
+by forward.py's sequential gate (300+ trades). Nothing is traded: it needs
+pre-open orders and prices. After the close it works out what the rule would
+have done from Yahoo's daily bar (the official open is the auction price) and
+the day's 5-minute bars (the stop and the 15:10 exit), the 3 biggest gaps a
+day.
+
+**What it decides on.** The official open is fixed at 9:08, after the last
+pre-open order, so openclose.py's ten years (which picked on it) are an upper
+end. A test frozen now decides on a pre-open snapshot: the indicative prices
+shown before 9:08, saved with `preopen.py save`, and fills at the official
+open. A day with no snapshot taken from 9:00 to 9:08 is skipped, with the
+reason in the status. A test frozen before this picks on the official open
+and every status says so: freeze a new one with `start --replace`. The
+snapshot can be NSE's pre-open page JSON saved from the browser
+(nseindia.com/api/market-data-pre-open?key=NIFTY), Kite's `get_quote` reply
+for the Nifty 50 saved to a file at 9:07 (the user can ask Claude for it), or
+a CSV of symbol and price. `preopen.py` never fetches: NSE's site turns
+scripts away. With `NOTIFY_URL` set, the Docker scheduler sends a reminder at
+9:03 when today's snapshot is missing.
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" start       # freeze it today: trader/forward-gap.json
-python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" shadow      # replay every session since, after the close
+python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" start --replace   # freeze it today, deciding on snapshots
+python3 "${CLAUDE_SKILL_DIR}/preopen.py" save preopen.json    # every morning, 9:00 to 9:08
+python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" shadow            # replay every session since, after the close
 python3 "${CLAUDE_SKILL_DIR}/gapshadow.py" status
 ```
 
@@ -377,7 +392,8 @@ python3 "${CLAUDE_SKILL_DIR}/forward.py" status                            # tra
   (`--kill-r`), at 1,300 if still not proven (`--max-trades`), or on a 30 R
   fall from the best (`--max-drawdown-r`). And how the shadow fills
   (`--fills realistic`, the default: the next bar's open, `--slippage-bp`
-  3 or the measured figure, targets traded through). Tests frozen before
+  3, or a figure measured on live fills; the paper autopilot charges the
+  same bp on its own fills, targets traded through). Tests frozen before
   this gate keep their 40-trade verdict, but only a sequential PASS opens
   trader-risk's live lock: 40 trades cannot tell a small edge from luck.
 - **signal** logs each signal, taken or skipped with a reason. Skipping more
