@@ -39,6 +39,10 @@ Kite credentials: KITE_API_KEY and KITE_ACCESS_TOKEN in the environment, or trad
 `login` (readable by you only). Kite's access token expires every morning; the API secret is never stored. Typed
 into a terminal or a file, never into the chat.
 
+Fills. On a live account each pass also logs Kite's executed trades in trader/state/broker.json and
+trader/portfolio.json (ticket.py sync: once each, by trade id), so the risk check's daily, weekly, streak and
+drawdown limits count the stops and closes it placed, not only the fills typed in by hand. --no-sync turns it off.
+
 Alerts go to NOTIFY_URL (as the scheduler's), the actions to trader/state/guardian-log.jsonl, the heartbeat to
 trader/state/guardian.json. Check SEBI's and Zerodha's rules for orders sent through the API (a registered static IP,
 market protection on market orders) at developers.kite.trade before arming it. Not financial advice.
@@ -429,6 +433,9 @@ class Kite:
     def orders(self):
         return {"data": self._req("GET", "/orders")}
 
+    def trades(self):
+        return {"data": self._req("GET", "/trades")}
+
     def place(self, params):
         return (self._req("POST", "/orders/regular", params) or {}).get("order_id")
 
@@ -519,6 +526,22 @@ def one_pass(kite, state, cfg, now_utc, armed, say=print, log=None):
         if not armed:
             break
     return {"actions": done, "alerts": alerts}
+
+
+def sync_fills(kite, state_path, portfolio_path, cfg, now_utc, say=print):
+    """Today's executed Kite trades into the broker log and the portfolio (ticket.py sync), so the risk check's
+    limits see every live fill, the guardian's own stops and closes included. Returns the records added."""
+    try:
+        with ticket.state_lock(state_path, wait=10):
+            added, warns = ticket.sync(kite.trades(), state_path, portfolio_path, cfg, now_utc)
+    except ticket.TicketError as e:
+        say("fills not synced this pass: %s" % e)
+        return []
+    for r in added:
+        say("FILL  logged %s (Kite order %s)" % (r["plain"], r["broker_order_id"]))
+    for w in warns:
+        say("WARNING  " + w)
+    return added
 
 
 def key(a):
@@ -647,6 +670,8 @@ def run(a, loop):
             try:
                 state = ticket.load_state(a.state)
                 res = one_pass(kite, state, cfg, now, armed, say=lambda s: print(s, flush=True), log=append_log(LOG))
+                if not cfg.get("paper", True) and not a.no_sync:
+                    sync_fills(kite, a.state, a.portfolio, cfg, now, say=lambda s: print(s, flush=True))
                 fails = 0
                 for x in res["alerts"]:
                     if x not in told:
@@ -685,6 +710,9 @@ def main(argv=None):
         sp.add_argument("--arm", action="store_true", help="send the orders (default: a dry run)")
         sp.add_argument("--every", type=float, default=POLL, help="seconds between passes")
         sp.add_argument("--now", help="pretend it is this IST time (tests)")
+        sp.add_argument("--portfolio", default="trader/portfolio.json")
+        sp.add_argument("--no-sync", action="store_true",
+                        help="do not log Kite's executed trades (by default each pass does, on a live account)")
     sp = sub.add_parser("plan", help="offline: what it would do with saved get_positions and get_orders answers")
     common(sp)
     sp.add_argument("--positions", required=True)

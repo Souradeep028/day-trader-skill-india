@@ -32,6 +32,10 @@ its work around the one moment that matters, your yes:
               position), no entry filled twice, no stop moved further from the plan,
               nothing open past the flat-by. Live: the JSON of Kite's get_positions
               and get_orders; paper: the paper account. Exit 1 with the fix for each.
+  sync        LIVE account: logs Kite's executed trades (the JSON of get_trades) as fills, once each by
+              trade id, one record per order, so the risk check's daily, weekly, streak and drawdown limits
+              see every live fill. Fills already logged by hand are not counted twice. The guardian runs it
+              after every pass.
   log         prints today's decisions and the realised P&L after charges.
   journal     every closed trade (paper, live or both): win rate, average R, P&L
               after charges, the longest run of losses, by day and by stock.
@@ -48,6 +52,7 @@ its work around the one moment that matters, your yes:
     python3 ticket.py flatten --symbol INFY.NS --qty 41
     python3 ticket.py reconcile --paper
     python3 ticket.py reconcile --positions positions.json --broker-orders orders.json
+    python3 ticket.py sync --trades trades.json
     python3 ticket.py log
 
 Everything is written to trader/state/broker.json (append only). Every command that writes it (approve,
@@ -711,6 +716,7 @@ def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
         fills.setdefault((d, str(r.get("symbol", "")).upper()), []).append(r)
     trades, still_open = [], []
     for (d, sym), rs in sorted(fills.items()):
+        rs = sorted(rs, key=lambda r: str(r.get("at") or ""))      # in fill order: a synced fill can be logged late
         pos, cur = 0.0, None
         for r in rs:
             q, px, side = float(r.get("qty") or 0), float(r.get("price") or 0), r.get("side")
@@ -1474,6 +1480,118 @@ def cmd_reconcile(a):
     return 1 if res["problems"] else 0
 
 
+# ---------------------------------------------------------------- sync: Kite's executed trades into the log
+
+def kite_trades(doc, today):
+    """Kite's get_trades -> [{"trade_id", "order_id", "symbol", "side", "qty", "price", "at", "date", "product"}],
+    NSE only, oldest first. Times are Kite's (IST); a trade without one is dated today."""
+    out = []
+    for t in _rows(doc, "data", "trades"):
+        if str(t.get("exchange", "NSE")).upper() != "NSE":
+            continue
+        q, px = _f(t.get("quantity")), _f(t.get("average_price") or t.get("price"))
+        tid = str(t.get("trade_id") or "").strip()
+        if not q or not px or not tid:
+            continue
+        stamp = str(t.get("fill_timestamp") or t.get("exchange_timestamp") or t.get("order_timestamp") or "").strip()
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", stamp)
+        at = ("%sT%s+05:30" % m.groups()) if m else None
+        out.append({"trade_id": tid, "order_id": str(t.get("order_id") or tid), "product": str(t.get("product") or "MIS").upper(),
+                    "symbol": str(t.get("tradingsymbol", "")).upper() + ".NS",
+                    "side": str(t.get("transaction_type", "")).lower(), "qty": q, "price": px,
+                    "at": at, "date": m.group(1) if m else today})
+    return sorted(out, key=lambda x: (x["at"] or "", x["order_id"], x["trade_id"]))
+
+
+def sync_plan(state, trades, today):
+    """Pure. Which of Kite's trades are not in the log yet: (new fill records, warnings).
+    A trade whose id is already logged is skipped. Live fills logged by hand (ticket.py fill or result, no trade id)
+    count against Kite's trades of the same day, symbol and side, oldest first, so nothing is counted twice. The
+    trades of one order become one record (Zerodha caps the brokerage per order, not per partial fill)."""
+    logged, by_hand = set(), {}
+    for r in (state or {}).get("orders", []):
+        if r.get("status") != "filled" or r.get("paper"):
+            continue
+        ids = r.get("trade_ids") or []
+        if ids:
+            logged.update(str(i) for i in ids)
+        else:
+            k = (rec_day(r), str(r.get("symbol", "")).upper(), r.get("side"))
+            by_hand[k] = by_hand.get(k, 0.0) + (_f(r.get("qty")) or 0.0)
+    groups, warns = {}, []
+    for t in trades:
+        if t["trade_id"] in logged or t["side"] not in ("buy", "sell"):
+            continue
+        g = groups.setdefault((t["date"], t["order_id"]), {"trades": [], "symbol": t["symbol"], "side": t["side"],
+                                                             "date": t["date"], "product": t["product"]})
+        g["trades"].append(t)
+    new = []
+    for key in sorted(groups, key=lambda k: (groups[k]["trades"][0]["at"] or "", k)):
+        g = groups[key]
+        qty = sum(t["qty"] for t in g["trades"])
+        value = sum(t["qty"] * t["price"] for t in g["trades"])
+        k = (g["date"], g["symbol"], g["side"])
+        hand = by_hand.get(k, 0.0)
+        if hand > 1e-9:
+            took = min(hand, qty)
+            by_hand[k] = hand - took
+            if took >= qty - 1e-9:
+                continue                               # already logged by hand
+            value *= (qty - took) / qty
+            qty -= took
+        new.append({"date": g["date"], "at": g["trades"][-1]["at"], "symbol": g["symbol"], "side": g["side"],
+                    "qty": qty, "price": round(value / qty, 4), "order_id": key[1], "product": g["product"],
+                    "trade_ids": [t["trade_id"] for t in g["trades"]]})
+    for (d, sym, side), left in sorted(by_hand.items()):
+        if left > 1e-9 and any(t["date"] == d and t["symbol"] == sym and t["side"] == side for t in trades):
+            warns.append("%s: %s %s shares logged by hand on %s that Kite's trades do not show: check them"
+                         % (sym, _str_num(left), side, d))
+    return new, warns
+
+
+def sync(trades_doc, state_path, portfolio_path, cfg, now, today=None):
+    """Kite's executed trades into the broker log (and the portfolio), so the risk check's daily, weekly and
+    drawdown limits see every live fill, including the stops and closes the guardian placed. Safe to run again:
+    returns (records added, warnings). Hold state_lock around it."""
+    today = today or to_ist(now).date().isoformat()
+    state = load_state(state_path)
+    new, warns = sync_plan(state, kite_trades(trades_doc, today), today)
+    added = []
+    for n in new:
+        try:
+            apply_fill(portfolio_path, cfg, n["symbol"], n["side"], n["qty"], n["price"], n["date"],
+                       short=bool(cfg.get("allow_short")))
+        except TicketError as e:
+            warns.append("%s: the fill is logged but %s was not updated: %s" % (n["symbol"], portfolio_path, e))
+        ch = order_charges(n["side"], n["qty"] * n["price"], cfg.get("charges"))
+        rec = {"at": n["at"] or ist_iso(now), "date": n["date"], "status": "filled", "symbol": n["symbol"],
+               "side": n["side"], "qty": _str_num(n["qty"]), "price": n["price"], "charges": ch["total"],
+               "plain": "%s %s %s at %s" % (n["side"].upper(), _str_num(n["qty"]), n["symbol"], _p(n["price"])),
+               "source": "kite", "broker_order_id": n["order_id"], "trade_ids": n["trade_ids"], "product": n["product"]}
+        state.setdefault("orders", []).append(rec)
+        added.append(rec)
+    if added:
+        write_json(state_path, state)
+    return added, warns
+
+
+def cmd_sync(a):
+    cfg = read_json(a.config, "config", required=False) or {}
+    if cfg.get("paper", True):
+        raise TicketError("this is a paper account (\"paper\": true): its fills come from ticket.py paper, there "
+                          "is nothing at the broker to sync")
+    now = parse_now(a.now)
+    added, warns = sync(read_json(a.trades, "Kite trades"), a.state, a.portfolio, cfg, now)
+    for r in added:
+        print("Logged %s (Kite order %s, %d trade%s)" % (r["plain"], r["broker_order_id"], len(r["trade_ids"]),
+                                                          "" if len(r["trade_ids"]) == 1 else "s"))
+    for w in warns:
+        print("WARNING: " + w)
+    if not added:
+        print("Nothing new: every Kite trade is already in %s" % a.state)
+    return 0
+
+
 def cmd_log(a):
     state = load_state(a.state)
     now, today = _clock(a)
@@ -1498,7 +1616,7 @@ def cmd_log(a):
     return 0
 
 
-WRITERS = ("approve", "decline", "result", "paper", "paper-check", "fill")   # the commands that write the log
+WRITERS = ("approve", "decline", "result", "paper", "paper-check", "fill", "sync")   # the commands that write the log
 
 
 def main(argv=None):
@@ -1594,6 +1712,12 @@ def main(argv=None):
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--json", action="store_true")
     clock(p)
+    p = sub.add_parser("sync", help="live account: Kite's executed trades into the log and the portfolio")
+    p.add_argument("--trades", required=True, help="the JSON of Kite's get_trades")
+    p.add_argument("--state", default="trader/state/broker.json")
+    p.add_argument("--portfolio", default="trader/portfolio.json")
+    p.add_argument("--config", default="trader/config.json")
+    p.add_argument("--now")
     p = sub.add_parser("log", help="today's decisions")
     p.add_argument("--state", default="trader/state/broker.json")
     clock(p)
@@ -1606,7 +1730,7 @@ def main(argv=None):
         run = {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
                "paper": cmd_paper, "paper-check": cmd_paper_check,
                "fill": cmd_fill, "flatten": cmd_flatten, "reconcile": cmd_reconcile, "log": cmd_log, "journal": cmd_journal,
-               "tax": cmd_tax}[a.cmd]
+               "tax": cmd_tax, "sync": cmd_sync}[a.cmd]
         if a.cmd in WRITERS:
             with state_lock(a.state, say=lambda m: print(m, file=sys.stderr)):
                 return run(a)
