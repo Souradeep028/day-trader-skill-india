@@ -75,7 +75,7 @@ class Guardian(InFolder):
     def args(self, **over):
         a = argparse.Namespace(config=os.path.join("trader", "config.json"), state="trader/state/broker.json",
                                session="none", arm=True, every=0.0, now=DAY + " 10:05", portfolio="trader/portfolio.json",
-                               no_sync=True)
+                               no_sync=True, forward="trader/forward.json")
         for k, v in over.items():
             setattr(a, k, v)
         return a

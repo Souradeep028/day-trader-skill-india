@@ -18,8 +18,9 @@ Kite's positions and orders, then checked again against a FRESH snapshot just be
 no longer holds:
   protect     an open MIS position whose stop-losses cover fewer shares than it holds gets an SL-M on the closing
               side for the shortfall, at the stop you approved (trader/state/broker.json). A position the pack did
-              not plan gets one at your max loss per trade from its average price (guardian_unplanned "max_loss",
-              the default; "alert" only alerts). Never more stop shares than the position holds.
+              not plan gets one at the max loss a live entry would get now (the max loss per trade after the
+              drawdown cut and the live ramp) from its average price (guardian_unplanned "max_loss", the
+              default; "alert" only alerts). Never more stop shares than the position holds.
   restore     a stop moved further from the price than the approved stop is moved back to it (only ever tighter).
   through     the price is already past the approved stop and the stops do not cover the position: the closing
               orders are cancelled and the position is closed at market. A position the pack did not plan is
@@ -179,13 +180,32 @@ def tick_for(price):
 
 # ---------------------------------------------------------------- decide: one snapshot -> actions
 
-def decide(pos, orders, plans, now_ist, cfg):
-    """Pure. Returns (actions, alerts). Each action: {"do": place|cancel|modify, "symbol", "why", "phase", ...}."""
+def unplanned_max_loss(cfg, state, forward, today):
+    """The max loss a position the pack did not plan gets its stop at: what trader-risk would allow a live entry
+    right now, after the drawdown cut and the live ramp (25 %, 50 %, 100 %). With the live lock closed, the first
+    step of the ramp."""
+    c = dict(check.DEFAULTS)
+    c.update(check.inr_keys(cfg or {}))
+    rates = c.get("charges")
+    dd = check.drawdown(state, check._f(c.get("budget")), rates)
+    cap, _ = check.max_loss_now(c, dd)
+    base = check._f(c.get("max_loss_per_trade_inr")) or 500.0
+    cap = cap or base
+    if check.live_gate(forward, today)[0]:
+        factor = check.live_ramp(forward, state, today, rates)["factor"]
+    else:
+        factor = check.RAMP[0]
+    return round(min(cap, base * factor), 2)
+
+
+def decide(pos, orders, plans, now_ist, cfg, max_loss=None):
+    """Pure. Returns (actions, alerts). Each action: {"do": place|cancel|modify, "symbol", "why", "phase", ...}.
+    max_loss: the rupees an unplanned position's stop is set at (unplanned_max_loss); default the config's."""
     acts, alerts = [], []
     flat_by = check.hhmm(cfg.get("flat_by") or "15:10", "flat_by")
     t = now_ist.time().replace(second=0, microsecond=0)
     unplanned = str(cfg.get("guardian_unplanned") or "max_loss").lower()
-    max_loss = ticket._f(cfg.get("max_loss_per_trade_inr")) or 500.0
+    max_loss = max_loss or ticket._f(cfg.get("max_loss_per_trade_inr")) or 500.0
 
     if flat_by and t >= flat_by:
         live = [o for o in pending(orders) if not closing_market(o)]
@@ -311,7 +331,8 @@ def decide(pos, orders, plans, now_ist, cfg):
                          "trigger": want, "tag": guard_tag(plan), "phase": "protect",
                          "why": "unprotected: %s, stops cover %s; SL-M %s %s at %s (%s)"
                                 % (describe(sym, q), ticket._str_num(cover), closing.upper(), ticket._str_num(short),
-                                   ticket._p(want), "the approved stop" if planned else "your max loss per trade")})
+                                   ticket._p(want), "the approved stop" if planned
+                                   else "%s, the max loss a live entry gets now" % check.money(max_loss))})
     return acts, alerts
 
 
@@ -494,17 +515,18 @@ def session_open(now_ist):
     return OPEN <= now_ist.time() < CLOSE
 
 
-def one_pass(kite, state, cfg, now_utc, armed, say=print, log=None):
+def one_pass(kite, state, cfg, now_utc, armed, say=print, log=None, forward=None):
     """Read Kite, decide, act (if armed), up to ROUNDS times. Returns {"actions": [...], "alerts": [...]}."""
     now_ist = check.to_ist(now_utc)
     today = now_ist.date().isoformat()
     plans = plans_today(state, today)
+    loss = unplanned_max_loss(cfg, state, forward, today)
     done, alerts, seen = [], [], set()
     for _ in range(ROUNDS):
         pos, orders, others = book(kite.positions(), kite.orders())
         if others and not done:
             say("not managed (delivery or another exchange): %s" % ", ".join(others))
-        acts, al = decide(pos, orders, plans, now_ist, cfg)
+        acts, al = decide(pos, orders, plans, now_ist, cfg, loss)
         alerts.extend(x for x in al if x not in alerts)
         acts = [a for a in acts if key(a) not in seen]
         if not acts:
@@ -659,8 +681,11 @@ def cmd_plan(a):
     pos, orders, others = book(ticket.read_json(a.positions, "Kite positions"),
                                ticket.read_json(a.broker_orders, "Kite orders"))
     now_ist = check.to_ist(check.parse_now(a.now))
-    acts, alerts = decide(pos, orders, plans_today(ticket.load_state(a.state), now_ist.date().isoformat()),
-                          now_ist, load_cfg(a.config))
+    state, today = ticket.load_state(a.state), now_ist.date().isoformat()
+    cfg = load_cfg(a.config)
+    acts, alerts = decide(pos, orders, plans_today(state, today), now_ist, cfg,
+                          unplanned_max_loss(cfg, state, ticket.read_json(a.forward, "forward test", required=False),
+                                             today))
     if a.json:
         print(json.dumps({"actions": acts, "alerts": alerts, "not_managed": others}, indent=2))
         return 0
@@ -707,7 +732,8 @@ def run(a, loop):
                 continue
             try:
                 state = ticket.load_state(a.state)
-                res = one_pass(kite, state, cfg, now, armed, say=lambda s: print(s, flush=True), log=append_log(LOG))
+                res = one_pass(kite, state, cfg, now, armed, say=lambda s: print(s, flush=True), log=append_log(LOG),
+                               forward=ticket.read_json(a.forward, "forward test", required=False))
                 if not cfg.get("paper", True) and not a.no_sync:
                     sync_fills(kite, a.state, a.portfolio, cfg, now, say=lambda s: print(s, flush=True))
                 fails = 0
@@ -768,12 +794,14 @@ def main(argv=None):
         sp.add_argument("--every", type=float, default=POLL, help="seconds between passes")
         sp.add_argument("--now", help="pretend it is this IST time (tests)")
         sp.add_argument("--portfolio", default="trader/portfolio.json")
+        sp.add_argument("--forward", default="trader/forward.json", help="the forward test (for the live ramp)")
         sp.add_argument("--no-sync", action="store_true",
                         help="do not log Kite's executed trades (by default each pass does, on a live account)")
     sp = sub.add_parser("plan", help="offline: what it would do with saved get_positions and get_orders answers")
     common(sp)
     sp.add_argument("--positions", required=True)
     sp.add_argument("--broker-orders", required=True)
+    sp.add_argument("--forward", default="trader/forward.json")
     sp.add_argument("--now")
     sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("login", help="trade Kite's request token for today's access token")

@@ -6,6 +6,16 @@ mid-test change.
 
 ## Unreleased
 
+- **A day of unlogged live fills blocks live entries.** Kite's get_trades only has today's, so a day nobody synced
+  lost its fills and the weekly, monthly and drawdown limits counted less than was lost. trader-risk now blocks live
+  entries (and the pre-flight says NO-GO) while, in the last 5 sessions, an approved live entry has no logged fill
+  or a day's intraday fills do not net to flat. `ticket.py fill --date` adds a fill from Zerodha Console's
+  tradebook; the new `ticket.py nofill` records, with a reason, an entry that never filled.
+- **The guardian's stop for an unplanned position follows the live ramp and the drawdown cut.** It used the full max
+  loss per trade, wider than any live entry trader-risk would allow while the ramp is at 25 % or the drawdown cut
+  is on (with the live lock closed, the ramp's first step).
+- **The live ramp pairs each round trip with its own entry.** Two entries in one stock on one day both took the
+  second one's max loss, so the first trade's R was wrong. `live_ramp` also returns each trade's R.
 - **You are told when the live guardian is not running.** trader-risk blocks live entries unless the guardian
   is armed and checked in within 60 seconds (`require_guardian`, on by default, held all day like the other
   limits). The guardian alerts on its way down (a crash, Ctrl-C, `docker stop`) and records why in its heartbeat;

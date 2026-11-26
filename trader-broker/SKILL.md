@@ -613,7 +613,14 @@ position still open at about 3:20 PM, for 50 rupees plus GST an order: the
   (by trade id, one record per order) in the broker log and the portfolio, so
   trader-risk's daily, weekly, streak and drawdown limits count it; fills
   already typed in with `ticket.py fill` or `result` are not counted twice.
-  With the guardian armed, every pass syncs by itself.
+  With the guardian armed, every pass syncs by itself. Sync the same day:
+  Kite's get_trades only has today's. A day that was not synced shows up the
+  next morning: trader-risk blocks live entries (and the pre-flight says
+  NO-GO) while a live entry of the last 5 sessions has no logged fill, or a
+  day's fills do not net to flat. Add the missing ones from Zerodha
+  Console's tradebook with `ticket.py fill --date YYYY-MM-DD`, or record
+  `ticket.py nofill --symbol INFY.NS --date YYYY-MM-DD --note "limit
+  expired"` for an entry that never filled.
 - By `flat_by` (15:10 IST), anything still open gets closed:
   1. Live: ask Kite how many shares are held: `get_positions` (read only).
   2. `ticket.py flatten --symbol INFY.NS --qty 41` writes a market sell to
