@@ -17,6 +17,8 @@ It answers one question before the first trade: is everything in place to trade 
   files       trader/state is writable
   leftovers   no position and no open paper stop or target from an earlier day: an intraday position should
               never be left overnight. NO-GO until it is closed and reconciled (ticket.py reconcile)
+  fills       live: every live trade of the last 5 sessions is in the log (an approved entry with a fill, the
+              day's fills flat), as trader-risk requires before a live entry
   limits      the week's and the month's losses still leave room for one full trade at the max loss; the
               drawdown rule's size is reported
   events      no market event today in trader/events.json (RBI policy, the Budget...), when
@@ -140,6 +142,12 @@ def run_checks(now_utc, cfg, test, state, portfolio, events_doc, surveillance_do
         add("leftovers", False, "; ".join(sorted(set(left))) + ". Close it and run ticket.py reconcile before trading")
     else:
         add("leftovers", True, "nothing carried over")
+    if cfg is not None and not c.get("paper", True):
+        gaps = check.missing_fills(state, today)
+        if gaps:
+            add("fills", False, check.missing_fills_text(gaps))
+        else:
+            add("fills", True, "every live trade of the last %d sessions is in the log" % check.FILL_LOOKBACK)
     rates = c.get("charges")
     max_loss = check._f(c.get("max_loss_per_trade_inr")) or 0
     dd = check.drawdown(state, check._f(c.get("budget")), rates) if state else None

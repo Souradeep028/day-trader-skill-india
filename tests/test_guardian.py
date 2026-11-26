@@ -143,9 +143,28 @@ class Protect(unittest.TestCase):
     def test_an_unplanned_position_gets_a_stop_at_the_max_loss(self):
         k = FakeKite([pos("TCS", 10, 3000.0, 3005.0)])
         res = run(k, {"orders": []})
-        # 3000 - 500 / 10 = 2950, on the 0.10 tick
-        self.assertEqual((placed(k)[0]["trigger_price"], placed(k)[0]["tag"]), ("2950.00", "dtsgmanual"))
-        self.assertIn("your max loss per trade", res["actions"][0]["action"]["why"])
+        # the live lock is closed (no forward test), so the ramp's first step: 25 % of 500 = 125.
+        # 3000 - 125 / 10 = 2987.50, on the 0.10 tick
+        self.assertEqual((placed(k)[0]["trigger_price"], placed(k)[0]["tag"]), ("2987.50", "dtsgmanual"))
+        self.assertIn("₹125, the max loss a live entry gets now", res["actions"][0]["action"]["why"])
+
+    def test_the_unplanned_max_loss_follows_the_drawdown_and_the_ramp(self):
+        cfg = dict(CFG, budget=100000)
+        self.assertEqual(g.unplanned_max_loss(cfg, {"orders": []}, None, TODAY), 125.0)      # lock closed
+        real_gate, real_ramp = g.check.live_gate, g.check.live_ramp
+        g.check.live_gate = lambda fw, today: (True, "")
+        try:
+            for factor, want in ((0.5, 250.0), (1.0, 500.0)):
+                g.check.live_ramp = lambda fw, st, today, rates=None, f=factor: {"factor": f}
+                self.assertEqual(g.unplanned_max_loss(cfg, {"orders": []}, {}, TODAY), want)
+            # 6 % under the peak: the drawdown cut halves it, whatever the ramp says
+            lost = {"orders": [{"status": "filled", "date": "2026-10-20", "symbol": "ABC.NS", "side": "buy",
+                                "qty": "100", "price": 100.0},
+                               {"status": "filled", "date": "2026-10-20", "symbol": "ABC.NS", "side": "sell",
+                                "qty": "100", "price": 40.0}]}
+            self.assertEqual(g.unplanned_max_loss(cfg, lost, {}, TODAY), 250.0)
+        finally:
+            g.check.live_gate, g.check.live_ramp = real_gate, real_ramp
         k = FakeKite([pos("TCS", 10, 3000.0, 3005.0)])
         res = run(k, {"orders": []}, cfg=dict(CFG, guardian_unplanned="alert"))
         self.assertEqual(placed(k), [])

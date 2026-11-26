@@ -36,6 +36,8 @@ its work around the one moment that matters, your yes:
               trade id, one record per order, so the risk check's daily, weekly, streak and drawdown limits
               see every live fill. Fills already logged by hand are not counted twice. The guardian runs it
               after every pass.
+  nofill      LIVE account: records that an approved entry never filled (with why), which clears
+              trader-risk's missing-fills block for that stock and day.
   log         prints today's decisions and the realised P&L after charges.
   journal     every closed trade (paper, live or both): win rate, average R, P&L
               after charges, the longest run of losses, by day and by stock.
@@ -1592,6 +1594,24 @@ def cmd_sync(a):
     return 0
 
 
+def cmd_nofill(a):
+    """Record that a live entry never filled (a limit that expired, an order Kite rejected): it clears trader-risk's
+    missing-fills block for that stock and day. A fill that did happen goes in with ticket.py fill --date."""
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", a.date or ""):
+        raise TicketError("--date wants a date like 2026-11-05")
+    if not (a.note or "").strip():
+        raise TicketError("say why it never filled (--note), from Kite's order history: the log keeps it")
+    now = parse_now(a.now)
+    state = load_state(a.state)
+    sym = a.symbol.strip().upper()
+    sym = sym if sym.endswith(".NS") else sym + ".NS"
+    state.setdefault("orders", []).append({"at": ist_iso(now), "date": a.date, "status": "no-fill", "symbol": sym,
+                                           "note": a.note.strip()})
+    write_json(a.state, state)
+    print("Recorded: %s did not fill on %s (%s)." % (sym, a.date, a.note.strip()))
+    return 0
+
+
 def cmd_log(a):
     state = load_state(a.state)
     now, today = _clock(a)
@@ -1616,7 +1636,7 @@ def cmd_log(a):
     return 0
 
 
-WRITERS = ("approve", "decline", "result", "paper", "paper-check", "fill", "sync")   # the commands that write the log
+WRITERS = ("approve", "decline", "result", "paper", "paper-check", "fill", "sync", "nofill")   # the commands that write the log
 
 
 def main(argv=None):
@@ -1718,6 +1738,12 @@ def main(argv=None):
     p.add_argument("--portfolio", default="trader/portfolio.json")
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--now")
+    p = sub.add_parser("nofill", help="live account: an approved entry that never filled, from Kite's order history")
+    p.add_argument("--symbol", required=True)
+    p.add_argument("--date", required=True, help="YYYY-MM-DD, the day of the entry")
+    p.add_argument("--note", required=True, help="why, e.g. \"limit expired unfilled\"")
+    p.add_argument("--state", default="trader/state/broker.json")
+    p.add_argument("--now")
     p = sub.add_parser("log", help="today's decisions")
     p.add_argument("--state", default="trader/state/broker.json")
     clock(p)
@@ -1730,7 +1756,7 @@ def main(argv=None):
         run = {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
                "paper": cmd_paper, "paper-check": cmd_paper_check,
                "fill": cmd_fill, "flatten": cmd_flatten, "reconcile": cmd_reconcile, "log": cmd_log, "journal": cmd_journal,
-               "tax": cmd_tax, "sync": cmd_sync}[a.cmd]
+               "tax": cmd_tax, "sync": cmd_sync, "nofill": cmd_nofill}[a.cmd]
         if a.cmd in WRITERS:
             with state_lock(a.state, say=lambda m: print(m, file=sys.stderr)):
                 return run(a)

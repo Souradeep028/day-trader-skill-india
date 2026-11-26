@@ -66,6 +66,9 @@ What blocks an entry (on top):
                 (trader/sectors.json, trader/surveillance.json or one over 7 days old,
                 the stock's price band, Nifty's price and previous close, a fresh price
                 for a market order) blocks the entry; on paper it is a warning.
+                A live entry is also blocked while a live fill from the last 5 trading days
+                is missing from the log (an approved entry with no fill, or fills that do
+                not net to flat): ticket.py fill --date, or ticket.py nofill.
                 And a live entry needs the guardian (trader-broker's guardian.py) armed and
                 checked in within 60 seconds ("require_guardian", on): without it
                 nothing puts the stop in at the broker after the entry fills
@@ -654,14 +657,18 @@ def live_ramp(forward, state, today, rates=None):
     since = max([x.get("passed_on") or "" for x in (v.get("shadow") or {}, v.get("paper") or {})] or [""])
     low = ((forward or {}).get("expected") or {}).get("low")
     low = 0.0 if low is None else max(low, 0.0)
-    planned = {}
-    for r in (state or {}).get("orders", []):
-        if r.get("status") == "approved" and r.get("kind", "entry") == "entry" and _f(r.get("max_loss")):
-            planned[(rec_day(r), str(r.get("symbol", "")).upper())] = _f(r["max_loss"])
+    planned = {}       # (day, symbol) -> the max losses approved that day, in order: one per round trip
+    approved = [r for r in (state or {}).get("orders", []) if r.get("status") == "approved"
+                and r.get("kind", "entry") == "entry" and _f(r.get("max_loss")) and not r.get("paper")]
+    for r in sorted(approved, key=lambda r: (rec_day(r), str(r.get("at") or ""))):
+        planned.setdefault((rec_day(r), str(r.get("symbol", "")).upper()), []).append(_f(r["max_loss"]))
     live_state = {"orders": [r for r in (state or {}).get("orders", []) if not r.get("paper")]}
-    rs = []
+    rs, used = [], {}
     for d, sym, net in closed_trades(live_state, since or "0000", today, rates):
-        ml = planned.get((d, sym))
+        mls = planned.get((d, sym)) or []
+        k = used.get((d, sym), 0)
+        used[(d, sym)] = k + 1
+        ml = mls[min(k, len(mls) - 1)] if mls else None      # a round trip past the approvals: the last one's
         if ml:
             rs.append(net / ml)
     stage, stop = 0, None
@@ -681,7 +688,7 @@ def live_ramp(forward, state, today, rates=None):
     if not stop and worst >= LIVE_STOP_R - 1e-9:
         stop = "the live trades fell %.1f R from their best, past %.0f R" % (worst, LIVE_STOP_R)
     return {"trades": len(rs), "stage": stage, "factor": RAMP[min(stage, len(RAMP) - 1)], "stop": stop,
-            "since": since}
+            "since": since, "R": [round(x, 4) for x in rs]}
 
 
 def staleness(d):
@@ -745,6 +752,63 @@ def load_events(doc):
             what = r.get("what") or ("market event" if sym == "MARKET" else "results")
             out.setdefault(sym, []).append((str(r["date"]), what, event_kind(sym, what, r.get("kind"))))
     return out
+
+
+FILL_LOOKBACK = 5          # trading days back that the log is checked for live fills it never got
+DONE_STATUSES = ("denied", "failed", "declined")
+
+
+def missing_fills(state, today, days=FILL_LOOKBACK):
+    """[(date, symbol, what)]: live trades on the last `days` trading days before today that the log cannot account
+    for. Kite only gives today's trades, so a day nobody synced (ticket.py sync, or the armed guardian) loses its
+    fills, and the daily, weekly, streak and drawdown limits then count less than was lost.
+      - a live entry approved that day, not later denied, failed or declined, with no live fill of that stock that
+        day and no "no-fill" record for it (ticket.py nofill)
+      - a day's live intraday fills of a stock that do not net to flat: an exit is not logged"""
+    rows = (state or {}).get("orders", [])
+    span, d = set(), datetime.date.fromisoformat(today)
+    for _ in range(days):
+        d = previous_trading_day(d)
+        span.add(d.isoformat())
+    last = {}
+    for r in rows:
+        if r.get("fingerprint") and rec_day(r) in span and r.get("status") in ("approved", "placed") + DONE_STATUSES:
+            last[(rec_day(r), r["fingerprint"])] = r
+    entries = {}
+    for r in rows:
+        if (r.get("status") == "approved" and rec_day(r) in span and r.get("kind", "entry") == "entry"
+                and not r.get("paper") and r.get("fingerprint")):
+            if last.get((rec_day(r), r["fingerprint"]), r).get("status") not in DONE_STATUSES:
+                entries.setdefault((rec_day(r), str(r.get("symbol", "")).upper()), r)
+    filled, net, cleared = set(), {}, set()
+    for r in rows:
+        day, sym = rec_day(r), str(r.get("symbol", "")).upper()
+        if day not in span:
+            continue
+        if r.get("status") == "no-fill":
+            cleared.add((day, sym))
+        if r.get("status") != "filled" or r.get("paper"):
+            continue
+        filled.add((day, sym))
+        if str(r.get("product") or "MIS").upper() != "CNC":
+            q = _f(r.get("qty")) or 0
+            net[(day, sym)] = net.get((day, sym), 0.0) + (q if r.get("side") == "buy" else -q)
+    out = []
+    for (day, sym), r in sorted(entries.items()):
+        if (day, sym) not in filled and (day, sym) not in cleared:
+            out.append((day, sym, "the %s entry was approved but no live fill is logged" % r.get("side", "buy")))
+    for (day, sym), q in sorted(net.items()):
+        if abs(q) > 1e-9 and (day, sym) not in cleared:
+            out.append((day, sym, "the logged fills leave %s shares %s: an exit is not logged"
+                        % (_num(abs(q)), "long" if q > 0 else "short")))
+    return sorted(out)
+
+
+def missing_fills_text(gaps):
+    return ("fills missing from the log (%s). Kite only gives today's trades: add each from Zerodha Console's "
+            "tradebook with ticket.py fill --date DAY, or, if it never filled, ticket.py nofill --symbol SYM --date "
+            "DAY. Until then the loss limits may count less than was lost"
+            % "; ".join("%s %s: %s" % g for g in gaps))
 
 
 GUARDIAN_FILE = os.path.join("trader", "state", "guardian.json")
@@ -837,6 +901,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         if sec:
             sector_count[sec] = sector_count.get(sec, 0) + 1
     is_live = not c.get("paper", True)
+    gaps = missing_fills(state, today) if is_live else []
     blind = []       # live only: a safety input is missing, so every new entry is blocked instead of unchecked
     if c.get("max_entries_per_sector") and not sectors:
         if is_live:
@@ -1237,6 +1302,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 warns.append("%s is not in trader/sectors.json: its sector is unknown" % sym)
             if not gate_open:
                 later.append("live: %s. Live entries are locked; paper trading is open" % gate_why)
+            if is_live and gaps:
+                later.append("live: " + missing_fills_text(gaps))
             if is_live and c.get("require_guardian", True):
                 g_ok, g_why = guardian_state(guardian, now_utc)
                 if not g_ok:
