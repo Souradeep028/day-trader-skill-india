@@ -6,6 +6,10 @@ mid-test change.
 
 ## Unreleased
 
+- **`kite_setup.py`: connect a trading folder to Kite in one command, read-only.** Sets the folder up on paper, asks
+  for the Kite Connect app's key and secret (the secret hidden, never written), opens the login, takes the pasted
+  redirect address, saves the day's session (you only), and checks that NSE, MIS, SL-M and market orders are open to
+  the account, with what is held and pending. `--save` keeps Kite's answers with personal fields removed.
 - **A stop-slippage buffer** (`stop_slippage_bp`, 0 by default, so nothing changes until you set it): trader-budget
   sizes and trader-risk checks the max loss as if the SL-M filled that many basis points past its trigger, charges
   included, so the two always agree; an approval records the max loss trader-risk passed. `ticket.py journal` now

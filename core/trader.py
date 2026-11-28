@@ -42,6 +42,7 @@ TOOLS = {
     "preflight": ("trader-broker", "preflight.py", "today's GO or NO-GO"),
     "autopilot": ("trader-broker", "autopilot.py", "the paper autopilot (paper only)"),
     "guardian": ("trader-broker", "guardian.py", "the live guardian: stops and closes only (you arm it)"),
+    "kite-setup": ("trader-broker", "kite_setup.py", "connect this folder to your Kite account, read-only"),
     "daily": ("trader-broker", "daily.py", "the end-of-day report"),
     "audit": ("trader-broker", "audit.py", "the trade audit page"),
     "schedule": ("trader-broker", "scheduler.py", "the day's schedule (the Docker container's command)"),
