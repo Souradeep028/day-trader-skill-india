@@ -483,6 +483,15 @@ python3 "${CLAUDE_SKILL_DIR}/guardian.py" plan --positions pos.json --broker-ord
 python3 "${CLAUDE_SKILL_DIR}/guardian.py" run           # dry run against Kite: prints, sends nothing
 ```
 
+**Connecting the account, once:** the user runs, in the trading folder,
+`python3 "${CLAUDE_SKILL_DIR}/kite_setup.py"`. It sets the folder up on
+paper, asks for the Kite Connect app's key and secret (the secret hidden and
+never saved), opens Kite's login, takes the redirect address the user pastes
+back, saves the day's session, and checks read-only that NSE, MIS and SL-M
+orders are open to the account. Its summary has nothing personal in it and
+is what the user shares; `--save FILE` keeps Kite's answers with personal
+fields removed.
+
 **Claude runs only `plan` and the dry run.** The user runs, in their own
 terminal, `guardian.py login --request-token ...` (with `KITE_API_KEY` and
 `KITE_API_SECRET` in their environment, never in the chat) and `guardian.py

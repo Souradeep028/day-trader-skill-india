@@ -463,6 +463,9 @@ class Kite:
     def trades(self):
         return {"data": self._req("GET", "/trades")}
 
+    def profile(self):
+        return self._req("GET", "/user/profile")
+
     def place(self, params):
         return (self._req("POST", "/orders/regular", params) or {}).get("order_id")
 
@@ -663,16 +666,25 @@ def load_cfg(path):
     return cfg
 
 
+def save_session(path, api_key, access_token, now_utc=None):
+    """Today's Kite session, readable by you only. The API secret is never written."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"api_key": api_key, "access_token": access_token,
+                   "date": check.to_ist(now_utc or check.parse_now(None)).date().isoformat()}, fh)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def cmd_login(a):
     key_, secret = os.environ.get("KITE_API_KEY"), os.environ.get("KITE_API_SECRET")
     if not key_ or not secret:
         raise GuardianError("set KITE_API_KEY and KITE_API_SECRET in the environment (never in the chat)")
     data = Kite(key_, None).session(a.request_token, secret)
-    os.makedirs(os.path.dirname(a.session), exist_ok=True)
-    fd = os.open(a.session, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump({"api_key": key_, "access_token": data["access_token"],
-                   "date": check.to_ist(check.parse_now(None)).date().isoformat()}, fh)
+    save_session(a.session, key_, data["access_token"])
     print("Kite session saved to %s (you only). It expires tomorrow morning." % a.session)
     return 0
 
