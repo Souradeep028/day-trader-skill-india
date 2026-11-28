@@ -107,6 +107,7 @@ DEFAULTS = {
     "allow_margin": False,
     "allow_short": False,
     "intraday_leverage": 1,
+    "stop_slippage_bp": 0,
     "charges": {},
 }
 CHARGES = tradercore.charges("zerodha")  # equity intraday on the NSE: core/brokers/zerodha.json
@@ -290,21 +291,11 @@ def fresh_price(doc, sym, now_utc, minutes=FRESH_MINUTES):
 # ---------------------------------------------------------------- money helpers
 
 def order_charges(side, value, rates=None):
-    """Charges on one executed intraday order of this value (rupees), each to the paisa.
-    Same function in trader-risk, trader-broker and trader-timemachine."""
+    """Charges on one executed intraday order of this value (rupees), each to the paisa: core/tradercore.py's
+    order_charges, the one copy, on this module's CHARGES (core/brokers/zerodha.json)."""
     r = dict(CHARGES)
     r.update(rates or {})
-    v = float(value)
-    if v <= 0:
-        return {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0, "gst": 0.0, "total": 0.0}
-    out = {"brokerage": round(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]), 2),
-           "stt": round(v * r["stt_sell_pct"] / 100.0, 2) if side == "sell" else 0.0,
-           "exchange": round(v * r["exchange_pct"] / 100.0, 2),
-           "sebi": round(v * r["sebi_per_crore"] / 1e7, 2),
-           "stamp": round(v * r["stamp_buy_pct"] / 100.0, 2) if side == "buy" else 0.0}
-    out["gst"] = round((out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0, 2)
-    out["total"] = round(sum(out.values()), 2)
-    return out
+    return tradercore.order_charges(side, value, r)
 
 
 def round_trip(qty, buy_price, sell_price, rates=None):
@@ -495,6 +486,11 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
                         % (_price(target), "above" if long else "below", _price(ref)))
     risk_c = int(round(abs(ref - stop) * 100))
     reward_c = int(round(abs(target - ref) * 100))
+    slip_bp = _f(c.get("stop_slippage_bp")) or 0.0
+    if slip_bp < 0:
+        raise SizeError("stop_slippage_bp must be 0 or more")
+    stop_fill = tradercore.slipped_stop(stop, long, slip_bp)       # where the SL-M is assumed to fill
+    loss_c = int(round(abs(ref - stop_fill) * 100))               # the risk a share the max loss is sized on
 
     def rt(q, out):
         """The round trip's charges: a buy at the entry and a sale at out, or the reverse for a short."""
@@ -528,11 +524,13 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     if ramp_note:
         dd_note = (dd_note + "; " if dd_note else "") + ramp_note
     if max_loss:
-        n = shares_for(max_loss, risk)
-        while n > 0 and n * risk_c / 100.0 + rt(n, stop) > max_loss + 0.005:
+        n = shares_for(max_loss, loss_c / 100.0)
+        while n > 0 and n * loss_c / 100.0 + rt(n, stop_fill) > max_loss + 0.005:
             n -= 1
-        limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": n,
-                       "how": "%s max loss / (%s risk a share + charges)" % (money(max_loss), _price(risk))})
+        limits.append({"name": "max loss", "usd": max_loss, "per": loss_c / 100.0, "shares": n,
+                       "how": "%s max loss / (%s risk a share%s + charges)"
+                              % (money(max_loss), _price(loss_c / 100.0),
+                                 (", the stop filling %s bp past %s" % (_num(slip_bp), _price(stop))) if slip_bp else "")})
     cap_pct = _f(c.get("max_position_pct"))
     if cap_pct:
         cap = round(budget * cap_pct / 100.0, 2)
@@ -552,8 +550,8 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     for l in limits:
         l["binds"] = l["name"] == bound[0]
     cost = round(qty * ref, 2)
-    loss_price = round(qty * risk_c / 100.0, 2)
-    charges_stop = rt(qty, stop) if qty else 0.0
+    loss_price = round(qty * loss_c / 100.0, 2)
+    charges_stop = rt(qty, stop_fill) if qty else 0.0
     charges_target = rt(qty, target) if qty else 0.0
     loss = round(loss_price + charges_stop, 2)
     gain = round(qty * reward_c / 100.0 - charges_target, 2)
@@ -591,6 +589,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "entry_time": plan.get("entry_time", ""), "entry_plan": round_cent(entry_plan),
         "entry": ref, "entry_from": ref_from, "stop": stop, "target": target,
         "risk_per_share": risk, "reward_risk": round(reward_c / float(risk_c), 2),
+        "stop_slippage_bp": slip_bp, "stop_fill": stop_fill, "loss_per_share": loss_c / 100.0,
         "stop_label": plan.get("stop_label", ""), "target_label": plan.get("target_label", ""),
         "budget": budget, "cash_buffer_pct": buf_pct, "cash_buffer": cash_buffer, "cash_available": available,
         "max_loss_per_trade_inr": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
@@ -622,7 +621,8 @@ def bracket_order(s):
            % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_inr"] or 0),
                                              "position cap": "position cap", "max order": "max order",
                                              "cash": "cash after the buffer"}[s["bound_by"]],
-              s["qty"], _price(s["risk_per_share"]), money(s["loss_at_stop"]), money(s["charges_at_stop"]),
+              s["qty"], _price(s.get("loss_per_share", s["risk_per_share"])), money(s["loss_at_stop"]),
+              money(s["charges_at_stop"]),
               money(s["max_loss"])))
     o.update({
         "order_class": "bracket",
@@ -674,7 +674,8 @@ def plan_report(s, order, notes=()):
                                                                     _num(s["leverage"])))
                     if s["leverage"] > 1 and s["cost"] > s["cash_available"] else ""))
     lines.append("At the stop:   lose %d x %s = %s, plus %s charges = %s (charges %.1f%% of the risk)."
-                 % (s["qty"], _price(s["risk_per_share"]), money(s["loss_at_stop"]), money(s["charges_at_stop"]),
+                 % (s["qty"], _price(s.get("loss_per_share", s["risk_per_share"])), money(s["loss_at_stop"]),
+                    money(s["charges_at_stop"]),
                     money(s["max_loss"]), s["charges_pct_of_risk"]))
     lines.append("At the target: win %s after %s charges. Reward:risk after charges %.2f."
                  % (money(s["gain_at_target"]), money(s["charges_at_target"]), s["reward_risk_net"]))

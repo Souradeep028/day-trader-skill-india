@@ -116,21 +116,11 @@ DEFAULT_FLAT_BY = "15:10"   # trader-exit's default: out before the broker squar
 
 
 def order_charges(side, value, rates=None):
-    """Charges on one executed intraday order of this value (rupees), each to the paisa.
-    Same function in trader-budget, trader-risk and trader-broker."""
+    """Charges on one executed intraday order of this value (rupees), each to the paisa: core/tradercore.py's
+    order_charges, the one copy, on this module's CHARGES (core/brokers/zerodha.json)."""
     r = dict(CHARGES)
     r.update(rates or {})
-    v = float(value)
-    if v <= 0:
-        return {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0, "gst": 0.0, "total": 0.0}
-    out = {"brokerage": round(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]), 2),
-           "stt": round(v * r["stt_sell_pct"] / 100.0, 2) if side == "sell" else 0.0,
-           "exchange": round(v * r["exchange_pct"] / 100.0, 2),
-           "sebi": round(v * r["sebi_per_crore"] / 1e7, 2),
-           "stamp": round(v * r["stamp_buy_pct"] / 100.0, 2) if side == "buy" else 0.0}
-    out["gst"] = round((out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0, 2)
-    out["total"] = round(sum(out.values()), 2)
-    return out
+    return tradercore.order_charges(side, value, r)
 
 
 def round_trip(qty, buy_price, sell_price, rates=None):

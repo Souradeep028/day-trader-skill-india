@@ -256,21 +256,11 @@ def _f(x):
 
 
 def order_charges(side, value, rates=None):
-    """Charges on one executed intraday order of this value (rupees), each to the paisa.
-    Same function in trader-budget, trader-risk and trader-timemachine."""
+    """Charges on one executed intraday order of this value (rupees), each to the paisa: core/tradercore.py's
+    order_charges, the one copy, on this module's CHARGES (core/brokers/zerodha.json)."""
     r = dict(CHARGES)
     r.update(rates or {})
-    v = float(value)
-    if v <= 0:
-        return {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0, "gst": 0.0, "total": 0.0}
-    out = {"brokerage": round(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]), 2),
-           "stt": round(v * r["stt_sell_pct"] / 100.0, 2) if side == "sell" else 0.0,
-           "exchange": round(v * r["exchange_pct"] / 100.0, 2),
-           "sebi": round(v * r["sebi_per_crore"] / 1e7, 2),
-           "stamp": round(v * r["stamp_buy_pct"] / 100.0, 2) if side == "buy" else 0.0}
-    out["gst"] = round((out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0, 2)
-    out["total"] = round(sum(out.values()), 2)
-    return out
+    return tradercore.order_charges(side, value, r)
 
 
 def tradingsymbol(sym):
@@ -750,6 +740,8 @@ def round_trips(state, date_from=None, date_to=None, paper=None, rates=None):
                 else:
                     cur["risk"] = round(cur["qty"] * (stop - avg_sell), 2) if stop and stop > avg_sell else None
                 cur["R"] = round(cur["net"] / cur["risk"], 3) if cur["risk"] else None
+                cur["stop"] = stop
+                cur["avg_buy"], cur["avg_sell"] = round(avg_buy, 4), round(avg_sell, 4)
                 cur["buy_value"], cur["sell_value"] = round(cur["buy_value"], 2), round(cur["sell_value"], 2)
                 trades.append(cur)
                 cur = None
@@ -837,6 +829,30 @@ def _signed(x):
     return "%s%s" % ("-" if x < 0 else "+", _money(abs(x)))
 
 
+def stop_slippage(trades):
+    """How far past the stop the trades that went out at or through it filled, in basis points of the stop:
+    {"live": {...}, "paper": {...}}, each {"trades", "avg_bp", "p80_bp", "worst_bp"}, or None for none. The live
+    figure is what "stop_slippage_bp" in trader/config.json should cover (paper only pays the modelled bp)."""
+    out = {}
+    for kind in ("live", "paper"):
+        bps = []
+        for t in trades:
+            stop = t.get("stop")
+            if not stop or bool(t.get("paper")) != (kind == "paper"):
+                continue
+            if t["side"] == "long" and t.get("avg_sell") and t["avg_sell"] <= stop + 0.005:
+                bps.append(1e4 * (stop - t["avg_sell"]) / stop)
+            elif t["side"] == "short" and t.get("avg_buy") and t["avg_buy"] >= stop - 0.005:
+                bps.append(1e4 * (t["avg_buy"] - stop) / stop)
+        if bps:
+            bps.sort()
+            out[kind] = {"trades": len(bps), "avg_bp": round(sum(bps) / len(bps), 1),
+                         "p80_bp": round(bps[min(len(bps) - 1, int(0.8 * len(bps)))], 1), "worst_bp": round(bps[-1], 1)}
+        else:
+            out[kind] = None
+    return out
+
+
 def cmd_journal(a):
     cfg = read_json(a.config, "config", required=False) or {}
     state = load_state(a.state)
@@ -845,7 +861,8 @@ def cmd_journal(a):
     s = journal_summary(trades, cfg.get("budget"))
     if a.json:
         print(json.dumps({"summary": s, "trades": trades, "open": still_open,
-                          "entry_slippage": entry_slippage(state, trades)}, indent=2))
+                          "entry_slippage": entry_slippage(state, trades), "stop_slippage": stop_slippage(trades)},
+                         indent=2))
         return 0 if trades else 1
     if not trades:
         print("No closed trades%s in %s." % (" in that range" if a.date_from or a.date_to else "", a.state))
@@ -870,6 +887,16 @@ def cmd_journal(a):
               "on average, %s over %d trade%s." % (slip["per_share"], slip.get("bp", 0), slip["R"],
                                                    _money(slip["rupees"]), slip["trades"],
                                                    "" if slip["trades"] == 1 else "s"))
+    ss = stop_slippage(trades)
+    for kind in ("live", "paper"):
+        x = ss.get(kind)
+        if x:
+            print("Stop slippage, %s (%d trade%s out at or past the stop): %+.1f bp on average, %+.1f bp at the 80th "
+                  "percentile, %+.1f bp worst, against the stop.%s"
+                  % (kind, x["trades"], "" if x["trades"] == 1 else "s", x["avg_bp"], x["p80_bp"], x["worst_bp"],
+                     (" Your stop_slippage_bp is %s: the 80th percentile is the figure to cover%s."
+                      % (_str_num(float(cfg.get("stop_slippage_bp") or 0)),
+                         "" if x["trades"] >= 20 else ", once there are 20 such trades")) if kind == "live" else ""))
     for o in still_open:
         print("Still open: %s %s on %s (not counted)." % (_str_num(o["qty"]), o["symbol"], o["date"]))
     if s["trades"] < 30:
@@ -986,6 +1013,8 @@ def cmd_approve(a):
         print("Not recorded: %s. Ask the user again with the ticket for order %d." % (why, a.index))
         return 1
     loss, stop = max_loss(order)
+    if rv and _f(rv.get("max_loss")) is not None:
+        loss = round(_f(rv["max_loss"]), 2)          # what trader-risk passed, with its stop-slippage buffer
     rec = {"at": ist_iso(now), "date": today, "index": a.index, "fingerprint": fingerprint(order),
            "symbol": str(order.get("symbol", "")).upper(), "side": order.get("side"),
            "qty": order.get("qty"), "kind": kind_of(order, rv), "max_loss": loss, "stop": stop,

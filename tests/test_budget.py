@@ -25,7 +25,7 @@ CONTRACT_CFG = {
     "max_losing_streak": 2, "max_entries_per_sector": 2, "min_reward_risk": 1.0, "max_charges_pct_of_risk": 15, "require_stop": True,
     "no_entries_before": "09:30", "no_entries_after": "14:45", "flat_by": "15:10",
     "fractional": False, "broker": "zerodha", "exchange": "NSE", "product": "MIS", "paper": True, "blocked": [],
-    "allow_options": False, "allow_margin": False, "allow_short": False, "intraday_leverage": 1,
+    "allow_options": False, "allow_margin": False, "allow_short": False, "intraday_leverage": 1, "stop_slippage_bp": 0,
     "charges": {"brokerage_pct": 0.03, "brokerage_max": 20, "stt_sell_pct": 0.025, "exchange_pct": 0.00307,
                 "sebi_per_crore": 10, "stamp_buy_pct": 0.003, "gst_pct": 18},
 }

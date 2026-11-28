@@ -141,7 +141,7 @@ DEFAULTS = {
     "max_weekly_loss_inr": 3000, "max_monthly_loss_inr": 6000, "max_same_side_risk_inr": 1000,
     "skip_ex_dates": True, "skip_market_event_days": True, "max_index_move_pct": 3,
     "drawdown_cut_pct": 5, "drawdown_size_factor": 0.5,
-    "block_surveillance": True, "require_guardian": True,
+    "block_surveillance": True, "require_guardian": True, "stop_slippage_bp": 0,
 }
 EXPIRY_WEEKDAY = 1         # Tuesday: NSE's weekly Nifty expiry since 1 September 2025
 STALE_SURVEILLANCE_DAYS = 7
@@ -188,7 +188,7 @@ LIMIT_RULES = {
     "max_orders_per_day": "low", "max_losing_streak": "low", "max_entries_per_sector": "low",
     "max_charges_pct_of_risk": "low", "max_order_inr": "low", "max_position_pct": "low",
     "max_index_move_pct": "low", "intraday_leverage": "low", "drawdown_cut_pct": "low",
-    "drawdown_size_factor": "low", "min_reward_risk": "high", "cash_buffer_pct": "high",
+    "drawdown_size_factor": "low", "min_reward_risk": "high", "cash_buffer_pct": "high", "stop_slippage_bp": "high",
     "require_stop": True, "paper": True, "skip_results_days": True, "skip_ex_dates": True,
     "skip_market_event_days": True, "block_surveillance": True, "skip_expiry_days": True,
     "allow_short": False, "allow_margin": False, "allow_options": False, "require_guardian": True,
@@ -345,21 +345,11 @@ def _f(x):
 
 
 def order_charges(side, value, rates=None):
-    """Charges on one executed intraday order of this value (rupees), each to the paisa.
-    Same function in trader-budget, trader-broker and trader-timemachine."""
+    """Charges on one executed intraday order of this value (rupees), each to the paisa: core/tradercore.py's
+    order_charges, the one copy, on this module's CHARGES (core/brokers/zerodha.json)."""
     r = dict(CHARGES)
     r.update(rates or {})
-    v = float(value)
-    if v <= 0:
-        return {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0, "gst": 0.0, "total": 0.0}
-    out = {"brokerage": round(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]), 2),
-           "stt": round(v * r["stt_sell_pct"] / 100.0, 2) if side == "sell" else 0.0,
-           "exchange": round(v * r["exchange_pct"] / 100.0, 2),
-           "sebi": round(v * r["sebi_per_crore"] / 1e7, 2),
-           "stamp": round(v * r["stamp_buy_pct"] / 100.0, 2) if side == "buy" else 0.0}
-    out["gst"] = round((out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0, 2)
-    out["total"] = round(sum(out.values()), 2)
-    return out
+    return tradercore.order_charges(side, value, r)
 
 
 def round_trip(qty, buy_price, sell_price, rates=None):
@@ -1222,15 +1212,20 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 else:
                     risk_c = int(round(abs(ref - stop) * 100))
                     risk_ps = risk_c / 100.0
+                    slip_bp = max(_f(c.get("stop_slippage_bp")) or 0.0, 0.0)
+                    stop_fill = tradercore.slipped_stop(stop, long, slip_bp)   # where the SL-M is assumed to fill
                     shares = q if q is not None else ((value or 0) / ref)
-                    price_loss = round(shares * risk_ps, 2)
-                    charges = (round_trip(shares, ref, stop, rates) if long
-                               else round_trip(shares, stop, ref, rates))
+                    price_loss = round(shares * int(round(abs(ref - stop_fill) * 100)) / 100.0, 2)
+                    charges = (round_trip(shares, ref, stop_fill, rates) if long
+                               else round_trip(shares, stop_fill, ref, rates))
+                    if slip_bp:
+                        info.append("the stop is assumed to fill %s bp past %s, at %s (stop_slippage_bp)"
+                                    % (_num(slip_bp), _p(stop), _p(stop_fill)))
                     max_loss = round(price_loss + charges, 2)
                     cap = loss_cap
                     if cap and max_loss > cap + CENT:
                         later.append("loss: %s shares x %s risk a share = %s at the stop, plus %s charges = %s, over "
-                                     "your %s max loss per trade%s" % (_num(shares), _p(risk_ps), money(price_loss),
+                                     "your %s max loss per trade%s" % (_num(shares), _p(price_loss / shares if shares else risk_ps), money(price_loss),
                                                                        money(charges), money(max_loss), money(cap),
                                                                        " (cut for the drawdown)" if dd_note else ""))
                     cost_cap = _f(c.get("max_charges_pct_of_risk"))

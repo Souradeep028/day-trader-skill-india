@@ -486,7 +486,11 @@ python3 "${CLAUDE_SKILL_DIR}/guardian.py" run           # dry run against Kite: 
 **Claude runs only `plan` and the dry run.** The user runs, in their own
 terminal, `guardian.py login --request-token ...` (with `KITE_API_KEY` and
 `KITE_API_SECRET` in their environment, never in the chat) and `guardian.py
-run --arm` (or a cron line at 9:14 IST). Arming needs `"paper": false`.
+run --arm` (or a cron line at 9:14 IST), or starts the opt-in Docker service
+(`docker compose -f docker/compose.yaml --profile live up -d`, which runs
+`guardian.py run --arm --forever`: every session, waiting out the nights,
+and an alert each morning until `guardian.py login` has been run in it).
+Arming needs `"paper": false`.
 Alerts go to `NOTIFY_URL`, actions to `trader/state/guardian-log.jsonl`, the
 heartbeat to `trader/state/guardian.json`.
 
