@@ -409,7 +409,7 @@ paper autopilot pass a minute after every 5-minute bar from 9:16 to 15:31,
 today's bars saved at 15:45, and the daily report and trade audit page at
 15:50, all in India time. Your trading folder stays on your machine, mounted
 into the container, so it survives rebuilds and nothing personal goes into
-the image. Paper only: nothing in it can place a live order.
+the image. The scheduler is paper only: nothing in it can place a live order.
 
 ```bash
 mkdir -p ~/trading                                            # your trading folder
@@ -419,6 +419,16 @@ docker compose -f docker/compose.yaml logs -f                 # what it ran
 docker compose -f docker/compose.yaml run --rm trader plan    # what is due now, and when it wakes next
 docker compose -f docker/compose.yaml run --rm trader now daily   # one job right away
 docker compose -f docker/compose.yaml exec trader trader doctor   # the health check, inside the container
+```
+
+On a live account the live guardian (trader-broker's `guardian.py`) can run
+beside it, but only when you ask for it, since it sends real orders (stops
+and closes for open positions, never an entry):
+
+```bash
+docker compose -f docker/compose.yaml --profile live up -d --build
+docker compose -f docker/compose.yaml --profile live run --rm -e KITE_API_KEY -e KITE_API_SECRET \
+  --entrypoint python3 guardian /app/trader-broker/guardian.py login --request-token <token>   # each morning
 ```
 
 Or pinned to a release: check out its tag and build from it (the build runs

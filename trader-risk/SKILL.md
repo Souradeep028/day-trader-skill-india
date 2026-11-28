@@ -83,7 +83,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | position | (entries) the stock would be over `max_position_pct` of the account |
 | cash | (entries) the cash it needs (the value, divided by `intraday_leverage` when `allow_margin` is true) would leave less than the cash buffer, or more than you have |
 | stop | (entries) no stop while `require_stop` is true (a bracket `stop_loss_stop_price`, or the order's plan stop); a stop on the wrong side of the entry |
-| loss | (entries) qty x (entry minus stop) plus the round trip's charges over `max_loss_per_trade_inr` |
+| loss | (entries) qty x (entry minus stop) plus the round trip's charges over `max_loss_per_trade_inr`; with `stop_slippage_bp` the stop is taken to fill that many basis points past its trigger, as trader-budget sizes it |
 | reward:risk | (entries) the win at the target after charges / the loss at the stop with charges, under `min_reward_risk` |
 | charges | (entries) the round trip's charges at the stop over `max_charges_pct_of_risk` (15) % of the loss on price: the stop is too close for the charges, and it says how far it needs to be |
 | daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_inr`; a trade that lost more than planned (a slipped stop) counts its realised loss |

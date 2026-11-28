@@ -72,6 +72,36 @@ def charges(name="zerodha"):
     return dict(broker(name)["charges"])
 
 
+def order_charges(side, value, rates=None, name="zerodha"):
+    """Charges on one executed intraday order of this value (rupees), each to the paisa: brokerage (a percent, capped
+    per order), STT on a sale, exchange and SEBI fees, stamp duty on a buy, and GST on brokerage and fees. rates
+    overrides the broker's table key by key ("charges" in trader/config.json). The one copy: every skill calls this."""
+    r = charges(name)
+    r.update(rates or {})
+    v = float(value)
+    if v <= 0:
+        return {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0, "gst": 0.0, "total": 0.0}
+    out = {"brokerage": round(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]), 2),
+           "stt": round(v * r["stt_sell_pct"] / 100.0, 2) if side == "sell" else 0.0,
+           "exchange": round(v * r["exchange_pct"] / 100.0, 2),
+           "sebi": round(v * r["sebi_per_crore"] / 1e7, 2),
+           "stamp": round(v * r["stamp_buy_pct"] / 100.0, 2) if side == "buy" else 0.0}
+    out["gst"] = round((out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0, 2)
+    out["total"] = round(sum(out.values()), 2)
+    return out
+
+
+def slipped_stop(stop, long, bp):
+    """Where an SL-M stop is assumed to fill: bp basis points past its trigger (stop_slippage_bp), to the paisa,
+    away from the entry. 0 bp is the trigger itself."""
+    bp = float(bp or 0)
+    if bp <= 0:
+        return stop
+    cents = stop * 100.0 * (1 - bp / 1e4) if long else stop * 100.0 * (1 + bp / 1e4)
+    import math
+    return (math.floor(cents + 1e-6) if long else math.ceil(cents - 1e-6)) / 100.0
+
+
 def charges_read(name="zerodha"):
     return broker(name)["read"]
 

@@ -15,3 +15,34 @@ services:
     environment:
       TZ: Asia/Kolkata
       NOTIFY_URL: ${NOTIFY_URL:-}       # optional alerts, e.g. https://ntfy.sh/<a topic only you know>
+
+  # The live guardian (trader-broker/guardian.py): keeps live intraday positions protected at Zerodha, every
+  # session. OFF unless you ask for it, because it sends real orders (stops and closes only, never an entry):
+  #   docker compose -f docker/compose.yaml --profile live up -d --build
+  # It needs "paper": false in trader/config.json and today's Kite session. Each morning, in the container:
+  #   docker compose -f docker/compose.yaml --profile live run --rm -e KITE_API_KEY -e KITE_API_SECRET \
+  #     --entrypoint python3 guardian /app/trader-broker/guardian.py login --request-token <token>
+  # (the key and secret from your shell, never written to a file here). Until then it alerts once and waits.
+  guardian:
+    profiles: ["live"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: day-trader-india
+    container_name: day-trader-guardian
+    restart: unless-stopped
+    init: true
+    user: "${TRADER_UID:-1000}:${TRADER_GID:-1000}"
+    volumes:
+      - ${TRADING_DIR:-${HOME}/trading}:/data
+    environment:
+      TZ: Asia/Kolkata
+      NOTIFY_URL: ${NOTIFY_URL:-}
+      GUARDIAN_PING_URL: ${GUARDIAN_PING_URL:-}   # optional dead-man's switch, e.g. a healthchecks.io check URL
+    entrypoint: ["python3", "/app/trader-broker/guardian.py"]
+    command: ["run", "--arm", "--forever"]
+    healthcheck:   # the trader image's check reads the scheduler's heartbeat; this one reads the guardian's
+      test: ["CMD", "python3", "-c", "import sys; sys.path[:0] = ['/app/trader-risk', '/app/core']; import check, datetime as d, json; n = d.datetime.now(d.timezone.utc).replace(tzinfo=None); i = check.to_ist(n); s = i.weekday() < 5 and not check.NSE_HOLIDAYS.get(i.date().isoformat()) and d.time(9, 17) <= i.time() < d.time(15, 30); h = json.load(open('trader/state/guardian.json')) if s else None; sys.exit(0 if not s or check.guardian_state(h, n)[0] else 1)"]
+      interval: 1m
+      timeout: 10s
+      start_period: 1m

@@ -79,7 +79,10 @@ If `trader/config.json` does not exist, copy `config.example.json` into
   most 15 % of the loss on price), **skip_results_days** (true),
   **skip_expiry_days** (false: a warning on expiry days) and
   **block_surveillance** (true: no entries in stocks on NSE's ASM or GSM
-  lists). 15:10 is before
+  lists) and **stop_slippage_bp** (0: a stop-loss is assumed to fill this
+  many basis points past its trigger, so the max loss is sized on the worse
+  fill; `ticket.py journal` measures your live stop fills, and their 80th
+  percentile is the figure to use). 15:10 is before
   Zerodha squares off open intraday positions itself (about 3:20 PM, for a
   fee).
 - **charges**: Zerodha's equity intraday rates are the default (read from

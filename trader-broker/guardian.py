@@ -699,7 +699,50 @@ def cmd_plan(a):
     return 0
 
 
+def forever(a, clock=None, sleep=time.sleep, runner=None, loops=None):
+    """--forever (the Docker service): guard every session, wait out the nights and weekends, and read the day's Kite
+    session afresh each morning. With no session (or one that expired) it alerts once a day and tries again every
+    minute, so `guardian.py login` in the container is all a morning needs. A crash still ends it (the container
+    restarts it)."""
+    clock = clock or (lambda: check.parse_now(None))
+    runner = runner or run
+    told, n = None, 0
+    while loops is None or n < loops:
+        n += 1
+        now_ist = check.to_ist(clock())
+        today = now_ist.date().isoformat()
+        if not session_open(now_ist):
+            sleep(60)
+            continue
+        try:
+            credentials(a.session)
+        except GuardianError as e:
+            if told != today:
+                told = today
+                notify("no Kite session for %s: run guardian.py login. Positions are NOT being guarded" % today)
+                print("guardian: %s" % e, file=sys.stderr, flush=True)
+            sleep(60)
+            continue
+        try:
+            code = runner(a, loop=True)
+        except GuardianError as e:                     # refused (a paper config, another guardian running)
+            if told != today + "!":
+                told = today + "!"
+                notify("cannot guard today: %s" % e)
+                print("guardian: %s" % e, file=sys.stderr, flush=True)
+            code = 2
+        if code:                                       # the session expired, or it was refused: try again soon
+            sleep(60)
+    return 0
+
+
 def run(a, loop):
+    if loop and getattr(a, "forever", False) and not a.now:
+        a.forever = False
+        try:
+            return forever(a)
+        finally:
+            a.forever = True
     cfg = load_cfg(a.config)
     armed = bool(a.arm)
     if armed and cfg.get("paper", True):
@@ -793,6 +836,8 @@ def main(argv=None):
         sp.add_argument("--arm", action="store_true", help="send the orders (default: a dry run)")
         sp.add_argument("--every", type=float, default=POLL, help="seconds between passes")
         sp.add_argument("--now", help="pretend it is this IST time (tests)")
+        sp.add_argument("--forever", action="store_true",
+                        help="run: every session, waiting out nights and weekends (the Docker service)")
         sp.add_argument("--portfolio", default="trader/portfolio.json")
         sp.add_argument("--forward", default="trader/forward.json", help="the forward test (for the live ramp)")
         sp.add_argument("--no-sync", action="store_true",

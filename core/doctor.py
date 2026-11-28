@@ -237,6 +237,10 @@ def run(today=None, online=False, now_utc=None):
                                   "(trader-broker/guardian.py run --arm)" % g_why)
         else:
             add(OK, "guardian", "not running outside the session; start it before 9:15 (guardian.py run --arm)")
+        gaps = check.missing_fills(_read(os.path.join("trader", "state", "broker.json")) or {},
+                                   now_ist.date().isoformat())
+        add(FAIL if gaps else OK, "live fills", check.missing_fills_text(gaps) if gaps else
+            "every live trade of the last %d sessions is in the log" % check.FILL_LOOKBACK)
         sess = _read(os.path.join("trader", "state", "kite_session.json")) or {}
         if not os.environ.get("KITE_ACCESS_TOKEN") and sess.get("date") != now_ist.date().isoformat():
             add(WARN, "kite session", "no Kite session for today: the guardian cannot read Kite until you run "

@@ -6,6 +6,18 @@ mid-test change.
 
 ## Unreleased
 
+- **A stop-slippage buffer** (`stop_slippage_bp`, 0 by default, so nothing changes until you set it): trader-budget
+  sizes and trader-risk checks the max loss as if the SL-M filled that many basis points past its trigger, charges
+  included, so the two always agree; an approval records the max loss trader-risk passed. `ticket.py journal` now
+  measures how far past the stop your stopped-out trades filled (live and paper apart: average, 80th percentile,
+  worst), the figure to set it from.
+- **The guardian in Docker, opt-in.** `docker compose --profile live up -d` runs `guardian.py run --arm --forever`
+  next to the scheduler: every session, nights and weekends waited out, the day's Kite session read each morning
+  (an alert until `guardian.py login` has been run), with a healthcheck on its heartbeat. Without the profile
+  nothing changes.
+- **doctor shows missing live fills** (the check that blocks live entries) as a FAIL row.
+- **One copy of the charges.** `core/tradercore.py` has `order_charges`; the five skills that had their own copy
+  call it.
 - **A day of unlogged live fills blocks live entries.** Kite's get_trades only has today's, so a day nobody synced
   lost its fills and the weekly, monthly and drawdown limits counted less than was lost. trader-risk now blocks live
   entries (and the pre-flight says NO-GO) while, in the last 5 sessions, an approved live entry has no logged fill
